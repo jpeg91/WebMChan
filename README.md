@@ -1,4 +1,4 @@
-# WebM for 4chan
+# WebMChan
 
 Offline Android app: pick a video, choose a size limit, get a `.webm` that fits.
 Output is saved to `Downloads/WebM4chan/` and can be shared straight from the app.
@@ -13,7 +13,7 @@ Output is saved to `Downloads/WebM4chan/` and can be shared straight from the ap
 - Targets ~95% of the limit, then checks the real file size and retries with a
   smaller budget (up to 4 attempts) if it came out over
 - Clips longer than 300 s are cut to the first 300 s
-- Limit presets: 4 MB, 6 MB (/wsg/), or a custom MB value
+- Limit presets: 4 MB, 6 MB, or a custom MB value
 
 ## Build
 
@@ -28,10 +28,6 @@ Output is saved to `Downloads/WebM4chan/` and can be shared straight from the ap
   a community continuation of the retired FFmpegKit. If Gradle can't resolve it,
   check https://github.com/ffmpegkit-maintained/ffmpeg for the current coordinate.
   The app needs libvpx and libvorbis in whichever build you pick.
-- **4chan rules.** The limits (4096 KB, 6144 KB on /wsg/, 300 s, VP8) came from community
-  guides, not 4chan's own pages, which I couldn't fetch. Some boards differ. If an
-  upload is rejected, use the Custom limit and check that board's rules.
-- Not tested on a device. I couldn't build an APK in my environment.
 
 ## Known limits
 
