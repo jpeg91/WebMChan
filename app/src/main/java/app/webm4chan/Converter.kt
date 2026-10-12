@@ -1,3 +1,4 @@
+```kotlin
 package app.webm4chan
 
 import android.content.ContentValues
@@ -122,91 +123,123 @@ object Converter {
         settings: Settings,
         onProgress: (fraction: Float, status: String) -> Unit,
     ): ConvertResult = withContext(Dispatchers.IO) {
-        val input = FFmpegKitConfig.getSafParameterForRead(ctx, uri)
-        val duration = min(src.durationSec, settings.maxDurationSec.toDouble())
-        val trimmed = src.durationSec > settings.maxDurationSec
-        val audioOn = settings.keepAudio && src.hasAudio
-        val audioKbps = if (audioOn) AUDIO_KBPS else 0
+        val inputFile = File.createTempFile(
+            "webmchan-input-",
+            ".video",
+            ctx.cacheDir
+        )
 
-        val out = File(ctx.cacheDir, "out.webm")
-        val passLog = File(ctx.cacheDir, "ffpass").absolutePath
-        var budgetBytes = settings.limitBytes * INITIAL_TARGET
-        var lastHeight = 0
-        var lastKbps = 0
-
-        for (attempt in 1..MAX_ATTEMPTS) {
-            val totalKbps = budgetBytes * 8.0 / duration / 1000.0
-            val vKbps = (totalKbps - audioKbps).toInt()
-            if (vKbps < 40) {
-                return@withContext ConvertResult.Fail(
-                    "Video is too long for this size limit" +
-                        if (audioOn) " with audio. Try removing audio." else "."
-                )
-            }
-            val height = chooseHeight(vKbps, src)
-            lastHeight = height
-            lastKbps = vKbps
-
-            val filters = buildList {
-                if (src.fps > 30.5) add("fps=30")
-                if (height < src.height || src.height > 1080) add("scale=-2:$height")
-            }.joinToString(",").ifEmpty { "null" }
-
-            val common = listOf(
-                "-y", "-i", input, "-t", "%.3f".format(java.util.Locale.US, duration),
-                "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
-                "-vf", filters,
-                "-c:v", "libvpx", "-b:v", "${vKbps}k",
-                "-deadline", "good", "-cpu-used", "2",
-                "-auto-alt-ref", "1", "-lag-in-frames", "25",
-                "-passlogfile", passLog,
-            )
-
-            fun stats(pass: Int) {
-                FFmpegKitConfig.enableStatisticsCallback { st ->
-                    val frac = (st.time.toDouble() / 1000.0 / duration).coerceIn(0.0, 1.0)
-                    val overall = ((pass - 1) + frac) / 2.0
-                    onProgress(
-                        overall.toFloat(),
-                        "Attempt $attempt/$MAX_ATTEMPTS, pass $pass/2 (${height}p, ${vKbps} kbps)"
+        try {
+            val source = ctx.contentResolver.openInputStream(uri)
+                ?: run {
+                    inputFile.delete()
+                    return@withContext ConvertResult.Fail(
+                        "Could not open the selected video."
                     )
                 }
-            }
 
-            stats(1)
-            val p1 = FFmpegKit.executeWithArguments(
-                (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
+            source.use { srcStream ->
+                inputFile.outputStream().use { dst ->
+                    srcStream.copyTo(dst)
+                }
+            }
+        } catch (e: Exception) {
+            inputFile.delete()
+            return@withContext ConvertResult.Fail(
+                "Could not copy selected video: ${e.message}"
             )
-            if (ReturnCode.isCancel(p1.returnCode)) return@withContext ConvertResult.Cancelled
-            if (!ReturnCode.isSuccess(p1.returnCode)) {
-                return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
-            }
-
-            stats(2)
-            val audioArgs = if (audioOn) {
-                listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", "2")
-            } else listOf("-an")
-            val p2 = FFmpegKit.executeWithArguments(
-                (common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)).toTypedArray()
-            )
-            if (ReturnCode.isCancel(p2.returnCode)) return@withContext ConvertResult.Cancelled
-            if (!ReturnCode.isSuccess(p2.returnCode)) {
-                return@withContext ConvertResult.Fail("Encoding failed (pass 2).\n${tail(p2.allLogsAsString)}")
-            }
-
-            val size = out.length()
-            if (size in 1..settings.limitBytes) {
-                onProgress(1f, "Done")
-                cleanupLogs(ctx)
-                return@withContext ConvertResult.Ok(
-                    out, size, lastHeight, lastKbps, trimmed, settings.keepAudio && !src.hasAudio
-                )
-            }
-            // Too big: shrink the budget proportionally and retry.
-            budgetBytes *= (settings.limitBytes * 0.97) / size.toDouble()
         }
-        cleanupLogs(ctx)
-        ConvertResult.Fail("Couldn't get under the size limit after $MAX_ATTEMPTS attempts.")
+
+        val input = inputFile.absolutePath
+
+        try {
+            val duration = min(src.durationSec, settings.maxDurationSec.toDouble())
+            val trimmed = src.durationSec > settings.maxDurationSec
+            val audioOn = settings.keepAudio && src.hasAudio
+            val audioKbps = if (audioOn) AUDIO_KBPS else 0
+
+            val out = File(ctx.cacheDir, "out.webm")
+            val passLog = File(ctx.cacheDir, "ffpass").absolutePath
+            var budgetBytes = settings.limitBytes * INITIAL_TARGET
+            var lastHeight = 0
+            var lastKbps = 0
+
+            for (attempt in 1..MAX_ATTEMPTS) {
+                val totalKbps = budgetBytes * 8.0 / duration / 1000.0
+                val vKbps = (totalKbps - audioKbps).toInt()
+                if (vKbps < 40) {
+                    return@withContext ConvertResult.Fail(
+                        "Video is too long for this size limit" +
+                            if (audioOn) " with audio. Try removing audio." else "."
+                    )
+                }
+                val height = chooseHeight(vKbps, src)
+                lastHeight = height
+                lastKbps = vKbps
+
+                val filters = buildList {
+                    if (src.fps > 30.5) add("fps=30")
+                    if (height < src.height || src.height > 1080) add("scale=-2:$height")
+                }.joinToString(",").ifEmpty { "null" }
+
+                val common = listOf(
+                    "-y", "-i", input, "-t", "%.3f".format(java.util.Locale.US, duration),
+                    "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
+                    "-vf", filters,
+                    "-c:v", "libvpx", "-b:v", "${vKbps}k",
+                    "-deadline", "good", "-cpu-used", "2",
+                    "-auto-alt-ref", "1", "-lag-in-frames", "25",
+                    "-passlogfile", passLog,
+                )
+
+                fun stats(pass: Int) {
+                    FFmpegKitConfig.enableStatisticsCallback { st ->
+                        val frac = (st.time.toDouble() / 1000.0 / duration).coerceIn(0.0, 1.0)
+                        val overall = ((pass - 1) + frac) / 2.0
+                        onProgress(
+                            overall.toFloat(),
+                            "Attempt $attempt/$MAX_ATTEMPTS, pass $pass/2 (${height}p, ${vKbps} kbps)"
+                        )
+                    }
+                }
+
+                stats(1)
+                val p1 = FFmpegKit.executeWithArguments(
+                    (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
+                )
+                if (ReturnCode.isCancel(p1.returnCode)) return@withContext ConvertResult.Cancelled
+                if (!ReturnCode.isSuccess(p1.returnCode)) {
+                    return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
+                }
+
+                stats(2)
+                val audioArgs = if (audioOn) {
+                    listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", "2")
+                } else listOf("-an")
+                val p2 = FFmpegKit.executeWithArguments(
+                    (common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)).toTypedArray()
+                )
+                if (ReturnCode.isCancel(p2.returnCode)) return@withContext ConvertResult.Cancelled
+                if (!ReturnCode.isSuccess(p2.returnCode)) {
+                    return@withContext ConvertResult.Fail("Encoding failed (pass 2).\n${tail(p2.allLogsAsString)}")
+                }
+
+                val size = out.length()
+                if (size in 1..settings.limitBytes) {
+                    onProgress(1f, "Done")
+                    cleanupLogs(ctx)
+                    return@withContext ConvertResult.Ok(
+                        out, size, lastHeight, lastKbps, trimmed, settings.keepAudio && !src.hasAudio
+                    )
+                }
+                // Too big: shrink the budget proportionally and retry.
+                budgetBytes *= (settings.limitBytes * 0.97) / size.toDouble()
+            }
+            cleanupLogs(ctx)
+            ConvertResult.Fail("Couldn't get under the size limit after $MAX_ATTEMPTS attempts.")
+        } finally {
+            inputFile.delete()
+        }
     }
 
     private fun tail(s: String?): String = s?.takeLast(400)?.trim().orEmpty()
@@ -238,3 +271,4 @@ object Converter {
         return uri
     }
 }
+```
