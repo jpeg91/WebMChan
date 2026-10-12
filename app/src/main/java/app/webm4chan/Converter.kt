@@ -1,4 +1,3 @@
-```kotlin
 package app.webm4chan
 
 import android.content.ContentValues
@@ -271,4 +270,3 @@ object Converter {
         return uri
     }
 }
-```
