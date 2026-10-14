@@ -149,6 +149,7 @@ fun App() {
     var targetIdx by remember { mutableIntStateOf(0) }
     var customMb by remember { mutableStateOf("4") }
     var removeAudio by remember { mutableStateOf(true) }
+    var fastEncode by remember { mutableStateOf(false) }
 
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
@@ -277,6 +278,20 @@ fun App() {
             )
         }
 
+        Text("Encoding", style = MaterialTheme.typography.titleSmall)
+        TargetRow(
+            selected = !fastEncode,
+            enabled = !busy,
+            title = "Quality",
+            subtitle = "Best detail, slower.",
+        ) { fastEncode = false }
+        TargetRow(
+            selected = fastEncode,
+            enabled = !busy,
+            title = "Speed",
+            subtitle = "Faster, slightly softer detail. Same file size limit.",
+        ) { fastEncode = true }
+
         val canGo = uri != null && info != null && limitKb >= 256 && !busy
         Button(
             onClick = {
@@ -291,7 +306,10 @@ fun App() {
                 job = scope.launch {
                     val res = Converter.convert(
                         ctx, u, i,
-                        Settings(limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH),
+                        Settings(
+                            limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
+                            fastEncode = fastEncode,
+                        ),
                         onLog = { line -> logBuffer.add(line) { logLines = it } },
                     ) { p, s -> progress = p; status = s }
 
