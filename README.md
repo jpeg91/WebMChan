@@ -1,9 +1,13 @@
 # WebMChan
 
 No fuss 4chan WebM converter for Android.
+
 Pick a video, choose a board, get a `.webm` that fits.
+
 Select from a list of boards and their requirement presets (or set your own).
+
 Converted videos target the highest possible quality within the board's constraints.
+
 Output is saved to `Download/WebM4chan/` and can be shared straight from the app.
 
 ## What it does
