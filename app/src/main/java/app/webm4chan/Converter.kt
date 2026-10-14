@@ -13,6 +13,8 @@ import com.arthenica.ffmpegkit.ReturnCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.ceil
+import kotlin.math.max
 import kotlin.math.min
 
 /** What we learned about the picked video. */
@@ -28,6 +30,55 @@ data class Settings(
     val limitBytes: Long,
     val maxDurationSec: Int,
     val keepAudio: Boolean,
+    val minWidth: Int = 0,
+    val minHeight: Int = 0,
+)
+
+/**
+ * One 4chan upload rule-set. Boards whose WebM rules are identical are merged into one target.
+ * Source: https://a.4cdn.org/boards.json (max_webm_filesize, max_webm_duration,
+ * min_image_width / min_image_height, webm_audio).
+ */
+data class Target(
+    val limitKb: Int,
+    val maxDurationSec: Int,
+    val minWidth: Int,
+    val minHeight: Int,
+    val audioAllowed: Boolean,
+    val boards: List<String>,
+) {
+    /** e.g. "4 MB · Min 500×500 · 120 s" */
+    val title: String
+        get() = buildString {
+            append(if (limitKb % 1024 == 0) "${limitKb / 1024} MB" else "$limitKb KB")
+            append(" · ")
+            append(if (minWidth > 0 || minHeight > 0) "Min ${minWidth}×${minHeight}" else "No min res")
+            append(" · ${maxDurationSec} s")
+            if (audioAllowed) append(" · Audio OK")
+        }
+
+    /** e.g. "/hc/ /s/" */
+    val boardsLabel: String get() = boards.joinToString(" ") { "/$it/" }
+}
+
+val TARGETS: List<Target> = listOf(
+    Target(
+        4096, 120, 0, 0, false,
+        listOf(
+            "3", "a", "aco", "adv", "an", "biz", "c", "cgl", "ck", "cm", "co", "d", "diy", "e", "f",
+            "fa", "fit", "g", "gd", "h", "his", "hm", "i", "ic", "int", "jp", "k", "lgbt", "lit", "m",
+            "mlp", "mu", "n", "news", "o", "out", "p", "po", "pol", "pw", "qst", "r9k", "s4s", "sci",
+            "soc", "sp", "t", "tg", "toy", "trash", "trv", "tv", "u", "v", "vg", "vip", "vm", "vmg",
+            "vp", "vr", "vrpg", "vst", "vt", "x", "xs", "y",
+        ),
+    ),
+    Target(2048, 120, 0, 0, false, listOf("b", "bant")),
+    Target(4096, 120, 480, 600, false, listOf("w", "wg")),
+    Target(4096, 120, 500, 500, false, listOf("hc", "s")),
+    Target(4096, 120, 1000, 1000, false, listOf("hr")),
+    Target(4096, 120, 0, 0, true, listOf("r", "wsr")),
+    Target(4096, 300, 0, 0, true, listOf("gif")),
+    Target(6144, 400, 0, 0, true, listOf("wsg")),
 )
 
 sealed class ConvertResult {
@@ -46,7 +97,7 @@ sealed class ConvertResult {
 
 object Converter {
 
-    /** 4chan: most boards 4096 KB, /wsg/ 6144 KB; max duration 300 s. */
+    /** Max duration used for the Custom option only; board targets carry their own. */
     const val DEFAULT_MAX_DURATION_SEC = 300
 
     private const val AUDIO_KBPS = 64
@@ -99,14 +150,32 @@ object Converter {
         return if (v in 1.0..240.0) v else null
     }
 
-    /** Biggest height (<=1080, <= source) that still gets a decent bits-per-pixel for VP8. */
-    private fun chooseHeight(vKbps: Int, src: SourceInfo): Int {
+    /**
+     * Smallest even height whose width (same aspect as the source) still meets both board
+     * minimums. 0 when the target has no minimum.
+     */
+    private fun minHeightFor(src: SourceInfo, minW: Int, minH: Int): Int {
+        if (minW <= 0 && minH <= 0) return 0
+        val aspect = src.width.toDouble() / src.height
+        val need = ceil(max(minH.toDouble(), minW / aspect)).toInt()
+        return (need + 1) / 2 * 2
+    }
+
+    /**
+     * Biggest height (<=1080, <= source) that still gets a decent bits-per-pixel for VP8,
+     * never below [minHeight]. A source smaller than the minimum is scaled up to it.
+     */
+    private fun chooseHeight(vKbps: Int, src: SourceInfo, minHeight: Int): Int {
         val fps = min(src.fps, 30.0)
         val aspect = src.width.toDouble() / src.height
         val ladder = listOf(1080, 720, 480, 360, 240)
-        val candidates = if (src.height <= 1080) {
+        val base = if (src.height <= 1080) {
             listOf(src.height) + ladder.filter { it < src.height }
         } else ladder
+        val candidates = base.filter { it >= minHeight }.toMutableList()
+        if (minHeight > 0 && (candidates.isEmpty() || candidates.last() > minHeight)) {
+            candidates.add(minHeight)
+        }
         for (h in candidates) {
             val w = h * aspect
             val bpp = vKbps * 1000.0 / (w * h * fps)
@@ -162,6 +231,8 @@ object Converter {
             var budgetBytes = settings.limitBytes * INITIAL_TARGET
             var lastHeight = 0
             var lastKbps = 0
+            val hasMin = settings.minWidth > 0 || settings.minHeight > 0
+            val minHeight = minHeightFor(src, settings.minWidth, settings.minHeight)
 
             for (attempt in 1..MAX_ATTEMPTS) {
                 val totalKbps = budgetBytes * 8.0 / duration / 1000.0
@@ -172,13 +243,22 @@ object Converter {
                             if (audioOn) " with audio. Try removing audio." else "."
                     )
                 }
-                val height = chooseHeight(vKbps, src)
+                val height = chooseHeight(vKbps, src, minHeight)
                 lastHeight = height
                 lastKbps = vKbps
 
                 val filters = buildList {
                     if (src.fps > 30.5) add("fps=30")
-                    if (height < src.height || src.height > 1080) add("scale=-2:$height")
+                    if (hasMin) {
+                        // Evaluated by ffmpeg on the (auto-rotated) frame: aspect kept, even
+                        // sizes, and never below the board's minimum width/height.
+                        add(
+                            "scale=w='2*ceil(oh*a/2)':" +
+                                "h='2*ceil(max($height,max(${settings.minHeight},${settings.minWidth}/a))/2)'"
+                        )
+                    } else if (height < src.height || src.height > 1080) {
+                        add("scale=-2:$height")
+                    }
                 }.joinToString(",").ifEmpty { "null" }
 
                 val common = listOf(
