@@ -32,6 +32,8 @@ data class Settings(
     val keepAudio: Boolean,
     val minWidth: Int = 0,
     val minHeight: Int = 0,
+    /** false = Quality (libvpx -cpu-used 2), true = Speed (-cpu-used 4). */
+    val fastEncode: Boolean = false,
 )
 
 /**
@@ -236,6 +238,9 @@ object Converter {
             var lastKbps = 0
             val hasMin = settings.minWidth > 0 || settings.minHeight > 0
             val minHeight = minHeightFor(src, settings.minWidth, settings.minHeight)
+            // Encoder effort, not CPU cores: higher = faster but slightly lower quality at the
+            // same bitrate. The same value is used for both passes.
+            val cpuUsed = if (settings.fastEncode) "4" else "2"
 
             for (attempt in 1..MAX_ATTEMPTS) {
                 val totalKbps = budgetBytes * 8.0 / duration / 1000.0
@@ -269,8 +274,8 @@ object Converter {
                     "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
                     "-vf", filters,
                     "-c:v", "libvpx", "-b:v", "${vKbps}k",
-                    "-deadline", "good", "-cpu-used", "2",
-                    "-auto-alt-ref", "1", "-lag-in-frames", "25",
+                    "-deadline", "good", "-cpu-used", cpuUsed,
+                    "-lag-in-frames", "25",
                     "-passlogfile", passLog,
                 )
 
@@ -290,6 +295,7 @@ object Converter {
                         if (audioOn) " + $audioKbps kbps audio" else ", no audio"
                 )
                 onLog("   filters: $filters")
+                onLog("   encoder effort: ${if (settings.fastEncode) "Speed" else "Quality"} (cpu-used $cpuUsed)")
                 onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
                 FFmpegKitConfig.enableStatisticsCallback { }
                 onProgress(-1f, "Attempt $attempt/$MAX_ATTEMPTS, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
