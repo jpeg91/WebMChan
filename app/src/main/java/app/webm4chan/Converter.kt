@@ -189,8 +189,10 @@ object Converter {
         uri: Uri,
         src: SourceInfo,
         settings: Settings,
-        onProgress: (fraction: Float, status: String) -> Unit,
+        onLog: (line: String) -> Unit,
+        onProgress: (fraction: Float, status: String) -> Unit, // fraction < 0 = indeterminate
     ): ConvertResult = withContext(Dispatchers.IO) {
+        onLog("Copying video to app cache…")
         val inputFile = File.createTempFile(
             "webmchan-input-",
             ".video",
@@ -220,6 +222,7 @@ object Converter {
 
         val input = inputFile.absolutePath
 
+        FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
         try {
             val duration = min(src.durationSec, settings.maxDurationSec.toDouble())
             val trimmed = src.durationSec > settings.maxDurationSec
@@ -271,18 +274,25 @@ object Converter {
                     "-passlogfile", passLog,
                 )
 
-                fun stats(pass: Int) {
+                // Pass 2 only: libvpx's analysis pass (pass 1) reports no frames or time.
+                fun pass2Stats() {
                     FFmpegKitConfig.enableStatisticsCallback { st ->
                         val frac = (st.time.toDouble() / 1000.0 / duration).coerceIn(0.0, 1.0)
-                        val overall = ((pass - 1) + frac) / 2.0
                         onProgress(
-                            overall.toFloat(),
-                            "Attempt $attempt/$MAX_ATTEMPTS, pass $pass/2 (${height}p, ${vKbps} kbps)"
+                            frac.toFloat(),
+                            "Attempt $attempt/$MAX_ATTEMPTS, pass 2/2: encoding (${height}p, ${vKbps} kbps)"
                         )
                     }
                 }
 
-                stats(1)
+                onLog(
+                    "== Attempt $attempt/$MAX_ATTEMPTS: ${height}p, $vKbps kbps video" +
+                        if (audioOn) " + $audioKbps kbps audio" else ", no audio"
+                )
+                onLog("   filters: $filters")
+                onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
+                FFmpegKitConfig.enableStatisticsCallback { }
+                onProgress(-1f, "Attempt $attempt/$MAX_ATTEMPTS, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
                 val p1 = FFmpegKit.executeWithArguments(
                     (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
                 )
@@ -291,7 +301,9 @@ object Converter {
                     return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
                 }
 
-                stats(2)
+                onLog("-- pass 2/2: encoding")
+                onProgress(0f, "Attempt $attempt/$MAX_ATTEMPTS, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
+                pass2Stats()
                 val audioArgs = if (audioOn) {
                     listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", "2")
                 } else listOf("-an")
@@ -304,6 +316,7 @@ object Converter {
                 }
 
                 val size = out.length()
+                onLog("== Attempt $attempt result: $size bytes (limit ${settings.limitBytes})")
                 if (size in 1..settings.limitBytes) {
                     onProgress(1f, "Done")
                     cleanupLogs(ctx)
@@ -312,12 +325,16 @@ object Converter {
                     )
                 }
                 // Too big: shrink the budget proportionally and retry.
+                onLog("   over the limit, retrying with a smaller bitrate")
                 budgetBytes *= (settings.limitBytes * 0.97) / size.toDouble()
             }
             cleanupLogs(ctx)
             ConvertResult.Fail("Couldn't get under the size limit after $MAX_ATTEMPTS attempts.")
         } finally {
             inputFile.delete()
+            // Detach so later ffprobe/ffmpeg calls don't write into a finished run's log.
+            FFmpegKitConfig.enableLogCallback { }
+            FFmpegKitConfig.enableStatisticsCallback { }
         }
     }
 
