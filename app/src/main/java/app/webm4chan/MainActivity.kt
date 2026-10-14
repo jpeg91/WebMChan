@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,11 +21,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -41,6 +42,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -72,7 +74,27 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val presets = listOf("4 MB" to 4096, "6 MB (/wsg/)" to 6144, "Custom" to -1)
+@Composable
+private fun TargetRow(
+    selected: Boolean,
+    enabled: Boolean,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick),
+        verticalAlignment = Alignment.Top,
+    ) {
+        RadioButton(selected = selected, onClick = null, enabled = enabled)
+        Column(Modifier.padding(start = 8.dp, top = 2.dp, bottom = 6.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
 
 @Composable
 fun App() {
@@ -85,7 +107,8 @@ fun App() {
     var info by remember { mutableStateOf<SourceInfo?>(null) }
     var probeError by remember { mutableStateOf<String?>(null) }
 
-    var presetIdx by remember { mutableIntStateOf(0) }
+    // Index into TARGETS; TARGETS.size means "Custom".
+    var targetIdx by remember { mutableIntStateOf(0) }
     var customMb by remember { mutableStateOf("4") }
     var removeAudio by remember { mutableStateOf(true) }
 
@@ -114,8 +137,14 @@ fun App() {
         }
     }
 
-    val limitKb: Int = if (presets[presetIdx].second > 0) presets[presetIdx].second
-    else ((customMb.toDoubleOrNull() ?: 0.0) * 1024).toInt()
+    val target: Target? = TARGETS.getOrNull(targetIdx)
+    val isCustom = target == null
+    val limitKb: Int = target?.limitKb ?: ((customMb.toDoubleOrNull() ?: 0.0) * 1024).toInt()
+    val maxDuration: Int = target?.maxDurationSec ?: Converter.DEFAULT_MAX_DURATION_SEC
+    val minW: Int = target?.minWidth ?: 0
+    val minH: Int = target?.minHeight ?: 0
+    val audioAllowed: Boolean = target?.audioAllowed ?: true
+    val effectiveRemoveAudio = removeAudio || !audioAllowed
 
     Column(
         Modifier
@@ -139,9 +168,15 @@ fun App() {
                 else -> {
                     val len = String.format(Locale.US, "%.1f", i.durationSec)
                     Text("${i.width}×${i.height}, ${len}s, ${if (i.hasAudio) "has audio" else "no audio"}")
-                    if (i.durationSec > Converter.DEFAULT_MAX_DURATION_SEC) {
+                    if (i.durationSec > maxDuration) {
                         Text(
-                            "Longer than ${Converter.DEFAULT_MAX_DURATION_SEC}s: it will be cut to the first ${Converter.DEFAULT_MAX_DURATION_SEC}s.",
+                            "Longer than ${maxDuration}s: it will be cut to the first ${maxDuration}s.",
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                    if ((minW > 0 || minH > 0) && (i.width < minW || i.height < minH)) {
+                        Text(
+                            "Below this target's minimum (${minW}×${minH}): it will be scaled up, keeping its aspect ratio.",
                             color = MaterialTheme.colorScheme.tertiary
                         )
                     }
@@ -149,13 +184,22 @@ fun App() {
             }
         }
 
-        Text("Size limit", style = MaterialTheme.typography.titleSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            presets.forEachIndexed { idx, (label, _) ->
-                FilterChip(selected = presetIdx == idx, onClick = { presetIdx = idx }, label = { Text(label) }, enabled = !busy)
-            }
+        Text("Target boards", style = MaterialTheme.typography.titleSmall)
+        TARGETS.forEachIndexed { idx, t ->
+            TargetRow(
+                selected = targetIdx == idx,
+                enabled = !busy,
+                title = t.title,
+                subtitle = t.boardsLabel,
+            ) { targetIdx = idx }
         }
-        if (presets[presetIdx].second < 0) {
+        TargetRow(
+            selected = isCustom,
+            enabled = !busy,
+            title = "Custom",
+            subtitle = "Your own size limit, no minimum resolution",
+        ) { targetIdx = TARGETS.size }
+        if (isCustom) {
             OutlinedTextField(
                 value = customMb,
                 onValueChange = { customMb = it },
@@ -170,12 +214,19 @@ fun App() {
             Column(Modifier.weight(1f)) {
                 Text("Remove audio", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    if (removeAudio) "Output has no sound; the space goes to video quality."
-                    else "Keeps sound (about 64 kbps). Only /wsg/ and /gif/ accept audio.",
+                    when {
+                        !audioAllowed -> "This target doesn't allow audio; the space goes to video quality."
+                        removeAudio -> "Output has no sound; the space goes to video quality."
+                        else -> "Keeps sound (about 64 kbps). Only targets marked \"Audio OK\" accept it."
+                    },
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            Switch(checked = removeAudio, onCheckedChange = { removeAudio = it }, enabled = !busy)
+            Switch(
+                checked = effectiveRemoveAudio,
+                onCheckedChange = { removeAudio = it },
+                enabled = !busy && audioAllowed,
+            )
         }
 
         val canGo = uri != null && info != null && limitKb >= 256 && !busy
@@ -191,7 +242,7 @@ fun App() {
                 job = scope.launch {
                     val res = Converter.convert(
                         ctx, u, i,
-                        Settings(limitKb * 1024L, Converter.DEFAULT_MAX_DURATION_SEC, !removeAudio),
+                        Settings(limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH),
                     ) { p, s -> progress = p; status = s }
 
                     when (res) {
@@ -205,7 +256,7 @@ fun App() {
                             resultMessage = buildString {
                                 append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
                                 append(if (saved != null) "Saved to Downloads/WebM4chan/$base.webm" else "Couldn't save to Downloads.")
-                                if (res.trimmed) append("\nCut to ${Converter.DEFAULT_MAX_DURATION_SEC}s.")
+                                if (res.trimmed) append("\nCut to ${maxDuration}s.")
                                 if (res.audioDropped) append("\nSource had no audio.")
                             }
                         }
