@@ -34,3 +34,15 @@ Output is saved to `Downloads/WebM4chan/` and can be shared straight from the ap
 - Keep the app open while converting (screen stays on). There's no background service.
 - Phone-based VP8 2-pass is slow: expect a few minutes for a long 1080p clip.
 - Videos filmed in portrait with rotation metadata may pick a slightly conservative resolution.
+
+## Features still to add
+
+VP9
+Batch mode
+Split videos over target time length
+UI Improvements
+Better progress bar
+Bug Reporting
+Update handling
+Naming and save folder conventions & settings
+About App info page
