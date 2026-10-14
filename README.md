@@ -8,16 +8,17 @@ Output is saved to `Download/WebM4chan/` and can be shared straight from the app
 
 ## What it does
 
+- Board Limitations targets - Pick from a list of boards to target during conversion (eg: /gif/ @ 4MB - No Minimum Resolution - Max 400 Seconds - Audio OK)
 - Video: VP8 (libvpx), 2-pass, bitrate computed from the size limit and clip length
 - Audio: optional. Off by default ("Remove audio"), which gives all the space to video.
   When on: Vorbis at 64 kbps.
 - Picks the largest resolution (up to 1080p) that still gets a reasonable bitrate,
-  and caps frame rate at 30 fps
+  aAMDnd caps frame rate at 30 fps
 - Targets ~95% of the limit, then checks the real file size and retries with a
   smaller budget (up to 4 attempts) if it came out over
 - Upscales Video to meet a chosen boards minimum resolution whilst maintaining aspect ratio
-- Clips longer than 300 s are cut to the first 300 s (Splitting to be implemented later)
-- Board Limitations targets - Pick from a list of boards to target during conversion (eg: /gif/ @ 4MB - No Minimum Resolution - Max 400 Seconds - Audio OK)
+- Clips longer than the board limit are cut to the limit (Splitting to be implemented later)
+
 
 ## Build
 
@@ -26,7 +27,6 @@ Output is saved to `Download/WebM4chan/` and can be shared straight from the app
    because the FFmpeg fork only publishes arm64-v8a binaries.
 3. Build > Build APK(s) if you want to sideload it.
 
-## Things to verify
 
 - **FFmpeg dependency.** `app/build.gradle.kts` uses `dev.ffmpegkit-maintained:ffmpeg:7.1.6`,
   a community continuation of the retired FFmpegKit. If Gradle can't resolve it,
