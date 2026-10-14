@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,7 +18,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -35,6 +39,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -44,10 +49,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -71,6 +80,35 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) { App() }
             }
         }
+    }
+}
+
+/**
+ * Thread-safe, size-capped log. ffmpeg's repeating "frame=..." status line updates in place
+ * instead of flooding the readout.
+ */
+private class LogBuffer(private val maxLines: Int = 400) {
+    private val lock = Any()
+    private var lines: List<String> = emptyList()
+
+    fun clear(publish: (List<String>) -> Unit) = synchronized(lock) {
+        lines = emptyList()
+        publish(lines)
+    }
+
+    fun add(raw: String, publish: (List<String>) -> Unit) = synchronized(lock) {
+        var next = lines
+        for (piece in raw.split('\n', '\r')) {
+            val line = piece.trim()
+            if (line.isEmpty()) continue
+            next = if (line.startsWith("frame=") && next.lastOrNull()?.startsWith("frame=") == true) {
+                next.dropLast(1) + line
+            } else {
+                next + line
+            }
+        }
+        lines = if (next.size > maxLines) next.takeLast(maxLines) else next
+        publish(lines)
     }
 }
 
@@ -118,6 +156,16 @@ fun App() {
     var resultMessage by remember { mutableStateOf<String?>(null) }
     var savedUri by remember { mutableStateOf<Uri?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
+
+    val logBuffer = remember { LogBuffer() }
+    var logLines by remember { mutableStateOf<List<String>>(emptyList()) }
+    val logListState = rememberLazyListState()
+    val clipboard = LocalClipboardManager.current
+
+    // Keep the newest line in view.
+    LaunchedEffect(logLines) {
+        if (logLines.isNotEmpty()) logListState.scrollToItem(logLines.lastIndex)
+    }
 
     view.keepScreenOn = busy
 
@@ -237,12 +285,14 @@ fun App() {
                 resultMessage = null
                 savedUri = null
                 busy = true
-                progress = 0f
+                progress = -1f // indeterminate until pass 2 reports real progress
                 status = "Starting…"
+                logBuffer.clear { logLines = it }
                 job = scope.launch {
                     val res = Converter.convert(
                         ctx, u, i,
                         Settings(limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH),
+                        onLog = { line -> logBuffer.add(line) { logLines = it } },
                     ) { p, s -> progress = p; status = s }
 
                     when (res) {
@@ -271,12 +321,42 @@ fun App() {
         ) { Text("Convert") }
 
         if (busy) {
-            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+            if (progress < 0f) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+            }
             Text(status, style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = { Converter.cancel(); job?.cancel() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Cancel")
             }
             Text("Keep the app open while converting.", style = MaterialTheme.typography.bodySmall)
+        }
+
+        val lines = logLines
+        if (lines.isNotEmpty()) {
+            Text("Log", style = MaterialTheme.typography.titleSmall)
+            LazyColumn(
+                state = logListState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+            ) {
+                items(lines.size) { idx ->
+                    Text(
+                        lines[idx],
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp,
+                    )
+                }
+            }
+            OutlinedButton(
+                onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Copy log") }
         }
 
         resultMessage?.let { Text(it) }
