@@ -278,7 +278,7 @@ object Converter {
        "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
        "-deadline", "good", "-cpu-used", cpuUsed,
        "-lag-in-frames", "25",
-   ) + (if (settings.useVp9) listOf("-row-mt", "1") else emptyList()) + listOf(
+) + (if (settings.useVp9) listOf("-row-mt", "1", "-pix_fmt", "yuv420p") else emptyList()) + listOf( 
        "-passlogfile", passLog,
    )
 
