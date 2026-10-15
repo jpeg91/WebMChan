@@ -150,6 +150,7 @@ fun App() {
     var customMb by remember { mutableStateOf("4") }
     var removeAudio by remember { mutableStateOf(true) }
     var fastEncode by remember { mutableStateOf(false) }
+    var useVp9 by remember { mutableStateOf(false) }
 
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
@@ -291,6 +292,19 @@ fun App() {
             title = "Speed",
             subtitle = "Faster, slightly softer detail. Same file size limit.",
         ) { fastEncode = true }
+           Text("Codec", style = MaterialTheme.typography.titleSmall)
+   TargetRow(
+       selected = !useVp9,
+       enabled = !busy,
+       title = "VP8",
+       subtitle = "Default. Fastest, accepted everywhere.",
+   ) { useVp9 = false }
+   TargetRow(
+       selected = useVp9,
+       enabled = !busy,
+       title = "VP9",
+       subtitle = "Much slower (2x) to convert. Should look better at the same file size.",
+   ) { useVp9 = true }
 
         val canGo = uri != null && info != null && limitKb >= 256 && !busy
         Button(
@@ -309,6 +323,7 @@ fun App() {
                         Settings(
                             limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
                             fastEncode = fastEncode,
+                            useVp9 = useVp9,
                         ),
                         onLog = { line -> logBuffer.add(line) { logLines = it } },
                     ) { p, s -> progress = p; status = s }
