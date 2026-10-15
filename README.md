@@ -42,7 +42,7 @@ Taken from 4chan's board list (`boards.json`), 77 boards in 8 groups:
 | 4 MB | none | 300 s | yes | `/gif/` |
 | 6 MB | none | 400 s | yes | `/wsg/` |
 
-The rules are a snapshot from October 2026 and are built into the app (the `TARGETS` list in `Converter.kt`). If 4chan changes a board's limits, update that list, or use Custom in the meantime.
+The rules are a snapshot from October 2026 and are built into the app (the `TARGETS` list in `Converter.kt`). If 4chan changes a board's limits, update that list, or use Custom in the meantime. Please report any found changes to 4chan's board limits in the 'Issues' tab here.
 
 ## Build
 
