@@ -151,6 +151,7 @@ fun App() {
     var removeAudio by remember { mutableStateOf(true) }
     var fastEncode by remember { mutableStateOf(false) }
     var useVp9 by remember { mutableStateOf(false) }
+    var fastest by remember { mutableStateOf(false) }
 
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
@@ -281,30 +282,37 @@ fun App() {
 
         Text("Encoding", style = MaterialTheme.typography.titleSmall)
         TargetRow(
-            selected = !fastEncode,
+            selected = !fastEncode && !fastest,
             enabled = !busy,
             title = "Quality",
             subtitle = "Best detail, slower.",
-        ) { fastEncode = false }
+        ) { fastEncode = false; fastest = false }
         TargetRow(
-            selected = fastEncode,
+            selected = fastEncode && !fastest,
             enabled = !busy,
             title = "Speed",
             subtitle = "Faster, slightly softer detail. Same file size limit.",
-        ) { fastEncode = true }
-           Text("Codec", style = MaterialTheme.typography.titleSmall)
-   TargetRow(
-       selected = !useVp9,
-       enabled = !busy,
-       title = "VP8",
-       subtitle = "Default. Fastest, accepted everywhere.",
-   ) { useVp9 = false }
-   TargetRow(
-       selected = useVp9,
-       enabled = !busy,
-       title = "VP9",
-       subtitle = "Much slower (2x) to convert. Should look better at the same file size.",
-   ) { useVp9 = true }
+        ) { fastEncode = true; fastest = false }
+        TargetRow(
+            selected = fastest,
+            enabled = !busy,
+            title = "Fastest",
+            subtitle = "Fastest, softest detail: lower effort and smaller frames. Still two-pass, same file size limit.",
+        ) { fastest = true }
+
+        Text("Codec", style = MaterialTheme.typography.titleSmall)
+        TargetRow(
+            selected = !useVp9,
+            enabled = !busy,
+            title = "VP8",
+            subtitle = "Default. Fastest, accepted everywhere.",
+        ) { useVp9 = false }
+        TargetRow(
+            selected = useVp9,
+            enabled = !busy,
+            title = "VP9",
+            subtitle = "Much slower to convert. May look better at the same size; some sites only accept VP8.",
+        ) { useVp9 = true }
 
         val canGo = uri != null && info != null && limitKb >= 256 && !busy
         Button(
@@ -324,6 +332,7 @@ fun App() {
                             limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
                             fastEncode = fastEncode,
                             useVp9 = useVp9,
+                            fastest = fastest,
                         ),
                         onLog = { line -> logBuffer.add(line) { logLines = it } },
                     ) { p, s -> progress = p; status = s }
