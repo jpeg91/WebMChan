@@ -34,6 +34,8 @@ data class Settings(
     val minHeight: Int = 0,
     /** false = Quality (libvpx -cpu-used 2), true = Speed (-cpu-used 4). */
     val fastEncode: Boolean = false,
+       /** false = VP8 (libvpx, default), true = VP9 (libvpx-vp9): slower, usually better detail per bit. */
+   val useVp9: Boolean = false,
 )
 
 /**
@@ -269,15 +271,16 @@ object Converter {
                     }
                 }.joinToString(",").ifEmpty { "null" }
 
-                val common = listOf(
-                    "-y", "-i", input, "-t", "%.3f".format(java.util.Locale.US, duration),
-                    "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
-                    "-vf", filters,
-                    "-c:v", "libvpx", "-b:v", "${vKbps}k",
-                    "-deadline", "good", "-cpu-used", cpuUsed,
-                    "-lag-in-frames", "25",
-                    "-passlogfile", passLog,
-                )
+            val common = listOf(
+       "-y", "-i", input, "-t", "%.3f".format(java.util.Locale.US, duration),
+       "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
+       "-vf", filters,
+       "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
+       "-deadline", "good", "-cpu-used", cpuUsed,
+       "-lag-in-frames", "25",
+   ) + (if (settings.useVp9) listOf("-row-mt", "1") else emptyList()) + listOf(
+       "-passlogfile", passLog,
+   )
 
                 // Pass 2 only: libvpx's analysis pass (pass 1) reports no frames or time.
                 fun pass2Stats() {
@@ -295,6 +298,7 @@ object Converter {
                         if (audioOn) " + $audioKbps kbps audio" else ", no audio"
                 )
                 onLog("   filters: $filters")
+                onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
                 onLog("   encoder effort: ${if (settings.fastEncode) "Speed" else "Quality"} (cpu-used $cpuUsed)")
                 onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
                 FFmpegKitConfig.enableStatisticsCallback { }
