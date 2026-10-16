@@ -14,6 +14,8 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 
 > **Status:** early version. It works very well as 'bare bones'. Install as you would any `.apk`.
 
+**[Download the Latest Release](https://github.com/jpeg91/WebMChan/releases/latest)**
+
 ## What it does
 
 - **Board targets.** Pick the board(s) you're posting to and the app applies that board's WebM rules: file size, maximum length, minimum resolution and whether audio is allowed. Boards with identical rules are grouped, and each option shows its limits and the boards it covers (e.g. `4 MB · Min 500×500 · 120 s` for `/hc/ /s/`). There's also a Custom option with your own size limit.
