@@ -34,6 +34,10 @@ data class Settings(
     val minHeight: Int = 0,
     /** false = Quality (libvpx -cpu-used 2), true = Speed (-cpu-used 4). */
     val fastEncode: Boolean = false,
+    /** false = VP8 (libvpx, default), true = VP9 (libvpx-vp9): slower, usually better detail per bit. */
+    val useVp9: Boolean = false,
+    /** Fastest: still two-pass, but the highest effort setting, short look-ahead and smaller frames. Overrides [fastEncode]. */
+    val fastest: Boolean = false,
 )
 
 /**
@@ -108,6 +112,11 @@ object Converter {
     private const val INITIAL_TARGET = 0.95
     private const val MAX_ATTEMPTS = 4
 
+    // Minimum bits-per-pixel before a frame size is accepted; Fastest uses a higher value,
+    // which picks smaller frames (fewer pixels to encode).
+    private const val NORMAL_BPP = 0.06
+    private const val FASTEST_BPP = 0.12
+
     fun cancel() {
         FFmpegKit.cancel()
     }
@@ -167,7 +176,7 @@ object Converter {
      * Biggest height (<=1080, <= source) that still gets a decent bits-per-pixel for VP8,
      * never below [minHeight]. A source smaller than the minimum is scaled up to it.
      */
-    private fun chooseHeight(vKbps: Int, src: SourceInfo, minHeight: Int): Int {
+    private fun chooseHeight(vKbps: Int, src: SourceInfo, minHeight: Int, minBpp: Double): Int {
         val fps = min(src.fps, 30.0)
         val aspect = src.width.toDouble() / src.height
         val ladder = listOf(1080, 720, 480, 360, 240)
@@ -181,7 +190,7 @@ object Converter {
         for (h in candidates) {
             val w = h * aspect
             val bpp = vKbps * 1000.0 / (w * h * fps)
-            if (bpp >= 0.06) return h / 2 * 2
+            if (bpp >= minBpp) return h / 2 * 2
         }
         return candidates.last() / 2 * 2
     }
@@ -240,7 +249,9 @@ object Converter {
             val minHeight = minHeightFor(src, settings.minWidth, settings.minHeight)
             // Encoder effort, not CPU cores: higher = faster but slightly lower quality at the
             // same bitrate. The same value is used for both passes.
-            val cpuUsed = if (settings.fastEncode) "4" else "2"
+            val cpuUsed = if (settings.fastest) "5" else if (settings.fastEncode) "4" else "2"
+            val lagFrames = if (settings.fastest) "8" else "25"
+            val effortName = if (settings.fastest) "Fastest" else if (settings.fastEncode) "Speed" else "Quality"
 
             for (attempt in 1..MAX_ATTEMPTS) {
                 val totalKbps = budgetBytes * 8.0 / duration / 1000.0
@@ -251,7 +262,7 @@ object Converter {
                             if (audioOn) " with audio. Try removing audio." else "."
                     )
                 }
-                val height = chooseHeight(vKbps, src, minHeight)
+                val height = chooseHeight(vKbps, src, minHeight, if (settings.fastest) FASTEST_BPP else NORMAL_BPP)
                 lastHeight = height
                 lastKbps = vKbps
 
@@ -273,9 +284,14 @@ object Converter {
                     "-y", "-i", input, "-t", "%.3f".format(java.util.Locale.US, duration),
                     "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
                     "-vf", filters,
-                    "-c:v", "libvpx", "-b:v", "${vKbps}k",
+                    "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
                     "-deadline", "good", "-cpu-used", cpuUsed,
-                    "-lag-in-frames", "25",
+                    "-lag-in-frames", lagFrames,
+                ) + (if (settings.useVp9) {
+                    
+                    listOf("-row-mt", "1", "-pix_fmt", "yuv420p", "-colorspace", "unknown") +
+                        (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
+                } else emptyList()) + listOf(
                     "-passlogfile", passLog,
                 )
 
@@ -295,7 +311,8 @@ object Converter {
                         if (audioOn) " + $audioKbps kbps audio" else ", no audio"
                 )
                 onLog("   filters: $filters")
-                onLog("   encoder effort: ${if (settings.fastEncode) "Speed" else "Quality"} (cpu-used $cpuUsed)")
+                onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
+                onLog("   encoder effort: $effortName (cpu-used $cpuUsed)")
                 onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
                 FFmpegKitConfig.enableStatisticsCallback { }
                 onProgress(-1f, "Attempt $attempt/$MAX_ATTEMPTS, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
