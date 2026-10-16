@@ -28,7 +28,8 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 - **Progress.** The first pass only analyses the video and ffmpeg reports no progress during it, so the bar animates until the second pass starts (Update: currently broken, but if it says 'analysing' it's working), then shows real progress during the second pass.
 - **Output.** Files are saved to `Download/WebM4chan/` and can be shared straight from the app.
 
-## How it works
+<details>
+  <summary>## How it works</summary>
 
 The app is a front end for FFmpeg (the community `ffmpegkit-maintained` build). Nothing leaves the device.
 
@@ -116,13 +117,18 @@ Taken from 4chan's board list (`boards.json`), 77 boards in 8 groups:
 
 The rules are a snapshot from October 2026 and are built into the app (the `TARGETS` list in `Converter.kt`). If 4chan changes a board's limits, update that list, or use Custom in the meantime. Please report any found changes to 4chan's board limits in the 'Issues' tab here.
 
-## Build
+</details>
+
+<details>
+  <summary>## Build</summary>
 
 1. Open this folder in Android Studio (Ladybug or newer). It will create the Gradle wrapper and sync.
 2. Run on a physical arm64 device (Android 10+). Emulators won't work, because the FFmpeg fork only publishes arm64-v8a binaries.
 3. Build > Build APK(s) if you want to sideload it.
 
 **FFmpeg dependency.** `app/build.gradle.kts` uses `dev.ffmpegkit-maintained:ffmpeg:7.1.6`, a community continuation of the retired FFmpegKit. If Gradle can't resolve it, check https://github.com/ffmpegkit-maintained/ffmpeg for the current coordinate. The app needs libvpx (VP8 and VP9) and libvorbis in whichever build you pick.
+
+</details>
 
 ## Known limits
 
