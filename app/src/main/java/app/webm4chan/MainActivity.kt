@@ -1,4 +1,4 @@
-package app.webm4chan
+package app.webmchan
 
 import android.content.Intent
 import android.net.Uri
@@ -204,7 +204,7 @@ fun App() {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("WebM converter for 4chan", style = MaterialTheme.typography.headlineMedium)
+        Text("WebMChan 4chan WebM converter", style = MaterialTheme.typography.headlineMedium)
 
         Button(onClick = { picker.launch(arrayOf("video/*")) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             Text(if (uri == null) "Choose video" else "Choose another video")
