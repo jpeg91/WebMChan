@@ -288,7 +288,8 @@ object Converter {
                     "-deadline", "good", "-cpu-used", cpuUsed,
                     "-lag-in-frames", lagFrames,
                 ) + (if (settings.useVp9) {
-                    listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +
+                    
+                    listOf("-row-mt", "1", "-pix_fmt", "yuv420p", "-colorspace", "unknown") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
                 } else emptyList()) + listOf(
                     "-passlogfile", passLog,
