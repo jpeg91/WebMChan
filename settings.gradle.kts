@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "WebM4chan"
+rootProject.name = "WebMChan"
 include(":app")
