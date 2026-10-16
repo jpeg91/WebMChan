@@ -204,7 +204,7 @@ fun App() {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("WebMChan 4chan WebM converter", style = MaterialTheme.typography.headlineMedium)
+        Text("WebMChan - 4chan WebM converter", style = MaterialTheme.typography.headlineMedium)
 
         Button(onClick = { picker.launch(arrayOf("video/*")) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             Text(if (uri == null) "Choose video" else "Choose another video")
@@ -285,19 +285,19 @@ fun App() {
             selected = !fastEncode && !fastest,
             enabled = !busy,
             title = "Quality",
-            subtitle = "Best detail, slowest transcode.",
+            subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
         ) { fastEncode = false; fastest = false }
         TargetRow(
             selected = fastEncode && !fastest,
             enabled = !busy,
             title = "Speed",
-            subtitle = "Faster, slightly softer detail. Same file size limit.",
+            subtitle = "Faster than Quality mode, only slightly softer detail.",
         ) { fastEncode = true; fastest = false }
         TargetRow(
             selected = fastest,
             enabled = !busy,
             title = "Fastest",
-            subtitle = "Fastest, softest detail: lower effort transcoding and smaller frames. Same file size limit.",
+            subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
         ) { fastest = true }
 
         Text("Codec", style = MaterialTheme.typography.titleSmall)
@@ -305,7 +305,7 @@ fun App() {
             selected = !useVp9,
             enabled = !busy,
             title = "VP8",
-            subtitle = "Recommended default. Fastest, accepted everywhere.",
+            subtitle = "Recommended default. Fastest. It just works.",
         ) { useVp9 = false }
         TargetRow(
             selected = useVp9,
@@ -372,7 +372,7 @@ fun App() {
             OutlinedButton(onClick = { Converter.cancel(); job?.cancel() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Cancel")
             }
-            Text("Keep the app open while converting.", style = MaterialTheme.typography.bodySmall)
+            Text("Keep the app open while converting. Screen will not sleep until encoding is finished.", style = MaterialTheme.typography.bodySmall)
         }
 
         val lines = logLines
