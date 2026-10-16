@@ -29,7 +29,7 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 - **Output.** Files are saved to `Download/WebM4chan/` and can be shared straight from the app.
 
 <details>
-  <summary>## How it works</summary>
+  <summary><b>How it works</b></summary>
 
 The app is a front end for FFmpeg (the community `ffmpegkit-maintained` build). Nothing leaves the device.
 
@@ -120,7 +120,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 </details>
 
 <details>
-  <summary>## Build</summary>
+  <summary><b>Build</b></summary>
 
 1. Open this folder in Android Studio (Ladybug or newer). It will create the Gradle wrapper and sync.
 2. Run on a physical arm64 device (Android 10+). Emulators won't work, because the FFmpeg fork only publishes arm64-v8a binaries.
