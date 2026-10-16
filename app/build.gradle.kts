@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "app.webm4chan"
+    namespace = "app.webmchan"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "app.webm4chan"
+        applicationId = "app.webmchan"
         minSdk = 29
         targetSdk = 35
         versionCode = 1
