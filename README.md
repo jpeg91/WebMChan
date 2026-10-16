@@ -18,7 +18,7 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 
 - **Board targets.** Pick the board(s) you're posting to and the app applies that board's WebM rules: file size, maximum length, minimum resolution and whether audio is allowed. Boards with identical rules are grouped, and each option shows its limits and the boards it covers (e.g. `4 MB · Min 500×500 · 120 s` for `/hc/ /s/`). There's also a Custom option with your own size limit.
 - **Quality, Speed or Fastest.** Quality mode is the default and gives the best detail. Speed mode encodes noticeably faster at a small cost in very fine detail. Fastest mode is faster again: it uses a lower encoder effort and picks smaller frame sizes, so it looks a lot softer compared with Quality or Speed mode. All three stay just under the size limit.
-- **VP8 or VP9.** VP8 is the default and the recommended choice. VP9 is an optional newer codec. It is much slower to convert and not every device or site handles it, so only use it if you know you want it.
+- **VP8 or VP9.** VP8 is the default and the recommended choice. VP9 is an optional newer codec. It is much slower to convert and not every device handles it, so only use it if you know you want it.
 - **Maximum quality inside the limit.** Output is 2-pass, with the bitrate calculated from the size limit and the clip length. The app aims for about 95% of the limit, checks the real file size, and retries with a smaller budget (up to 4 attempts) if the result came out over. It very rarely misses on the first try.
 - **Resolution and frame rate.** It picks the largest resolution (up to 1080p) that still gets a reasonable bitrate and caps the frame rate at 30 fps.
 - **Minimum resolution.** If your video is below a board's minimum, it's scaled up to meet it, keeping the aspect ratio, and still encoded to the file size limit.
@@ -30,7 +30,7 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 
 ## How it works
 
-The app is a front end for FFmpeg (the community `ffmpegkit-maintained` build, running on your phone). Nothing leaves the device. Here is what happens between tapping **Convert** and getting a file.
+The app is a front end for FFmpeg (the community `ffmpegkit-maintained` build). Nothing leaves the device.
 
 ### 1. Reading the video
 
@@ -49,7 +49,7 @@ A WebM's size is roughly its bitrate multiplied by its length, so the app works 
 3. If audio is being kept, 64 kbps is taken off for it. The rest is the **video bitrate.**
 4. If the video bitrate would be under 40 kbps, the app stops and tells you the clip is too long for this limit. Removing audio gives the video more room.
 
-Removing audio is why "Remove audio" improves quality: all of that bitrate goes to the picture.
+Removing audio improves quality: all of that bitrate goes to the picture.
 
 ### 4. Choosing the frame size
 
@@ -61,7 +61,7 @@ If the source is below the board's minimum, it's scaled **up**. The scaling keep
 
 The video is encoded twice:
 
-- **Pass 1** is analysis only. The encoder watches the whole clip and records where the hard-to-compress scenes are. No file is produced, and FFmpeg reports no progress, which is why the bar animates.
+- **Pass 1** is analysis only. The encoder watches the whole clip and records where the hard-to-compress scenes are. No file is produced, and FFmpeg reports no progress during this pass.
 - **Pass 2** is the real encode. Using what pass 1 learned, it spreads the bitrate across the clip, spending more on busy scenes and less on simple ones. The result is more consistent quality and a file much closer to the target size than a single pass would give.
 
 The encoder settings depend on what you chose:
@@ -76,8 +76,8 @@ The encoder settings depend on what you chose:
 
 When VP9 is selected, a few extra settings apply:
 - **Multithreading.** Row-based multithreading is turned on, and Fastest adds tile columns so more cores can work at once.
-- **Plain 8-bit colour.** The video is forced to standard 8-bit colour. Many phone clips are 10-bit or HDR, and VP9 would otherwise keep that, producing a file most players and galleries can't decode.
-- **Colour-space flag.** The colour-space flag is set to "unspecified". Some downloaded clips are tagged as RGB, and VP9 would copy that tag into a format where it's invalid, which made players show green garbage.
+- **Plain 8-bit colour.** The video is forced to standard 8-bit colour so that most players and can decode it.
+- **Colour-space flag.** The colour-space flag is set to "unspecified". Some downloaded clips are tagged as RGB, and VP9 would copy that tag into a format where it's invalid, which made players show green garbage. This fixes it in most cases.
 
 VP8 has neither problem, because it always stores standard 8-bit colour.
 
@@ -97,7 +97,7 @@ The finished file goes to `Download/WebM4chan/` using the original file name, an
 
 ### Why VP9 is slower, and why there's no hardware encoding
 
-VP9 searches many more ways to store each frame than VP8 does, which is why it can take several times as long, especially on a phone. Phones also have hardware video encoders, but they are almost all H.264 or HEVC, which 4chan doesn't accept, and their quality at a fixed small size is worse than software encoding. So the app uses software encoding for everything.
+VP9 searches many more ways to store each frame than VP8 does, which is why it can take several times as long, especially on a phone. Phones also have hardware video encoders, but they are almost all H.264 or HEVC and their quality at a fixed small size is worse than software encoding. So the app uses software encoding for everything.
 
 ## Board targets
 
@@ -126,8 +126,8 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 ## Known limits
 
-- Keep the app open while converting (the screen stays on). There's no background service yet.
-- 2-pass encoding on a phone is slow: expect several minutes for a long clip, even more at 1080p. VP9 is slower still. Speed and Fastest help.
+- Keep the app open while converting (the screen will not sleep until conversion is complete). There's no background service yet.
+- Encoding on a phone is slow: expect several minutes for a long clip, even more at 1080p. VP9 is slower still. Speed and Fastest help.
 - VP9 isn't accepted everywhere, and some older devices can't play it. VP8 is the safe choice.
 - Boards with a high minimum resolution and a small size limit (e.g. `/hr/` at 1000×1000 in 4 MB) leave very little bitrate per pixel, so expect low quality there. That's a limit of the board's rules, not a bug.
 - Videos filmed in portrait with rotation metadata may pick a slightly conservative resolution.
@@ -140,7 +140,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Split videos over the target time length
 - UI improvements
 - Frame rate options
-- Smarter progress (pass 1 can currently only show a currently broken animated bar)
+- Smarter progress (pass 1 can currently only show a broken animated bar)
 - Custom resolution targets that maintain aspect ratio
 - Custom output time length and custom splitting options
 - Bug reporting (the Copy log button is a start). Please report any issues through github
