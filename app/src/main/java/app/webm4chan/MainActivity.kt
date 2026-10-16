@@ -347,7 +347,7 @@ fun App() {
                             val mb = String.format(Locale.US, "%.2f", res.bytes / 1048576.0)
                             resultMessage = buildString {
                                 append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
-                                append(if (saved != null) "Saved to Download/WebM4chan/$base.webm" else "Couldn't save to Downloads.")
+                                append(if (saved != null) "Saved to internal storage: Download/WebMChan/$base.webm" else "Couldn't save to Downloads.")
                                 if (res.trimmed) append("\nCut to ${maxDuration}s.")
                                 if (res.audioDropped) append("\nSource had no audio.")
                             }
