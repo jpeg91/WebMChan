@@ -59,6 +59,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -155,6 +157,11 @@ fun App() {
 
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
+    // Pass 1 has no real progress to report. Compose's built-in indeterminate bar relies on
+    // Compose's own animation system, which some phones freeze (the "Animator duration scale"
+    // developer option), leaving it static. This sweeps a value by hand instead, the same way
+    // pass 2's real progress is just pushed in as plain numbers, so it moves regardless.
+    var pass1Sweep by remember { mutableFloatStateOf(0f) }
     var status by remember { mutableStateOf("") }
     var resultMessage by remember { mutableStateOf<String?>(null) }
     var savedUri by remember { mutableStateOf<Uri?>(null) }
@@ -168,6 +175,19 @@ fun App() {
     // Keep the newest line in view.
     LaunchedEffect(logLines) {
         if (logLines.isNotEmpty()) logListState.scrollToItem(logLines.lastIndex)
+    }
+
+    // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 1.2s.
+    LaunchedEffect(progress < 0f) {
+        if (progress < 0f) {
+            var t = 0L
+            while (isActive) {
+                val phase = (t % 1200L) / 1200f
+                pass1Sweep = if (phase < 0.5f) phase * 2f else (1f - phase) * 2f
+                delay(16)
+                t += 16
+            }
+        }
     }
 
     view.keepScreenOn = busy
@@ -364,7 +384,7 @@ fun App() {
 
         if (busy) {
             if (progress < 0f) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                LinearProgressIndicator(progress = { pass1Sweep }, modifier = Modifier.fillMaxWidth())
             } else {
                 LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
             }
