@@ -96,7 +96,7 @@ After pass 2, the app measures the real file. If it's within the limit, it's don
 
 ### 8. Saving
 
-The finished file goes to `Download/WebM4chan/` using the original file name, and the **Share** button opens Android's share sheet. Temporary files (the cache copy and the pass-1 analysis file) are removed afterwards.
+The finished file goes to internal storage at `Download/WebMChan/` using the original file name, and the **Share** button opens Android's share sheet. If the file name already exists in that directory, `(1),(2),(3)... etc` is amended to the file name. Temporary files (the cache copy and the pass-1 analysis file) are removed afterwards.
 
 ### Why VP9 is slower, and why there's no hardware encoding
 
