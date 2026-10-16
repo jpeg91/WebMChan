@@ -27,8 +27,17 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 - **Audio.** "Remove audio" gives all the space to video quality. When audio is kept it's Vorbis at 64 kbps. Boards that don't allow audio lock the switch to "remove".
 - **Length limit.** Clips longer than the board's limit are cut to it (splitting is planned).
 - **Live log.** A scrolling readout of what ffmpeg is doing, with a **Copy log** button. It's handy for checking progress and for reporting errors.
-- **Progress.** The first pass only analyses the video and ffmpeg reports no progress during it, so the bar animates until the second pass starts (Update: currently broken, but if it says 'analysing' it's working), then shows real progress during the second pass.
+- **Progress.** The first pass only analyses the video and ffmpeg reports no progress during it, so the bar animates until the second pass starts, then shows real progress during the second pass.
+  > (Update: pass 1 animation currently broken, but if it says `pass 1/2: analysing` it's working)
+
 - **Output.** Files are saved to `Download/WebM4chan/` and can be shared straight from the app.
+
+<details>
+  <summary><b>Screenshot</b></summary>
+
+<img width="1080" height="5113" alt="WebMChan_Screenshot" src="https://github.com/user-attachments/assets/e90a05ba-a7e1-4d9e-9a5c-c66c57aa7559" />
+
+</details>
 
 <details>
   <summary><b>How it works</b></summary>
