@@ -204,7 +204,7 @@ fun App() {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("WebM for 4chan", style = MaterialTheme.typography.headlineMedium)
+        Text("WebM converter for 4chan", style = MaterialTheme.typography.headlineMedium)
 
         Button(onClick = { picker.launch(arrayOf("video/*")) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             Text(if (uri == null) "Choose video" else "Choose another video")
@@ -285,7 +285,7 @@ fun App() {
             selected = !fastEncode && !fastest,
             enabled = !busy,
             title = "Quality",
-            subtitle = "Best detail, slower.",
+            subtitle = "Best detail, slowest transcode.",
         ) { fastEncode = false; fastest = false }
         TargetRow(
             selected = fastEncode && !fastest,
@@ -297,7 +297,7 @@ fun App() {
             selected = fastest,
             enabled = !busy,
             title = "Fastest",
-            subtitle = "Fastest, softest detail: lower effort and smaller frames. Still two-pass, same file size limit.",
+            subtitle = "Fastest, softest detail: lower effort transcoding and smaller frames. Same file size limit.",
         ) { fastest = true }
 
         Text("Codec", style = MaterialTheme.typography.titleSmall)
@@ -305,13 +305,13 @@ fun App() {
             selected = !useVp9,
             enabled = !busy,
             title = "VP8",
-            subtitle = "Default. Fastest, accepted everywhere.",
+            subtitle = "Recommended default. Fastest, accepted everywhere.",
         ) { useVp9 = false }
         TargetRow(
             selected = useVp9,
             enabled = !busy,
             title = "VP9",
-            subtitle = "Much slower to convert. May look better at the same size; some sites only accept VP8.",
+            subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
         ) { useVp9 = true }
 
         val canGo = uri != null && info != null && limitKb >= 256 && !busy
