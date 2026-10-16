@@ -8,7 +8,7 @@ Select from a list of boards and their requirement presets (or set your own).
 
 Converted videos target the highest possible quality within the board's constraints.
 
-Output is saved to `Download/WebM4chan/` and can be shared straight from the app.
+Output is saved to `Download/WebMChan/` and can be shared straight from the app.
 
 Everything runs locally. The app has no network permission, nothing is uploaded.
 
