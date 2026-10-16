@@ -1,4 +1,4 @@
-package app.webm4chan
+package app.webmchan
 
 import android.content.ContentValues
 import android.content.Context
@@ -367,13 +367,13 @@ object Converter {
         ctx.cacheDir.listFiles()?.filter { it.name.startsWith("ffpass") }?.forEach { it.delete() }
     }
 
-    /** Copies the result into Downloads/WebM4chan and returns its content Uri. */
+    /** Copies the result into Downloads/WebMChan and returns its content Uri. */
     fun saveToDownloads(ctx: Context, file: File, name: String): Uri? {
         val resolver = ctx.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
             put(MediaStore.Downloads.MIME_TYPE, "video/webm")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/WebM4chan")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/WebMChan")
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
