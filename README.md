@@ -30,7 +30,7 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 - **Progress.** The first pass only analyses the video and ffmpeg reports no progress during it, so the bar animates until the second pass starts, then shows real progress during the second pass.
   > (Update: pass 1 animation currently broken, but if it says `pass 1/2: analysing` it's working)
 
-- **Output.** Files are saved to `Download/WebM4chan/` and can be shared straight from the app.
+- **Output.** Files are saved to internal storage `Download/WebMChan/` and can be shared straight from the app.
 
 <details>
   <summary><b>Screenshot</b></summary>
