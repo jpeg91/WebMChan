@@ -95,6 +95,8 @@ sealed class ConvertResult {
         val videoKbps: Int,
         val trimmed: Boolean,
         val audioDropped: Boolean,
+        /** Whether the output actually has an audio track (false if removed, or source had none). */
+        val audioIncluded: Boolean,
     ) : ConvertResult()
 
     data class Fail(val message: String) : ConvertResult()
@@ -288,7 +290,6 @@ object Converter {
                     "-deadline", "good", "-cpu-used", cpuUsed,
                     "-lag-in-frames", lagFrames,
                 ) + (if (settings.useVp9) {
-                    
                     listOf("-row-mt", "1", "-pix_fmt", "yuv420p", "-colorspace", "unknown") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
                 } else emptyList()) + listOf(
@@ -344,7 +345,7 @@ object Converter {
                     onProgress(1f, "Done")
                     cleanupLogs(ctx)
                     return@withContext ConvertResult.Ok(
-                        out, size, lastHeight, lastKbps, trimmed, settings.keepAudio && !src.hasAudio
+                        out, size, lastHeight, lastKbps, trimmed, settings.keepAudio && !src.hasAudio, audioOn
                     )
                 }
                 // Too big: shrink the budget proportionally and retry.
