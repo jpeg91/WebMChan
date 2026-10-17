@@ -289,8 +289,15 @@ object Converter {
                     "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
                     "-deadline", "good", "-cpu-used", cpuUsed,
                     "-lag-in-frames", lagFrames,
+                    // Tag the output's colour metadata explicitly. Without this, ffmpeg can leave
+                    // it unset or carry over a tag from the source (sometimes "gbr"/identity, which
+                    // tells a strict player to decode the YUV pixels as if they were RGB, producing
+                    // wrong colours) even though the pixels themselves are normal YUV. bt709/tv is
+                    // the standard tag for ordinary SDR video and matches what the encoder produces.
+                    "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+                    "-color_range", "tv",
                 ) + (if (settings.useVp9) {
-                    listOf("-row-mt", "1", "-pix_fmt", "yuv420p", "-colorspace", "unknown") +
+                    listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
                 } else emptyList()) + listOf(
                     "-passlogfile", passLog,
