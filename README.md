@@ -12,7 +12,7 @@ Output is saved to `Download/WebMChan/` and can be shared straight from the app.
 
 Everything runs locally. The app has no network permission, nothing is uploaded.
 
-> **Status:** early version. It works very well as 'bare bones'. Install as you would any `.apk`.
+> **Status:** early version. All the basic functionality is there. Install as you would any `.apk`.
 
 **[Download the Latest Release](https://github.com/jpeg91/WebMChan/releases/latest)**
 
@@ -28,8 +28,6 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 - **Length limit.** Clips longer than the board's limit are cut to it (splitting is planned).
 - **Live log.** A scrolling readout of what ffmpeg is doing, with a **Copy log** button. It's handy for checking progress and for reporting errors.
 - **Progress.** The first pass only analyses the video and ffmpeg reports no progress during it, so the bar animates until the second pass starts, then shows real progress during the second pass.
-  > (Update: pass 1 animation currently broken, but if it says `pass 1/2: analysing` it's working)
-
 - **Output.** Files are saved to internal storage `Download/WebMChan/` and can be shared straight from the app.
 
 <details>
@@ -144,7 +142,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 ## Known limits
 
 - Keep the app open while converting (the screen will not sleep until conversion is complete). There's no background service yet.
-- Encoding on a phone is slow: expect several minutes for a long clip, even more at 1080p. VP9 is slower still. Speed and Fastest help.
+- Encoding on a phone is slow: expect several minutes for a long clip, even more at 1080p. VP9 is slower still. Speed and Fastest modes help but Fastest should be used sparingly.
 - VP9 isn't accepted everywhere, and some older devices can't play it. VP8 is the safe choice.
 - Boards with a high minimum resolution and a small size limit (e.g. `/hr/` at 1000×1000 in 4 MB) leave very little bitrate per pixel, so expect low quality there. That's a limit of the board's rules, not a bug.
 - Videos filmed in portrait with rotation metadata may pick a slightly conservative resolution.
@@ -157,7 +155,6 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Split videos over the target time length
 - UI improvements
 - Frame rate options
-- Smarter progress (pass 1 can currently only show a broken animated bar)
 - Custom resolution targets that maintain aspect ratio
 - Custom output time length and custom splitting options
 - Bug reporting (the Copy log button is a start). Please report any issues through github
