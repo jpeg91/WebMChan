@@ -182,7 +182,7 @@ fun App() {
         if (progress < 0f) {
             var t = 0L
             while (isActive) {
-                val phase = (t % 1200L) / 1200f
+                val phase = (t % 4000L) / 4000f
                 pass1Sweep = if (phase < 0.5f) phase * 2f else (1f - phase) * 2f
                 delay(16)
                 t += 16
