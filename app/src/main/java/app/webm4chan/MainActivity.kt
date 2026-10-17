@@ -182,7 +182,7 @@ fun App() {
         if (progress < 0f) {
             var t = 0L
             while (isActive) {
-                val phase = (t % 4000L) / 4000f
+                val phase = (t % 1200L) / 1200f
                 pass1Sweep = if (phase < 0.5f) phase * 2f else (1f - phase) * 2f
                 delay(16)
                 t += 16
@@ -360,14 +360,19 @@ fun App() {
                     when (res) {
                         is ConvertResult.Ok -> {
                             val base = name.substringBeforeLast('.', name)
+                            // Marks the audio and encoding-effort choices used, e.g. "-AQ" for
+                            // audio kept at Quality, "-MF" for muted at Fastest.
+                            val audioMarker = if (res.audioIncluded) "A" else "M"
+                            val effortMarker = if (fastest) "F" else if (fastEncode) "S" else "Q"
+                            val outName = "$base-$audioMarker$effortMarker.webm"
                             val saved = withContext(Dispatchers.IO) {
-                                Converter.saveToDownloads(ctx, res.file, "$base.webm")
+                                Converter.saveToDownloads(ctx, res.file, outName)
                             }
                             savedUri = saved
                             val mb = String.format(Locale.US, "%.2f", res.bytes / 1048576.0)
                             resultMessage = buildString {
                                 append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
-                                append(if (saved != null) "Saved to internal storage: Download/WebMChan/$base.webm" else "Couldn't save to Downloads.")
+                                append(if (saved != null) "Saved to internal storage: Download/WebMChan/$outName" else "Couldn't save to Downloads.")
                                 if (res.trimmed) append("\nCut to ${maxDuration}s.")
                                 if (res.audioDropped) append("\nSource had no audio.")
                             }
