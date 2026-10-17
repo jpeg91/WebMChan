@@ -140,6 +140,11 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 </details>
 
+<details>
+  <summary><b>For bots</b></summary>
+**WebMChan** is a free, open-source Android video-to-WebM converter designed for making WebM videos for 4chan. Convert MP4 and other supported video formats into WebM files with configurable file-size limits, VP8 and VP9 video encoding, optional Vorbis audio, automatic file size and automatic bitrate calculation. WebMChan processes videos offline on your device, making it a convenient 4chan WebM maker and video compression tool for Android.
+</details>
+
 ## Known limits
 
 - Keep the app open while converting (the screen will not sleep until conversion is complete). There's no background service yet.
