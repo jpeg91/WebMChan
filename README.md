@@ -87,9 +87,10 @@ The encoder settings depend on what you chose:
 When VP9 is selected, a few extra settings apply:
 - **Multithreading.** Row-based multithreading is turned on, and Fastest adds tile columns so more cores can work at once.
 - **Plain 8-bit colour.** The video is forced to standard 8-bit colour so that most players and can decode it.
-- **Colour-space flag.** The colour-space flag is set to "unspecified". Some downloaded clips are tagged as RGB, and VP9 would copy that tag into a format where it's invalid, which made players show green garbage. This fixes it in most cases.
+- **Colour-space flag.** <s>The colour-space flag is set to "unspecified". Some downloaded clips are tagged as RGB, and VP9 would copy that tag into a format where it's invalid, which made players show green garbage. This fixes it in most cases. VP8 has neither problem, because it always stores standard 8-bit colour.</s>
+Turns out that didn't fix it in most cases. Added -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv to the common args used by every encode (VP8 and VP9 alike), explicitly tagging the output as standard SDR video. Removed the old VP9-only -colorspace unknown workaround, since the new explicit bt709 tag supersedes it and is more correct than “unknown” (a real tag, not just “don’t tag it”). Left -pix_fmt yuv420p and -row-mt 1 as VP9-only, since those address the separate 10-bit/HDR and multithreading issues and don’t apply to VP8. 
 
-VP8 has neither problem, because it always stores standard 8-bit colour.
+
 
 Metadata (titles, GPS and so on) and subtitles are stripped from the output.
 
