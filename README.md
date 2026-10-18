@@ -153,6 +153,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Boards with a high minimum resolution and a small size limit (e.g. `/hr/` at 1000×1000 in 4 MB) leave very little bitrate per pixel, so expect low quality there. That's a limit of the board's rules, not a bug.
 - Videos filmed in portrait with rotation metadata may pick a slightly conservative resolution.
 - Board rules can change on 4chan's side. See "Board targets" above.
+- Debug signed .apk. Each update is signed with a new and different key. This causes direct app updates to fail. The previous version <b>must</b> be manually uninstalled before an updates .apk will succeed in installation.
 
 ## Features still to add
 
@@ -168,4 +169,5 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Naming and save folder conventions and settings
 - About / app info page
 - App name standardising
+- Consistent signing key
 - Publish APK
