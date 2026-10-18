@@ -1,0 +1,143 @@
+package app.webmchan
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.DocumentsContract
+import androidx.documentfile.provider.DocumentFile
+import java.io.File
+
+/**
+ * Lets the user pick where converted videos go (internal storage, SD card, ...) using Android's
+ * Storage Access Framework. Output always goes into a "WebMChan" subfolder of the chosen folder.
+ * If nothing is chosen, or the chosen folder stops being usable, it falls back to the existing
+ * Download/WebMChan/ behaviour.
+ */
+object OutputStorage {
+    private const val PREFS = "webmchan"
+    private const val KEY_OUTPUT_DIR = "output_dir_uri"
+    const val SUBFOLDER = "WebMChan"
+    private const val DEFAULT_LABEL = "Internal storage: Download/WebMChan"
+
+    private const val RW = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
+    /** [uri] is where the file ended up (null if nothing could be saved); [message] is for the result text. */
+    data class SaveResult(val uri: Uri?, val message: String)
+
+    fun savedDirUri(ctx: Context): Uri? =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_OUTPUT_DIR, null)
+            ?.let(Uri::parse)
+
+    /** Call with the result of ActivityResultContracts.OpenDocumentTree(). Throws if the grant can't be kept. */
+    fun rememberDir(ctx: Context, uri: Uri) {
+        // Keep access after the picker closes and across restarts/reboots.
+        ctx.contentResolver.takePersistableUriPermission(uri, RW)
+
+        // Release the previous folder's grant so old ones don't pile up.
+        savedDirUri(ctx)?.takeIf { it != uri }?.let {
+            try { ctx.contentResolver.releasePersistableUriPermission(it, RW) } catch (_: Exception) { }
+        }
+
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_OUTPUT_DIR, uri.toString())
+            .apply()
+    }
+
+    /** Back to the default Download/WebMChan/ location. */
+    fun clearDir(ctx: Context) {
+        savedDirUri(ctx)?.let {
+            try { ctx.contentResolver.releasePersistableUriPermission(it, RW) } catch (_: Exception) { }
+        }
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .remove(KEY_OUTPUT_DIR).apply()
+    }
+
+    /** Readable save location for the UI, e.g. "SD card: Videos/WebMChan". */
+    fun displayName(ctx: Context): String {
+        val uri = savedDirUri(ctx) ?: return DEFAULT_LABEL
+        val path = folderPath(uri) ?: DocumentFile.fromTreeUri(ctx, uri)?.name ?: return DEFAULT_LABEL
+        return if (path.endsWith("/$SUBFOLDER") || path == SUBFOLDER) path else "$path/$SUBFOLDER"
+    }
+
+    // Turns a tree URI's document id ("primary:Movies/Clips", "1234-ABCD:Videos") into a label.
+    private fun folderPath(uri: Uri): String? = try {
+        val docId = DocumentsContract.getTreeDocumentId(uri)
+        val volume = docId.substringBefore(':')
+        val path = docId.substringAfter(':', "")
+        val volumeLabel = if (volume == "primary") "Internal storage" else "SD card / USB"
+        if (path.isEmpty()) volumeLabel else "$volumeLabel: $path"
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * Saves into <chosen folder>/WebMChan/. If no folder is chosen, or it can't be written to,
+     * silently falls back to [fallback] (the existing saveToDownloads) and says so in the message.
+     */
+    fun save(ctx: Context, file: File, name: String, fallback: () -> Uri?): SaveResult {
+        val dirUri = savedDirUri(ctx)
+        if (dirUri == null) {
+            val uri = fallback()
+            return SaveResult(
+                uri,
+                if (uri != null) "Saved to internal storage: Download/WebMChan/$name"
+                else "Couldn't save to Downloads."
+            )
+        }
+
+        val saved = saveToChosenFolder(ctx, dirUri, file, name)
+        if (saved != null) {
+            return SaveResult(saved.first, "Saved to ${displayName(ctx)}/${saved.second}")
+        }
+
+        val uri = fallback()
+        return SaveResult(
+            uri,
+            if (uri != null) "Chosen folder unavailable. Saved to internal storage instead: Download/WebMChan/$name"
+            else "Chosen folder unavailable, and saving to Downloads failed too."
+        )
+    }
+
+    /** Returns the new file's Uri and its final name, or null if anything went wrong. */
+    private fun saveToChosenFolder(ctx: Context, dirUri: Uri, file: File, name: String): Pair<Uri, String>? {
+        return try {
+            // The grant can be revoked in Settings, or the SD card can be removed.
+            val held = ctx.contentResolver.persistedUriPermissions
+                .any { it.uri == dirUri && it.isWritePermission }
+            if (!held) return null
+
+            val root = DocumentFile.fromTreeUri(ctx, dirUri) ?: return null
+            if (!root.exists() || !root.canWrite()) return null
+
+            // Use the WebMChan subfolder; if the user picked a folder already named that, use it directly.
+            val target = if (root.name == SUBFOLDER) root
+            else root.findFile(SUBFOLDER)?.takeIf { it.isDirectory }
+                ?: root.createDirectory(SUBFOLDER)
+                ?: return null
+
+            // createFile doesn't rename on a clash, so add (1), (2)... ourselves.
+            var finalName = name
+            var n = 1
+            while (target.findFile(finalName) != null) {
+                val dot = name.lastIndexOf('.')
+                finalName = if (dot >= 0) "${name.substring(0, dot)} ($n)${name.substring(dot)}"
+                else "$name ($n)"
+                n++
+            }
+
+            val doc = target.createFile("video/webm", finalName) ?: return null
+            try {
+                ctx.contentResolver.openOutputStream(doc.uri)?.use { os ->
+                    file.inputStream().use { it.copyTo(os) }
+                } ?: run { doc.delete(); return null }
+                doc.uri to (doc.name ?: finalName)
+            } catch (e: Exception) {
+                doc.delete()
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
