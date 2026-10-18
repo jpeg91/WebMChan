@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -86,7 +87,17 @@ class MainActivity : ComponentActivity() {
                 else -> lightColorScheme()
             }
             MaterialTheme(colorScheme = scheme) {
-                Surface(Modifier.fillMaxSize()) { App() }
+                var showAbout by remember { mutableStateOf(false) }
+                Surface(Modifier.fillMaxSize()) {
+                    Box {
+                        // App stays composed underneath, so opening About doesn't interrupt a
+                        // running conversion or lose the queue.
+                        App(onAbout = { showAbout = true })
+                        if (showAbout) {
+                            Surface(Modifier.fillMaxSize()) { AboutScreen(onBack = { showAbout = false }) }
+                        }
+                    }
+                }
             }
         }
     }
@@ -269,7 +280,7 @@ private fun TargetRow(
 }
 
 @Composable
-fun App() {
+fun App(onAbout: () -> Unit = {}) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val view = LocalView.current
@@ -385,7 +396,14 @@ fun App() {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("WebMChan - 4chan WebM converter", style = MaterialTheme.typography.headlineMedium)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Text(
+                "WebMChan - 4chan WebM converter",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onAbout) { Text("About") }
+        }
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
