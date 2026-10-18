@@ -26,7 +26,7 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 - **Progress and log.** See what's happening while it converts, and copy the log if you need to report a problem.
 
 <details>
-  <summary><b>Screenshot</b></summary>
+  <summary><b>Screenshot (Outdated)</b></summary>
 
 <img width="1080" height="5113" alt="WebMChan_Screenshot" src="https://github.com/user-attachments/assets/e90a05ba-a7e1-4d9e-9a5c-c66c57aa7559" />
 
