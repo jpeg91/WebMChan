@@ -53,20 +53,33 @@ object OutputStorage {
             .remove(KEY_OUTPUT_DIR).apply()
     }
 
-    /** Readable save location for the UI, e.g. "SD card: Videos/WebMChan". */
+    /** Readable save location for the UI, e.g. "SD card / USB: Videos/WebMChan". */
     fun displayName(ctx: Context): String {
         val uri = savedDirUri(ctx) ?: return DEFAULT_LABEL
-        val path = folderPath(uri) ?: DocumentFile.fromTreeUri(ctx, uri)?.name ?: return DEFAULT_LABEL
-        return if (path.endsWith("/$SUBFOLDER") || path == SUBFOLDER) path else "$path/$SUBFOLDER"
+        val parts = folderParts(uri)
+        if (parts == null) {
+            // Couldn't read the volume/path from the Uri; fall back to the folder's own name.
+            val name = DocumentFile.fromTreeUri(ctx, uri)?.name ?: return DEFAULT_LABEL
+            return if (name == SUBFOLDER) name else "$name/$SUBFOLDER"
+        }
+        val (volume, path) = parts
+        // If the chosen folder is (or ends in) WebMChan, files go straight into it: no extra subfolder.
+        val fullPath = when {
+            path.isEmpty() -> SUBFOLDER
+            path == SUBFOLDER || path.endsWith("/$SUBFOLDER") -> path
+            else -> "$path/$SUBFOLDER"
+        }
+        return "$volume: $fullPath"
     }
 
-    // Turns a tree URI's document id ("primary:Movies/Clips", "1234-ABCD:Videos") into a label.
-    private fun folderPath(uri: Uri): String? = try {
+    // Splits a tree URI's document id ("primary:Movies/Clips", "1234-ABCD:Videos")
+    // into a volume label and the folder path inside it.
+    private fun folderParts(uri: Uri): Pair<String, String>? = try {
         val docId = DocumentsContract.getTreeDocumentId(uri)
         val volume = docId.substringBefore(':')
         val path = docId.substringAfter(':', "")
-        val volumeLabel = if (volume == "primary") "Internal storage" else "SD card / USB"
-        if (path.isEmpty()) volumeLabel else "$volumeLabel: $path"
+        val volumeLabel = if (volume == "primary") "Internal storage" else "External Storage"
+        volumeLabel to path
     } catch (_: Exception) {
         null
     }
