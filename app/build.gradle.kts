@@ -12,8 +12,8 @@ android {
         applicationId = "app.webmchan"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 6
+        versionName = "0.6.0"
         // The maintained FFmpegKit fork only publishes arm64-v8a prebuilts.
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -38,6 +38,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     // Community-maintained continuation of FFmpegKit (Free tier: libvpx VP8/VP9, libvorbis, libopus).
