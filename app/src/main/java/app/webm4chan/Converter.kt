@@ -109,9 +109,16 @@ object Converter {
     const val DEFAULT_MAX_DURATION_SEC = 300
 
     private const val AUDIO_KBPS = 64
+    // Audio is allowed to drop this low (rather than fail outright) when the budget is tight.
+    private const val MIN_AUDIO_KBPS = 32
+    private const val MIN_VIDEO_KBPS = 40
 
     // Aim a little under the limit: container overhead + rate-control overshoot.
     private const val INITIAL_TARGET = 0.95
+    // Retry headroom: deliberately small. A big fixed cushion here (the old value was 0.97) can
+    // overcorrect a near-miss (e.g. 0.5% over the limit) into a much bigger cut than it needed,
+    // which was pushing audio+video combinations right up against MIN_VIDEO_KBPS and failing.
+    private const val RETRY_MARGIN = 0.99
     private const val MAX_ATTEMPTS = 4
 
     // Minimum bits-per-pixel before a frame size is accepted; Fastest uses a higher value,
@@ -246,7 +253,6 @@ object Converter {
             val duration = clipDurationSec ?: min(remaining, settings.maxDurationSec.toDouble())
             val trimmed = clipDurationSec == null && src.durationSec > settings.maxDurationSec
             val audioOn = settings.keepAudio && src.hasAudio
-            val audioKbps = if (audioOn) AUDIO_KBPS else 0
 
             val out = File(ctx.cacheDir, "out.webm")
             val passLog = File(ctx.cacheDir, "ffpass").absolutePath
@@ -263,12 +269,24 @@ object Converter {
 
             for (attempt in 1..MAX_ATTEMPTS) {
                 val totalKbps = budgetBytes * 8.0 / duration / 1000.0
+                // Audio normally gets a fixed 64 kbps, but on a tight budget that alone can push
+                // video under MIN_VIDEO_KBPS and fail a clip that would otherwise fit fine. Let
+                // audio flex down (as low as MIN_AUDIO_KBPS) before giving up on the attempt.
+                val audioKbps = when {
+                    !audioOn -> 0
+                    totalKbps - AUDIO_KBPS >= MIN_VIDEO_KBPS -> AUDIO_KBPS
+                    totalKbps - MIN_AUDIO_KBPS >= MIN_VIDEO_KBPS -> (totalKbps - MIN_VIDEO_KBPS).toInt()
+                    else -> MIN_AUDIO_KBPS
+                }
                 val vKbps = (totalKbps - audioKbps).toInt()
-                if (vKbps < 40) {
+                if (vKbps < MIN_VIDEO_KBPS) {
                     return@withContext ConvertResult.Fail(
                         "Video is too long for this size limit" +
                             if (audioOn) " with audio. Try removing audio." else "."
                     )
+                }
+                if (audioOn && audioKbps < AUDIO_KBPS) {
+                    onLog("   audio bitrate reduced to ${audioKbps} kbps to fit the limit")
                 }
                 val height = chooseHeight(vKbps, src, minHeight, if (settings.fastest) FASTEST_BPP else NORMAL_BPP)
                 lastHeight = height
@@ -368,7 +386,7 @@ object Converter {
                 }
                 // Too big: shrink the budget proportionally and retry.
                 onLog("   over the limit, retrying with a smaller bitrate")
-                budgetBytes *= (settings.limitBytes * 0.97) / size.toDouble()
+                budgetBytes *= (settings.limitBytes * RETRY_MARGIN) / size.toDouble()
             }
             cleanupLogs(ctx)
             ConvertResult.Fail("Couldn't get under the size limit after $MAX_ATTEMPTS attempts.")
