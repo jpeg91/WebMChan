@@ -202,6 +202,11 @@ object Converter {
         uri: Uri,
         src: SourceInfo,
         settings: Settings,
+        /** Where in the source this clip starts. 0 for a normal (non-split) conversion. */
+        startSec: Double = 0.0,
+        /** Length of this clip. null = the old behaviour: min(source length, the limit). Set by
+         *  the caller for a split part, so each part gets an exact slice regardless of the limit. */
+        clipDurationSec: Double? = null,
         onLog: (line: String) -> Unit,
         onProgress: (fraction: Float, status: String) -> Unit, // fraction < 0 = indeterminate
     ): ConvertResult = withContext(Dispatchers.IO) {
@@ -237,8 +242,9 @@ object Converter {
 
         FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
         try {
-            val duration = min(src.durationSec, settings.maxDurationSec.toDouble())
-            val trimmed = src.durationSec > settings.maxDurationSec
+            val remaining = (src.durationSec - startSec).coerceAtLeast(0.0)
+            val duration = clipDurationSec ?: min(remaining, settings.maxDurationSec.toDouble())
+            val trimmed = clipDurationSec == null && src.durationSec > settings.maxDurationSec
             val audioOn = settings.keepAudio && src.hasAudio
             val audioKbps = if (audioOn) AUDIO_KBPS else 0
 
@@ -282,21 +288,25 @@ object Converter {
                     }
                 }.joinToString(",").ifEmpty { "null" }
 
-                val common = listOf(
-                    "-y", "-i", input, "-t", "%.3f".format(java.util.Locale.US, duration),
-                    "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
-                    "-vf", filters,
-                    "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
-                    "-deadline", "good", "-cpu-used", cpuUsed,
-                    "-lag-in-frames", lagFrames,
-                    // Tag the output's colour metadata explicitly. Without this, ffmpeg can leave
-                    // it unset or carry over a tag from the source (sometimes "gbr"/identity, which
-                    // tells a strict player to decode the YUV pixels as if they were RGB, producing
-                    // wrong colours) even though the pixels themselves are normal YUV. bt709/tv is
-                    // the standard tag for ordinary SDR video and matches what the encoder produces.
-                    "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-                    "-color_range", "tv",
-                ) + (if (settings.useVp9) {
+                val common = listOf("-y") +
+                    // Input seeking: fast (keyframe-based demux seek), and still frame-accurate
+                    // because we're re-encoding rather than stream-copying.
+                    (if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()) +
+                    listOf(
+                        "-i", input, "-t", "%.3f".format(java.util.Locale.US, duration),
+                        "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
+                        "-vf", filters,
+                        "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
+                        "-deadline", "good", "-cpu-used", cpuUsed,
+                        "-lag-in-frames", lagFrames,
+                        // Tag the output's colour metadata explicitly. Without this, ffmpeg can leave
+                        // it unset or carry over a tag from the source (sometimes "gbr"/identity, which
+                        // tells a strict player to decode the YUV pixels as if they were RGB, producing
+                        // wrong colours) even though the pixels themselves are normal YUV. bt709/tv is
+                        // the standard tag for ordinary SDR video and matches what the encoder produces.
+                        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+                        "-color_range", "tv",
+                    ) + (if (settings.useVp9) {
                     listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
                 } else emptyList()) + listOf(
@@ -316,7 +326,8 @@ object Converter {
 
                 onLog(
                     "== Attempt $attempt/$MAX_ATTEMPTS: ${height}p, $vKbps kbps video" +
-                        if (audioOn) " + $audioKbps kbps audio" else ", no audio"
+                        (if (audioOn) " + $audioKbps kbps audio" else ", no audio") +
+                        (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
                 onLog("   filters: $filters")
                 onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
