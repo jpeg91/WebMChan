@@ -28,7 +28,7 @@ If a video is longer than the board's maximum length, WebMChan splits it into nu
 
 ### Best quality that fits
 
-Each video is done in two passes (analysis then encode), aiming for about 95% of the size limit, so you get as much quality as the limit allows.
+Each video is converted in two passes (analysis then encode), aiming for about 95% of the size limit, so you get as much quality as the limit allows.
 
 ### Batch mode
 
@@ -36,7 +36,7 @@ Select one video or several, and convert them all in one go with the same settin
 
 ### Simple options
 
-Choose Quality, Speed or Fastest, VP8 (recommended) or VP9, and whether to keep the audio.
+Choose Quality, Speed or Fastest modes, VP8 (recommended) or VP9, and whether to keep the audio.
 
 ### Your choice of save location
 
@@ -48,7 +48,7 @@ See a thumbnail for each queued or finished video, and tap it to play the source
 
 ### Background conversion
 
-You can leave the app or lock the screen while a batch runs; a notification shows progress and lets you cancel.
+You can leave the app, use other apps, lock the screen and completely forget about it whilst a batch runs. If Android does manage to kill the background process (likely due to battery savers) the queue can be resumed; a notification shows progress and lets you cancel.
 
 ### Progress and log
 
