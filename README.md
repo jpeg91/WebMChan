@@ -178,6 +178,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Deeper Custom controls
 - Analysis stage overhaul (with splitting in mind)
 - Thumbnails
+- Add videos to queue during conversion
 - Output renaming
 - UI improvements (split into pages? Wizard style work flow?)
 - Conversion history page with options for individual videos (Delete, Share, Info, Rename etc)
