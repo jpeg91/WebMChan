@@ -1,8 +1,11 @@
 package app.webmchan
 
+import android.Manifest
+import android.app.Activity
 import android.content.ClipData
+import android.content.Context
 import android.content.Intent
-import android.net.Uri
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -28,6 +31,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -49,33 +53,29 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Bring back the queue and Finished list from last time (does nothing if already loaded).
+        BatchRunner.restore(applicationContext)
         setContent {
             val ctx = LocalContext.current
             val dark = isSystemInDarkTheme()
@@ -90,8 +90,8 @@ class MainActivity : ComponentActivity() {
                 var showAbout by remember { mutableStateOf(false) }
                 Surface(Modifier.fillMaxSize()) {
                     Box {
-                        // App stays composed underneath, so opening About doesn't interrupt a
-                        // running conversion or lose the queue.
+                        // App stays composed underneath, so opening About doesn't lose the scroll
+                        // position or the settings.
                         App(onAbout = { showAbout = true })
                         if (showAbout) {
                             Surface(Modifier.fillMaxSize()) { AboutScreen(onBack = { showAbout = false }) }
@@ -101,53 +101,18 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-}
 
-/**
- * Thread-safe, size-capped log. ffmpeg's repeating "frame=..." status line updates in place
- * instead of flooding the readout.
- */
-private class LogBuffer(private val maxLines: Int = 400) {
-    private val lock = Any()
-    private var lines: List<String> = emptyList()
-
-    fun clear(publish: (List<String>) -> Unit) = synchronized(lock) {
-        lines = emptyList()
-        publish(lines)
+    // BatchRunner skips the "finished" notification if the screen is already visible.
+    override fun onStart() {
+        super.onStart()
+        BatchRunner.uiVisible = true
     }
 
-    fun add(raw: String, publish: (List<String>) -> Unit) = synchronized(lock) {
-        var next = lines
-        for (piece in raw.split('\n', '\r')) {
-            val line = piece.trim()
-            if (line.isEmpty()) continue
-            next = if (line.startsWith("frame=") && next.lastOrNull()?.startsWith("frame=") == true) {
-                next.dropLast(1) + line
-            } else {
-                next + line
-            }
-        }
-        lines = if (next.size > maxLines) next.takeLast(maxLines) else next
-        publish(lines)
+    override fun onStop() {
+        BatchRunner.uiVisible = false
+        super.onStop()
     }
 }
-
-private enum class ItemStatus { WAITING, CONVERTING, DONE, FAILED, CANCELLED }
-
-/** One video in the batch queue. Immutable: update by replacing the list entry with a copy. */
-private data class QueueItem(
-    val id: Long,
-    val uri: Uri,
-    val name: String,
-    /** null until probed (see [probeFailed]). */
-    val info: SourceInfo? = null,
-    val probeFailed: Boolean = false,
-    val status: ItemStatus = ItemStatus.WAITING,
-    /** Result or error text shown under the item. */
-    val detail: String? = null,
-    /** Where the converted file was saved, once done. */
-    val savedUri: Uri? = null,
-)
 
 @Composable
 private fun QueueButton(label: String, enabled: Boolean, onClick: () -> Unit) {
@@ -166,11 +131,13 @@ private fun QueueRow(
     maxDuration: Int,
     minW: Int,
     minH: Int,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
-    onUp: () -> Unit,
-    onDown: () -> Unit,
-    onRemove: () -> Unit,
+    canMoveUp: Boolean = false,
+    canMoveDown: Boolean = false,
+    onUp: () -> Unit = {},
+    onDown: () -> Unit = {},
+    onRemove: () -> Unit = {},
+    /** false for cards in the Finished list. */
+    showControls: Boolean = true,
 ) {
     val ctx = LocalContext.current
     val i = item.info
@@ -207,7 +174,7 @@ private fun QueueRow(
                     }
                 }
             }
-            if (!busy) {
+            if (showControls && !busy) {
                 QueueButton("▲", canMoveUp, onUp)
                 QueueButton("▼", canMoveDown, onDown)
                 QueueButton("✕", true, onRemove)
@@ -282,45 +249,50 @@ private fun TargetRow(
 @Composable
 fun App(onAbout: () -> Unit = {}) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val view = LocalView.current
 
-    // The batch queue, in processing order. Settings below apply to every video in it.
-    val queue = remember { mutableStateListOf<QueueItem>() }
-    val idCounter = remember { AtomicLong(0) }
-    // Number of probe passes currently running (new videos are probed one after another).
-    var probing by remember { mutableIntStateOf(0) }
+    // The queue, the finished list, progress and the log all live in BatchRunner (not here), so a
+    // running batch survives the screen being closed. Settings below apply to every video in it.
+    val queue = BatchRunner.queue
+    val finished = BatchRunner.finished
+    val busy = BatchRunner.busy
+    val probing = BatchRunner.probing
+    val progress = BatchRunner.progress
+    val status = BatchRunner.status
+    val summary = BatchRunner.summary
+    val runTotal = BatchRunner.runTotal
+    val logLines = BatchRunner.logLines
 
     // Index into TARGETS; TARGETS.size means "Custom".
-    var targetIdx by remember { mutableIntStateOf(0) }
-    var customMb by remember { mutableStateOf("4") }
-    var removeAudio by remember { mutableStateOf(true) }
-    var fastEncode by remember { mutableStateOf(false) }
-    var useVp9 by remember { mutableStateOf(false) }
-    var fastest by remember { mutableStateOf(false) }
+    // The choices below are remembered between runs.
+    val prefs = remember { ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE) }
+    var targetIdx by remember { mutableIntStateOf(prefs.getInt("ui_target_idx", 0).coerceIn(0, TARGETS.size)) }
+    var customMb by remember { mutableStateOf(prefs.getString("ui_custom_mb", "4") ?: "4") }
+    var removeAudio by remember { mutableStateOf(prefs.getBoolean("ui_remove_audio", true)) }
+    var fastEncode by remember { mutableStateOf(prefs.getBoolean("ui_fast_encode", false)) }
+    var useVp9 by remember { mutableStateOf(prefs.getBoolean("ui_use_vp9", false)) }
+    var fastest by remember { mutableStateOf(prefs.getBoolean("ui_fastest", false)) }
+    LaunchedEffect(targetIdx, customMb, removeAudio, fastEncode, useVp9, fastest) {
+        prefs.edit()
+            .putInt("ui_target_idx", targetIdx)
+            .putString("ui_custom_mb", customMb)
+            .putBoolean("ui_remove_audio", removeAudio)
+            .putBoolean("ui_fast_encode", fastEncode)
+            .putBoolean("ui_use_vp9", useVp9)
+            .putBoolean("ui_fastest", fastest)
+            .apply()
+    }
 
-    var busy by remember { mutableStateOf(false) }
-    var progress by remember { mutableFloatStateOf(0f) }
     // Pass 1 has no real progress to report. Compose's built-in indeterminate bar relies on
     // Compose's own animation system, which some phones freeze (the "Animator duration scale"
     // developer option), leaving it static. This sweeps a value by hand instead, the same way
     // pass 2's real progress is just pushed in as plain numbers, so it moves regardless.
     var pass1Sweep by remember { mutableFloatStateOf(0f) }
-    var status by remember { mutableStateOf("") }
-    var summary by remember { mutableStateOf<String?>(null) }
-    // How many videos the current run is working through.
-    var runTotal by remember { mutableIntStateOf(0) }
-    // Set by the Skip / Cancel buttons; checked as each video finishes and while encoding.
-    val skipFlag = remember { AtomicBoolean(false) }
-    val cancelAllFlag = remember { AtomicBoolean(false) }
 
     // Where output is saved. Empty custom-dir state means the default Download/WebMChan/.
     var outputLabel by remember { mutableStateOf(OutputStorage.displayName(ctx)) }
     var hasCustomDir by remember { mutableStateOf(OutputStorage.savedDirUri(ctx) != null) }
     var folderError by remember { mutableStateOf<String?>(null) }
 
-    val logBuffer = remember { LogBuffer() }
-    var logLines by remember { mutableStateOf<List<String>>(emptyList()) }
     val logListState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
 
@@ -342,29 +314,8 @@ fun App(onAbout: () -> Unit = {}) {
         }
     }
 
-    view.keepScreenOn = busy
-
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { picked ->
-        // Skip anything already in the queue.
-        val fresh = picked.filter { u -> queue.none { it.uri == u } }
-        if (fresh.isNotEmpty()) {
-            summary = null
-            val added = fresh.map { u -> QueueItem(idCounter.incrementAndGet(), u, Converter.displayName(ctx, u)) }
-            queue.addAll(added)
-            scope.launch {
-                probing++
-                try {
-                    for (item in added) {
-                        val i = Converter.probe(ctx, item.uri)
-                        // The item may have been removed while probing.
-                        val at = queue.indexOfFirst { it.id == item.id }
-                        if (at >= 0) queue[at] = queue[at].copy(info = i, probeFailed = i == null)
-                    }
-                } finally {
-                    probing--
-                }
-            }
-        }
+        BatchRunner.addVideos(ctx, picked)
     }
 
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { picked ->
@@ -378,6 +329,62 @@ fun App(onAbout: () -> Unit = {}) {
                 folderError = "Couldn't get permission for that folder. Try a different one."
             }
         }
+    }
+
+    // Android 13+ asks before an app may show notifications. We explain and ask every time you
+    // convert until it's granted, then start either way: converting works without it, you just
+    // won't see the progress notification. Android stops showing its own prompt after two
+    // refusals; at that point the dialog offers to open the app's notification settings instead.
+    var pendingSettings by remember { mutableStateOf<Settings?>(null) }
+    var showNotificationExplainer by remember { mutableStateOf(false) }
+    var explainerBlocked by remember { mutableStateOf(false) }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+        pendingSettings?.let { BatchRunner.start(ctx, it) }
+        pendingSettings = null
+    }
+    // Explains why before Android's own permission prompt appears.
+    if (showNotificationExplainer) {
+        val skip = {
+            showNotificationExplainer = false
+            pendingSettings?.let { BatchRunner.start(ctx, it) }
+            pendingSettings = null
+        }
+        AlertDialog(
+            onDismissRequest = skip,
+            title = { Text("Notification permission") },
+            text = {
+                Text(
+                    "Notification permission is required for background conversion. " +
+                        "Without it, you'll have to stare at WebMChan until it's done." +
+                        if (explainerBlocked) {
+                            "\n\nAndroid won't show the permission prompt again, so you'll need to turn " +
+                                "notifications on for WebMChan in Android's settings."
+                        } else ""
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showNotificationExplainer = false
+                    if (explainerBlocked) {
+                        try {
+                            ctx.startActivity(
+                                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                            )
+                        } catch (_: Exception) {
+                        }
+                        // Don't lose the tap: start converting now.
+                        pendingSettings?.let { BatchRunner.start(ctx, it) }
+                        pendingSettings = null
+                    } else {
+                        ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE)
+                            .edit().putBoolean("asked_notifications", true).apply()
+                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }) { Text(if (explainerBlocked) "Grant Notification Permission" else "Continue") }
+            },
+            dismissButton = { TextButton(onClick = skip) { Text("Skip") } },
+        )
     }
 
     val target: Target? = TARGETS.getOrNull(targetIdx)
@@ -412,7 +419,7 @@ fun App(onAbout: () -> Unit = {}) {
                 modifier = Modifier.weight(1f),
             ) { Text(if (queue.isEmpty()) "Choose videos" else "Add videos") }
             if (queue.isNotEmpty()) {
-                OutlinedButton(onClick = { queue.clear(); summary = null }, enabled = !busy) { Text("Clear") }
+                OutlinedButton(onClick = { BatchRunner.clearQueue() }, enabled = !busy) { Text("Clear") }
             }
         }
 
@@ -426,9 +433,9 @@ fun App(onAbout: () -> Unit = {}) {
                     minH = minH,
                     canMoveUp = idx > 0,
                     canMoveDown = idx < queue.lastIndex,
-                    onUp = { val t = queue[idx]; queue[idx] = queue[idx - 1]; queue[idx - 1] = t },
-                    onDown = { val t = queue[idx]; queue[idx] = queue[idx + 1]; queue[idx + 1] = t },
-                    onRemove = { queue.removeAt(idx) },
+                    onUp = { BatchRunner.move(idx, -1) },
+                    onDown = { BatchRunner.move(idx, 1) },
+                    onRemove = { BatchRunner.removeAt(idx) },
                 )
             }
         }
@@ -446,14 +453,20 @@ fun App(onAbout: () -> Unit = {}) {
                 enabled = !busy,
                 title = t.title,
                 subtitle = t.boardsLabel,
-            ) { targetIdx = idx }
+            ) {
+                targetIdx = idx
+                if (t.audioAllowed) removeAudio = false
+            }
         }
         TargetRow(
             selected = isCustom,
             enabled = !busy,
             title = "Custom",
             subtitle = "Your own size limit, no minimum resolution",
-        ) { targetIdx = TARGETS.size }
+        ) {
+            targetIdx = TARGETS.size
+            removeAudio = false
+        }
         if (isCustom) {
             OutlinedTextField(
                 value = customMb,
@@ -546,110 +559,31 @@ fun App(onAbout: () -> Unit = {}) {
             }
         }
 
-        val pending = queue.count { it.info != null && it.status != ItemStatus.DONE }
+        val pending = queue.count { it.info != null }
         val canGo = pending > 0 && probing == 0 && limitKb >= 256 && !busy
         Button(
             onClick = {
-                val todo = queue.filter { it.info != null && it.status != ItemStatus.DONE }.map { it.id }
-                if (todo.isEmpty()) return@Button
                 val settings = Settings(
                     limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
                     fastEncode = fastEncode,
                     useVp9 = useVp9,
                     fastest = fastest,
                 )
-                summary = null
-                runTotal = todo.size
-                skipFlag.set(false)
-                cancelAllFlag.set(false)
-                busy = true
-                progress = -1f // indeterminate until pass 2 reports real progress
-                status = "Starting…"
-                logBuffer.clear { logLines = it }
-                scope.launch {
-                    var okCount = 0
-                    var failCount = 0
-                    var skipCount = 0
-                    try {
-                        for ((n, id) in todo.withIndex()) {
-                            if (cancelAllFlag.get()) break
-                            val idx = queue.indexOfFirst { it.id == id }
-                            if (idx < 0) continue
-                            val item = queue[idx]
-                            val src = item.info ?: continue
-
-                            skipFlag.set(false)
-                            queue[idx] = item.copy(status = ItemStatus.CONVERTING, detail = null, savedUri = null)
-                            val pos = "Video ${n + 1} of ${todo.size}"
-                            progress = -1f
-                            status = "$pos: Starting…"
-                            logBuffer.add("=== $pos: ${item.name} ===") { logLines = it }
-
-                            val res = Converter.convert(
-                                ctx, item.uri, src, settings,
-                                onLog = { line -> logBuffer.add(line) { logLines = it } },
-                            ) { p, s ->
-                                progress = p
-                                status = "$pos: $s"
-                                // A Skip/Cancel pressed before ffmpeg was running (e.g. while the
-                                // video was being copied) would otherwise be missed.
-                                if (skipFlag.get() || cancelAllFlag.get()) Converter.cancel()
-                            }
-
-                            val at = queue.indexOfFirst { it.id == id }
-                            if (at < 0) continue
-                            when (res) {
-                                is ConvertResult.Ok -> {
-                                    val base = item.name.substringBeforeLast('.', item.name)
-                                    // Marks the audio and encoding-effort choices used, e.g. "-AQ" for
-                                    // audio kept at Quality, "-MF" for muted at Fastest.
-                                    val audioMarker = if (res.audioIncluded) "A" else "M"
-                                    val effortMarker = if (fastest) "F" else if (fastEncode) "S" else "Q"
-                                    val outName = "$base-$audioMarker$effortMarker.webm"
-                                    val saved = withContext(Dispatchers.IO) {
-                                        OutputStorage.save(ctx, res.file, outName) {
-                                            Converter.saveToDownloads(ctx, res.file, outName)
-                                        }
-                                    }
-                                    res.file.delete()
-                                    val mb = String.format(Locale.US, "%.2f", res.bytes / 1048576.0)
-                                    val detail = buildString {
-                                        append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
-                                        append(saved.message)
-                                        if (res.trimmed) append("\nCut to ${maxDuration}s.")
-                                        if (res.audioDropped) append("\nSource had no audio.")
-                                    }
-                                    queue[at] = queue[at].copy(
-                                        status = if (saved.uri != null) ItemStatus.DONE else ItemStatus.FAILED,
-                                        detail = detail,
-                                        savedUri = saved.uri,
-                                    )
-                                    if (saved.uri != null) okCount++ else failCount++
-                                }
-                                is ConvertResult.Fail -> {
-                                    queue[at] = queue[at].copy(status = ItemStatus.FAILED, detail = res.message)
-                                    failCount++
-                                }
-                                ConvertResult.Cancelled -> {
-                                    val all = cancelAllFlag.get()
-                                    queue[at] = queue[at].copy(
-                                        status = ItemStatus.CANCELLED,
-                                        detail = if (all) "Cancelled." else "Skipped.",
-                                    )
-                                    skipCount++
-                                    if (all) break
-                                }
-                            }
-                        }
-                    } finally {
-                        summary = buildString {
-                            append("Finished: $okCount done")
-                            if (failCount > 0) append(", $failCount failed")
-                            if (skipCount > 0) append(", $skipCount skipped or cancelled")
-                            if (cancelAllFlag.get()) append(" (cancelled)")
-                        }
-                        busy = false
-                    }
+                val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
+                    PackageManager.PERMISSION_GRANTED
+                if (needsAsk) {
+                    // Asked before and Android won't show the prompt again = refused twice.
+                    val activity = ctx as? Activity
+                    explainerBlocked = prefs.getBoolean("asked_notifications", false) &&
+                        activity != null &&
+                        !ActivityCompat.shouldShowRequestPermissionRationale(
+                            activity, Manifest.permission.POST_NOTIFICATIONS
+                        )
+                    pendingSettings = settings
+                    showNotificationExplainer = true
+                } else {
+                    BatchRunner.start(ctx, settings)
                 }
             },
             enabled = canGo,
@@ -666,21 +600,24 @@ fun App(onAbout: () -> Unit = {}) {
             if (runTotal > 1) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
-                        onClick = { skipFlag.set(true); Converter.cancel() },
+                        onClick = { BatchRunner.skipCurrent() },
                         modifier = Modifier.weight(1f),
                     ) { Text("Skip current") }
                     OutlinedButton(
-                        onClick = { cancelAllFlag.set(true); Converter.cancel() },
+                        onClick = { BatchRunner.cancelAll() },
                         modifier = Modifier.weight(1f),
                     ) { Text("Cancel all") }
                 }
             } else {
                 OutlinedButton(
-                    onClick = { cancelAllFlag.set(true); Converter.cancel() },
+                    onClick = { BatchRunner.cancelAll() },
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Cancel") }
             }
-            Text("Keep the app open while converting. Screen will not sleep until encoding is finished.", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "You can lock the screen or leave the app while this runs. A notification shows progress.",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
 
         val lines = logLines
@@ -711,22 +648,45 @@ fun App(onAbout: () -> Unit = {}) {
 
         if (runTotal > 1) summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
 
-        val savedUris = queue.mapNotNull { it.savedUri }
-        if (savedUris.size > 1 && !busy) {
-            OutlinedButton(
-                onClick = {
-                    val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                        type = "video/webm"
-                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(savedUris))
-                        clipData = ClipData.newRawUri("webm", savedUris[0]).also { cd ->
-                            savedUris.drop(1).forEach { cd.addItem(ClipData.Item(it)) }
+        // Finished videos move here from the queue, so results are right where you're looking.
+        if (finished.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Finished (${finished.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedButton(onClick = { BatchRunner.clearFinished() }) { Text("Clear finished") }
+            }
+            finished.forEach { item ->
+                key(item.id) {
+                    QueueRow(
+                        item = item,
+                        busy = busy,
+                        maxDuration = maxDuration,
+                        minW = minW,
+                        minH = minH,
+                        showControls = false,
+                    )
+                }
+            }
+            val savedUris = finished.mapNotNull { it.savedUri }
+            if (savedUris.size > 1) {
+                OutlinedButton(
+                    onClick = {
+                        val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                            type = "video/webm"
+                            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(savedUris))
+                            clipData = ClipData.newRawUri("webm", savedUris[0]).also { cd ->
+                                savedUris.drop(1).forEach { cd.addItem(ClipData.Item(it)) }
+                            }
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    ctx.startActivity(Intent.createChooser(send, "Share webm files"))
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Share all (${savedUris.size})") }
+                        ctx.startActivity(Intent.createChooser(send, "Share webm files"))
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Share all (${savedUris.size})") }
+            }
         }
         Spacer(Modifier.height(8.dp))
     }
