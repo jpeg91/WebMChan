@@ -174,12 +174,18 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 ## Features still to add
 
-- Background service
-- Split videos over the target time length
-- UI improvements
+-Note: not necessarily in order-
+- Split video length customisation
+- Thumbnails
+- Output renaming
+- UI improvements (split into pages? Wizard style work flow?)
+- Conversion history page with options for individual videos (Delete, Share, Info, Rename etc)
+- 'About' page updates and improvements
+- 'Clear video cache' option with cache size readout for peace of mind
+- Tool tips
+- UI theming & mascot
 - Frame rate options
 - Custom resolution targets that maintain aspect ratio
-- Custom output time length and custom splitting options
 - Bug reporting (the Copy log button is a start). Please report any issues through github
 - Update handling
 - Naming conventions and further save settings
