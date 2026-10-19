@@ -1,6 +1,7 @@
 package app.webmchan
 
 import android.Manifest
+import android.app.Activity
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -30,6 +31,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -63,6 +65,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -328,13 +331,60 @@ fun App(onAbout: () -> Unit = {}) {
         }
     }
 
-    // Android 13+ asks before an app may show notifications. We ask once, the first time you
-    // convert, then start either way: converting works without it, you just won't see the
-    // progress notification.
+    // Android 13+ asks before an app may show notifications. We explain and ask every time you
+    // convert until it's granted, then start either way: converting works without it, you just
+    // won't see the progress notification. Android stops showing its own prompt after two
+    // refusals; at that point the dialog offers to open the app's notification settings instead.
     var pendingSettings by remember { mutableStateOf<Settings?>(null) }
+    var showNotificationExplainer by remember { mutableStateOf(false) }
+    var explainerBlocked by remember { mutableStateOf(false) }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
         pendingSettings?.let { BatchRunner.start(ctx, it) }
         pendingSettings = null
+    }
+    // Explains why before Android's own permission prompt appears.
+    if (showNotificationExplainer) {
+        val skip = {
+            showNotificationExplainer = false
+            pendingSettings?.let { BatchRunner.start(ctx, it) }
+            pendingSettings = null
+        }
+        AlertDialog(
+            onDismissRequest = skip,
+            title = { Text("Notification permission") },
+            text = {
+                Text(
+                    "Notification permission is required for background conversion. " +
+                        "Without it, you'll have to stare at WebMChan until it's done." +
+                        if (explainerBlocked) {
+                            "\n\nAndroid won't show the permission prompt again, so you'll need to turn " +
+                                "notifications on for WebMChan in Android's settings."
+                        } else ""
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showNotificationExplainer = false
+                    if (explainerBlocked) {
+                        try {
+                            ctx.startActivity(
+                                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                            )
+                        } catch (_: Exception) {
+                        }
+                        // Don't lose the tap: start converting now.
+                        pendingSettings?.let { BatchRunner.start(ctx, it) }
+                        pendingSettings = null
+                    } else {
+                        ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE)
+                            .edit().putBoolean("asked_notifications", true).apply()
+                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }) { Text(if (explainerBlocked) "Grant Notification Permission" else "Continue") }
+            },
+            dismissButton = { TextButton(onClick = skip) { Text("Skip") } },
+        )
     }
 
     val target: Target? = TARGETS.getOrNull(targetIdx)
@@ -403,14 +453,20 @@ fun App(onAbout: () -> Unit = {}) {
                 enabled = !busy,
                 title = t.title,
                 subtitle = t.boardsLabel,
-            ) { targetIdx = idx }
+            ) {
+                targetIdx = idx
+                if (t.audioAllowed) removeAudio = false
+            }
         }
         TargetRow(
             selected = isCustom,
             enabled = !busy,
             title = "Custom",
             subtitle = "Your own size limit, no minimum resolution",
-        ) { targetIdx = TARGETS.size }
+        ) {
+            targetIdx = TARGETS.size
+            removeAudio = false
+        }
         if (isCustom) {
             OutlinedTextField(
                 value = customMb,
@@ -515,12 +571,17 @@ fun App(onAbout: () -> Unit = {}) {
                 )
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
-                    PackageManager.PERMISSION_GRANTED &&
-                    !prefs.getBoolean("asked_notifications", false)
+                    PackageManager.PERMISSION_GRANTED
                 if (needsAsk) {
-                    prefs.edit().putBoolean("asked_notifications", true).apply()
+                    // Asked before and Android won't show the prompt again = refused twice.
+                    val activity = ctx as? Activity
+                    explainerBlocked = prefs.getBoolean("asked_notifications", false) &&
+                        activity != null &&
+                        !ActivityCompat.shouldShowRequestPermissionRationale(
+                            activity, Manifest.permission.POST_NOTIFICATIONS
+                        )
                     pendingSettings = settings
-                    notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    showNotificationExplainer = true
                 } else {
                     BatchRunner.start(ctx, settings)
                 }
