@@ -186,7 +186,8 @@ private fun QueueRow(
             if (numParts > 1) {
                 Text(
                     "Will be split into $numParts files to fit the ${maxDuration}s limit " +
-                        "(Part1, Part2, … Part$numParts).",
+                        "(${Converter.partName(1, numParts)}, ${Converter.partName(2, numParts)}, … " +
+                        "${Converter.partName(numParts, numParts)}).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary
                 )

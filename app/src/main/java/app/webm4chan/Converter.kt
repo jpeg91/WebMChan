@@ -103,7 +103,25 @@ sealed class ConvertResult {
     object Cancelled : ConvertResult()
 }
 
+/** Outcome of [Converter.stageSource]. */
+sealed class StageResult {
+    /** [file] is a private copy of the video; whoever asked for it deletes it when finished. */
+    data class Ok(val file: File) : StageResult()
+    data class Fail(val message: String) : StageResult()
+    object Cancelled : StageResult()
+}
+
 object Converter {
+
+    /** Added to the end of every converted file's name, just before ".webm". */
+    const val OUTPUT_NAME_TAG = "WebMChan_for_Android"
+
+    /**
+     * "Part1" ... "Part9", or zero-padded to the width of the part count ("Part01" ... "Part12")
+     * so the files sort in order.
+     */
+    fun partName(part: Int, numParts: Int): String =
+        "Part" + part.toString().padStart(numParts.toString().length, '0')
 
     /** Max duration used for the Custom option only; board targets carry their own. */
     const val DEFAULT_MAX_DURATION_SEC = 300
@@ -158,8 +176,13 @@ object Converter {
         return "video"
     }
 
-    suspend fun probe(ctx: Context, uri: Uri): SourceInfo? = withContext(Dispatchers.IO) {
-        val path = FFmpegKitConfig.getSafParameterForRead(ctx, uri)
+    suspend fun probe(ctx: Context, uri: Uri): SourceInfo? =
+        probePath(FFmpegKitConfig.getSafParameterForRead(ctx, uri))
+
+    /** Same as [probe] but for a plain file, e.g. a finished conversion in the cache. */
+    suspend fun probeFile(file: File): SourceInfo? = probePath(file.absolutePath)
+
+    private suspend fun probePath(path: String): SourceInfo? = withContext(Dispatchers.IO) {
         val info = FFprobeKit.getMediaInformation(path).mediaInformation ?: return@withContext null
         val dur = info.duration?.toDoubleOrNull() ?: return@withContext null
 
@@ -226,9 +249,87 @@ object Converter {
         return candidates.last() / 2 * 2
     }
 
-    suspend fun convert(
+    // Spare room wanted in the cache on top of the source's own size (encoder output, pass logs).
+    private const val STAGE_SPARE_BYTES = 64L * 1024 * 1024
+
+    /**
+     * Copies the picked video into the app's private cache so ffmpeg can read it as an ordinary
+     * file. Call once per video (not once per part of a split video) and delete the file when
+     * the video is finished with. Checks for enough free space first, reports progress as it
+     * copies, and stops early (deleting the partial copy) when [shouldStop] turns true.
+     */
+    suspend fun stageSource(
         ctx: Context,
         uri: Uri,
+        shouldStop: () -> Boolean,
+        onProgress: (fraction: Float) -> Unit, // fraction < 0 = size unknown
+    ): StageResult = withContext(Dispatchers.IO) {
+        val size = try {
+            ctx.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+        } catch (_: Exception) {
+            -1L
+        }
+        if (size > 0 && ctx.cacheDir.usableSpace < size + STAGE_SPARE_BYTES) {
+            val needMb = (size + STAGE_SPARE_BYTES) / 1048576
+            return@withContext StageResult.Fail(
+                "Not enough free storage to prepare this video (about $needMb MB needed). " +
+                    "Free up some space and try again."
+            )
+        }
+
+        val file = File.createTempFile("webmchan-input-", ".video", ctx.cacheDir)
+        try {
+            val input = ctx.contentResolver.openInputStream(uri)
+            if (input == null) {
+                file.delete()
+                return@withContext StageResult.Fail("Could not open the selected video.")
+            }
+            var stopped = false
+            input.use { src ->
+                file.outputStream().use { dst ->
+                    val buf = ByteArray(256 * 1024)
+                    var copied = 0L
+                    var lastPct = -1
+                    onProgress(if (size > 0) 0f else -1f)
+                    while (true) {
+                        if (shouldStop()) { stopped = true; break }
+                        val n = src.read(buf)
+                        if (n < 0) break
+                        dst.write(buf, 0, n)
+                        copied += n
+                        if (size > 0) {
+                            val pct = (copied * 100 / size).toInt().coerceIn(0, 100)
+                            if (pct != lastPct) { lastPct = pct; onProgress(pct / 100f) }
+                        }
+                    }
+                }
+            }
+            if (stopped) {
+                file.delete()
+                return@withContext StageResult.Cancelled
+            }
+            StageResult.Ok(file)
+        } catch (e: Exception) {
+            file.delete()
+            StageResult.Fail("Could not copy selected video: ${e.message}")
+        }
+    }
+
+    /**
+     * Deletes working files left in the cache: staged source copies, the encoder's output and
+     * the pass-1 logs. Safe between videos; also run once when the app starts, to clear what a
+     * killed run left behind.
+     */
+    fun clearWorkFiles(ctx: Context) {
+        ctx.cacheDir.listFiles()?.filter {
+            it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name.startsWith("ffpass")
+        }?.forEach { it.delete() }
+    }
+
+    suspend fun convert(
+        ctx: Context,
+        /** The staged copy of the video (see [stageSource]). Not deleted here: the caller owns it. */
+        input: File,
         src: SourceInfo,
         settings: Settings,
         /** Where in the source this clip starts. 0 for a normal (non-split) conversion. */
@@ -239,36 +340,6 @@ object Converter {
         onLog: (line: String) -> Unit,
         onProgress: (fraction: Float, status: String) -> Unit, // fraction < 0 = indeterminate
     ): ConvertResult = withContext(Dispatchers.IO) {
-        onLog("Copying video to app cache…")
-        val inputFile = File.createTempFile(
-            "webmchan-input-",
-            ".video",
-            ctx.cacheDir
-        )
-
-        try {
-            val source = ctx.contentResolver.openInputStream(uri)
-                ?: run {
-                    inputFile.delete()
-                    return@withContext ConvertResult.Fail(
-                        "Could not open the selected video."
-                    )
-                }
-
-            source.use { srcStream ->
-                inputFile.outputStream().use { dst ->
-                    srcStream.copyTo(dst)
-                }
-            }
-        } catch (e: Exception) {
-            inputFile.delete()
-            return@withContext ConvertResult.Fail(
-                "Could not copy selected video: ${e.message}"
-            )
-        }
-
-        val input = inputFile.absolutePath
-
         FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
         try {
             val remaining = (src.durationSec - startSec).coerceAtLeast(0.0)
@@ -334,7 +405,7 @@ object Converter {
                     // because we're re-encoding rather than stream-copying.
                     (if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()) +
                     listOf(
-                        "-i", input, "-t", "%.3f".format(java.util.Locale.US, duration),
+                        "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, duration),
                         "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
                         "-vf", filters,
                         "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
@@ -414,7 +485,6 @@ object Converter {
             cleanupLogs(ctx)
             ConvertResult.Fail("Couldn't get under the size limit after $MAX_ATTEMPTS attempts.")
         } finally {
-            inputFile.delete()
             // Detach so later ffprobe/ffmpeg calls don't write into a finished run's log.
             FFmpegKitConfig.enableLogCallback { }
             FFmpegKitConfig.enableStatisticsCallback { }
