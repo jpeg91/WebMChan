@@ -108,6 +108,28 @@ object Converter {
     /** Max duration used for the Custom option only; board targets carry their own. */
     const val DEFAULT_MAX_DURATION_SEC = 300
 
+    // ---- Length limits (back end only: the UI always shows the board's real limit) ----
+
+    /** Seconds shaved off every target's length limit, in case a board's own check is sloppy. */
+    const val LENGTH_GRACE_SEC = 1.0
+
+    /** An overshoot of this many seconds or less is trimmed off rather than made into another part. */
+    const val TRIM_TOLERANCE_SEC = 0.5
+
+    /** What the app actually aims for: the target's limit minus [LENGTH_GRACE_SEC] (e.g. 300 -> 299). */
+    fun effectiveMaxSec(maxDurationSec: Int): Double =
+        (maxDurationSec - LENGTH_GRACE_SEC).coerceAtLeast(1.0)
+
+    /**
+     * How many files a video of [durationSec] becomes for a target with this [maxDurationSec]
+     * (1 = no split). A video that only just overshoots (by [TRIM_TOLERANCE_SEC] or less, per
+     * part) is trimmed to fit instead of getting an extra, almost-empty part.
+     */
+    fun partCount(durationSec: Double, maxDurationSec: Int): Int {
+        val eff = effectiveMaxSec(maxDurationSec)
+        return max(1, ceil((durationSec - TRIM_TOLERANCE_SEC) / eff).toInt())
+    }
+
     private const val AUDIO_KBPS = 64
     // Audio is allowed to drop this low (rather than fail outright) when the budget is tight.
     private const val MIN_AUDIO_KBPS = 32
@@ -211,7 +233,7 @@ object Converter {
         settings: Settings,
         /** Where in the source this clip starts. 0 for a normal (non-split) conversion. */
         startSec: Double = 0.0,
-        /** Length of this clip. null = the old behaviour: min(source length, the limit). Set by
+        /** Length of this clip. null = the old behaviour: min(source length, the effective limit). Set by
          *  the caller for a split part, so each part gets an exact slice regardless of the limit. */
         clipDurationSec: Double? = null,
         onLog: (line: String) -> Unit,
@@ -250,8 +272,9 @@ object Converter {
         FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
         try {
             val remaining = (src.durationSec - startSec).coerceAtLeast(0.0)
-            val duration = clipDurationSec ?: min(remaining, settings.maxDurationSec.toDouble())
-            val trimmed = clipDurationSec == null && src.durationSec > settings.maxDurationSec
+            val effMax = effectiveMaxSec(settings.maxDurationSec)
+            val duration = clipDurationSec ?: min(remaining, effMax)
+            val trimmed = clipDurationSec == null && src.durationSec > effMax
             val audioOn = settings.keepAudio && src.hasAudio
 
             val out = File(ctx.cacheDir, "out.webm")

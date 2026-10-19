@@ -68,6 +68,8 @@ object BatchStore {
         put("name", i.name)
         put("status", i.status.name)
         put("probeFailed", i.probeFailed)
+        put("partsDone", i.partsDone)
+        put("partsTotal", i.partsTotal)
         i.detail?.let { put("detail", it) }
         i.savedUri?.let { put("savedUri", it.toString()) }
         i.info?.let {
@@ -100,6 +102,9 @@ object BatchStore {
             },
             detail = if (o.has("detail")) o.getString("detail") else null,
             savedUri = if (o.has("savedUri")) Uri.parse(o.getString("savedUri")) else null,
+            // Absent in files saved by older versions: those read back as "not split".
+            partsDone = o.optInt("partsDone", 0),
+            partsTotal = o.optInt("partsTotal", 0),
         )
     } catch (_: Exception) {
         null

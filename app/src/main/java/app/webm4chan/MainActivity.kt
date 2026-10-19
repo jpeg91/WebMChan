@@ -182,10 +182,10 @@ private fun QueueRow(
         }
 
         if (i != null && item.status != ItemStatus.DONE) {
-            if (i.durationSec > maxDuration) {
-                val numParts = kotlin.math.ceil(i.durationSec / maxDuration).toInt()
+            val numParts = Converter.partCount(i.durationSec, maxDuration)
+            if (numParts > 1) {
                 Text(
-                    "Longer than ${maxDuration}s: will be split into $numParts files " +
+                    "Will be split into $numParts files to fit the ${maxDuration}s limit " +
                         "(Part1, Part2, … Part$numParts).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary

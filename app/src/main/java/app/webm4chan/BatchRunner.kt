@@ -17,7 +17,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
-import kotlin.math.ceil
 import kotlin.math.min
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -38,6 +37,13 @@ data class QueueItem(
     val detail: String? = null,
     /** Where the converted file was saved, once done. */
     val savedUri: Uri? = null,
+    /**
+     * Split videos only: how many parts have already been converted and saved, and how many there
+     * are in total. Lets Convert carry on from the next part after a failure, skip or app restart
+     * instead of redoing (and duplicating) the parts that are already saved. 0 / 0 = not split.
+     */
+    val partsDone: Int = 0,
+    val partsTotal: Int = 0,
 )
 
 /**
@@ -143,7 +149,10 @@ object BatchRunner {
                 if (it.status == ItemStatus.CONVERTING) {
                     it.copy(
                         status = ItemStatus.CANCELLED,
-                        detail = "Interrupted when the app closed. Press Convert to try again.",
+                        detail = if (it.partsDone > 0 && it.partsDone < it.partsTotal) {
+                            "Interrupted when the app closed (${it.partsDone} of ${it.partsTotal} parts saved). " +
+                                "Press Convert to continue from part ${it.partsDone + 1}."
+                        } else "Interrupted when the app closed. Press Convert to try again.",
                     )
                 } else it
             }
@@ -350,26 +359,47 @@ object BatchRunner {
                 val src = item.info ?: continue
 
                 skipFlag.set(false)
-                queue[idx] = item.copy(status = ItemStatus.CONVERTING, detail = null, savedUri = null)
-                persist()
                 val pos = "Video ${n + 1} of ${todo.size}"
 
                 // Videos longer than the target's limit are split into consecutive parts rather
-                // than cut off, each converted and saved on its own.
-                val maxDur = settings.maxDurationSec.toDouble()
-                val numParts = if (src.durationSec > maxDur) ceil(src.durationSec / maxDur).toInt() else 1
+                // than cut off, each converted and saved on its own. The video is divided evenly
+                // (e.g. 250 s with a 120 s limit = 3 parts of ~83.3 s) so there's never a tiny
+                // leftover part, and no part is longer than the effective limit (the board's limit
+                // minus a 1 s grace; see Converter.effectiveMaxSec). A tiny overshoot is trimmed
+                // off the end instead of becoming a part (see Converter.partCount).
+                val numParts = Converter.partCount(src.durationSec, settings.maxDurationSec)
+                val partDur = min(src.durationSec / numParts, Converter.effectiveMaxSec(settings.maxDurationSec))
                 val base = item.name.substringBeforeLast('.', item.name)
 
-                var partsSaved = 0
+                // Carry on after the parts that are already saved, if this video was part-way
+                // through. That only holds if it would be split exactly the same way now (the same
+                // number of parts means identical boundaries); if the target changed since, the
+                // earlier parts don't line up with the new ones, so start again from part 1.
+                val resumeFrom = if (numParts > 1 && item.partsDone in 1 until numParts && item.partsTotal == numParts) {
+                    item.partsDone + 1
+                } else 1
+                if (resumeFrom > 1) {
+                    logBuffer.add("=== $pos: ${item.name}: parts 1-${resumeFrom - 1} already saved, continuing from part $resumeFrom/$numParts ===") { logLines = it }
+                } else if (item.partsDone > 0) {
+                    logBuffer.add("=== $pos: ${item.name}: split has changed since the earlier attempt, starting again from part 1 ===") { logLines = it }
+                }
+
+                queue[idx] = item.copy(
+                    status = ItemStatus.CONVERTING, detail = null, savedUri = null,
+                    partsDone = resumeFrom - 1, partsTotal = if (numParts > 1) numParts else 0,
+                )
+                persist()
+
+                var partsSaved = resumeFrom - 1
                 var itemFailMsg: String? = null
                 var itemCancelledAll = false
                 var itemSkipped = false
 
-                for (part in 1..numParts) {
+                for (part in resumeFrom..numParts) {
                     if (cancelAllFlag.get()) { itemCancelledAll = true; break }
 
-                    val startSec = (part - 1) * maxDur
-                    val clipDur = if (numParts > 1) min(maxDur, src.durationSec - startSec) else null
+                    val startSec = (part - 1) * partDur
+                    val clipDur = if (numParts > 1) min(partDur, src.durationSec - startSec) else null
                     val partLabel = if (numParts > 1) ", part $part/$numParts" else ""
                     val partTag = if (numParts > 1) " (part $part/$numParts)" else ""
 
@@ -431,6 +461,11 @@ object BatchRunner {
                                 )
                             )
                             partsSaved++
+                            // Remember how far this video got (see QueueItem.partsDone).
+                            if (numParts > 1) {
+                                val at = queue.indexOfFirst { it.id == id }
+                                if (at >= 0) queue[at] = queue[at].copy(partsDone = part, partsTotal = numParts)
+                            }
                             persist()
                         }
                         is ConvertResult.Fail -> {
@@ -446,20 +481,27 @@ object BatchRunner {
 
                 val now = queue.indexOfFirst { it.id == id }
                 if (now >= 0) {
+                    // For a split video that stopped part-way: Convert carries on from here.
+                    val resumeHint = if (numParts > 1 && partsSaved in 1 until numParts) {
+                        " Press Convert to continue from part ${partsSaved + 1}."
+                    } else ""
                     when {
                         itemCancelledAll -> {
-                            queue[now] = queue[now].copy(status = ItemStatus.CANCELLED, detail = "Cancelled.")
+                            val note = if (resumeHint.isNotEmpty()) {
+                                "Cancelled ($partsSaved of $numParts parts saved).$resumeHint"
+                            } else "Cancelled."
+                            queue[now] = queue[now].copy(status = ItemStatus.CANCELLED, detail = note)
                             skipCount++
                         }
                         itemSkipped -> {
                             val note = if (partsSaved > 0) {
-                                "Skipped ($partsSaved of $numParts parts saved)."
+                                "Skipped ($partsSaved of $numParts parts saved).$resumeHint"
                             } else "Skipped."
                             queue[now] = queue[now].copy(status = ItemStatus.CANCELLED, detail = note)
                             skipCount++
                         }
                         itemFailMsg != null -> {
-                            val note = (if (partsSaved > 0) "$partsSaved of $numParts parts saved before this failed.\n" else "") +
+                            val note = (if (partsSaved > 0) "$partsSaved of $numParts parts saved before this failed.$resumeHint\n" else "") +
                                 itemFailMsg
                             queue[now] = queue[now].copy(status = ItemStatus.FAILED, detail = note)
                             failCount++
