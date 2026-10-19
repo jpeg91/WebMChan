@@ -45,6 +45,8 @@ data class QueueItem(
      */
     val partsDone: Int = 0,
     val partsTotal: Int = 0,
+    /** Whether a thumbnail file exists for this card (see [Thumbnails]). */
+    val hasThumb: Boolean = false,
 )
 
 /**
@@ -213,6 +215,15 @@ object BatchRunner {
                 if (at >= 0) queue[at] = queue[at].copy(info = i, probeFailed = i == null)
             }
 
+            // Thumbnails for queued videos that don't have one (or lost the file).
+            for (id in queue.map { it.id }) {
+                val item = queue.firstOrNull { it.id == id } ?: continue
+                val info = item.info ?: continue
+                if (item.status == ItemStatus.FAILED && item.probeFailed) continue
+                if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
+                setThumb(ctx, id, item.uri, null, info.durationSec, queue)
+            }
+
             // Finished files might have been deleted or moved outside the app (or the SD card
             // removed). Keep the card, but drop its Share button and say why.
             for (id in finished.map { it.id }) {
@@ -228,9 +239,42 @@ object BatchRunner {
                     )
                 }
             }
+
+            // Thumbnails for finished videos that don't have one (made before thumbnails existed,
+            // or lost): taken from the saved file itself.
+            for (id in finished.map { it.id }) {
+                val item = finished.firstOrNull { it.id == id } ?: continue
+                val saved = item.savedUri ?: continue
+                val info = item.info ?: continue
+                if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
+                setThumb(ctx, id, saved, null, info.durationSec, finished)
+            }
+
+            Thumbnails.pruneExcept(ctx, (queue + finished).map { it.id }.toSet())
         } finally {
             probing--
             persist()
+        }
+    }
+
+    /**
+     * Makes the thumbnail for card [id] (from [uri] or [file]) and marks it on the card in [list].
+     * If the card was removed in the meantime, the new thumbnail is thrown away.
+     */
+    private suspend fun setThumb(
+        ctx: Context,
+        id: Long,
+        uri: Uri?,
+        file: File?,
+        durationSec: Double,
+        list: MutableList<QueueItem>,
+    ) {
+        val ok = Thumbnails.create(ctx, id, uri, file, durationSec)
+        val at = list.indexOfFirst { it.id == id }
+        if (at < 0) {
+            Thumbnails.delete(ctx, id)
+        } else if (list[at].hasThumb != ok) {
+            list[at] = list[at].copy(hasThumb = ok)
         }
     }
 
@@ -272,6 +316,7 @@ object BatchRunner {
                     // The item may have been removed while probing.
                     val at = queue.indexOfFirst { it.id == item.id }
                     if (at >= 0) queue[at] = queue[at].copy(info = i, probeFailed = i == null)
+                    if (i != null) setThumb(appCtx, item.id, item.uri, null, i.durationSec, queue)
                 }
             } finally {
                 probing--
@@ -291,20 +336,29 @@ object BatchRunner {
 
     fun removeAt(index: Int) {
         if (index !in queue.indices) return
-        appContext?.let { releaseAccess(it, queue[index].uri) }
+        appContext?.let {
+            releaseAccess(it, queue[index].uri)
+            Thumbnails.delete(it, queue[index].id)
+        }
         queue.removeAt(index)
         persist()
     }
 
     fun clearQueue() {
         if (busy) return
-        appContext?.let { ctx -> queue.forEach { releaseAccess(ctx, it.uri) } }
+        appContext?.let { ctx ->
+            queue.forEach {
+                releaseAccess(ctx, it.uri)
+                Thumbnails.delete(ctx, it.id)
+            }
+        }
         queue.clear()
         summary = null
         persist()
     }
 
     fun clearFinished() {
+        appContext?.let { ctx -> finished.forEach { Thumbnails.delete(ctx, it.id) } }
         finished.clear()
         persist()
     }
@@ -478,6 +532,10 @@ object BatchRunner {
                                         hasAudio = res.audioIncluded,
                                     )
                                 }
+                                // Each part gets its own thumbnail, from its own converted file.
+                                val cardId = ids.incrementAndGet()
+                                val hasThumb = Thumbnails.create(ctx, cardId, null, res.file, outInfo.durationSec)
+
                                 val saved = withContext(Dispatchers.IO) {
                                     OutputStorage.save(ctx, res.file, outName) {
                                         Converter.saveToDownloads(ctx, res.file, outName)
@@ -485,6 +543,7 @@ object BatchRunner {
                                 }
                                 res.file.delete()
                                 if (saved.uri == null) {
+                                    Thumbnails.delete(ctx, cardId)
                                     itemFailMsg = saved.message
                                     break
                                 }
@@ -498,10 +557,11 @@ object BatchRunner {
                                 // is unchanged: one card, same as before).
                                 finished.add(
                                     QueueItem(
-                                        id = ids.incrementAndGet(),
+                                        id = cardId,
                                         uri = item.uri,
                                         name = if (numParts > 1) "${item.name}$partTag" else item.name,
                                         info = outInfo,
+                                        hasThumb = hasThumb,
                                         status = ItemStatus.DONE,
                                         detail = detail,
                                         savedUri = saved.uri,
@@ -561,8 +621,9 @@ object BatchRunner {
                             // All parts done: the card moves from the queue (the per-part cards
                             // above are what shows up in Finished).
                             queue.removeAt(now)
-                            // The source video isn't needed any more.
+                            // The source video isn't needed any more, nor its thumbnail.
                             releaseAccess(ctx, item.uri)
+                            Thumbnails.delete(ctx, item.id)
                             okCount++
                         }
                     }
