@@ -175,7 +175,8 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 ## Features still to add
 
 -Note: not necessarily in order-
-- Split video length customisation
+- Deeper Custom controls
+- Analysis stage overhaul (with splitting in mind)
 - Thumbnails
 - Output renaming
 - UI improvements (split into pages? Wizard style work flow?)
@@ -184,6 +185,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - 'Clear video cache' option with cache size readout for peace of mind
 - Tool tips
 - UI theming & mascot
+- App icons etc
 - Frame rate options
 - Custom resolution targets that maintain aspect ratio
 - Bug reporting (the Copy log button is a start). Please report any issues through github
@@ -191,5 +193,42 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Naming conventions and further save settings
 - About / app info page
 - App name standardising
+- Proper version number handling
 - Consistent signing key
 - Publish APK
+
+Work Notes:
+
+The source is copied into cache once per part. Converter.convert() copies the whole video to cacheDir each call. A 1 GB source split into 6 parts is 6 GB of copying (although you'd be mad to try that), which is slow and can run out of space. The copy should happen once per item and be passed in.
+
+
+No Skip button for a single long video. "Skip current" only shows when runTotal > 1. A lone video split into 20 parts can only be cancelled entirely.
+
+
+Cards for split video outputs are confusingly labeled with the sources file size. 
+
+
+Part names don't sort. Part10 sorts before Part2. Zero-padding to the width of numParts fixes it.
+
+
+Smaller things.
+A "Cancel all" mid-split doesn't mention which parts were saved, unlike Skip and Fail.
+
+
+skipFlag.set(false) at the start of each part can swallow a Skip pressed just as the previous part finished.
+
+
+A failed or cancelled run leaves out.webm in the cache.
+
+
+There's no warning before a 2-hour video turns into 60 two-pass encodes.
+
+
+Not split-related:
+Package mismatch. The folder is app/webm4chan/ but the package, namespace and applicationId are app.webmchan. It compiles, but it's confusing and will bite later.
+
+
+Bottom note in the UI. The same "A notification shows progress" line also shows when permission was refused.
+
+
+Manifest. allowBackup="true" with a persisted URI queue is harmless, since verifyRestored handles stale URIs, but it's worth a deliberate decision. 
