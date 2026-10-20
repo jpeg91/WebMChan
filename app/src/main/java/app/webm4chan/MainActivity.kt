@@ -89,6 +89,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Bring back the queue and Finished list from last time (does nothing if already loaded).
         BatchRunner.restore(applicationContext)
+        // The fitting numbers from About > Advanced (defaults unless changed).
+        TuningStore.load(applicationContext)
         setContent {
             val ctx = LocalContext.current
             val dark = isSystemInDarkTheme()
@@ -101,13 +103,19 @@ class MainActivity : ComponentActivity() {
             }
             MaterialTheme(colorScheme = scheme) {
                 var showAbout by remember { mutableStateOf(false) }
+                var showAdvanced by remember { mutableStateOf(false) }
                 Surface(Modifier.fillMaxSize()) {
                     Box {
                         // App stays composed underneath, so opening About doesn't lose the scroll
                         // position or the settings.
                         App(onAbout = { showAbout = true })
                         if (showAbout) {
-                            Surface(Modifier.fillMaxSize()) { AboutScreen(onBack = { showAbout = false }) }
+                            Surface(Modifier.fillMaxSize()) {
+                                AboutScreen(onBack = { showAbout = false }, onAdvanced = { showAdvanced = true })
+                            }
+                        }
+                        if (showAdvanced) {
+                            Surface(Modifier.fillMaxSize()) { AdvancedScreen(onBack = { showAdvanced = false }) }
                         }
                     }
                 }
@@ -261,7 +269,7 @@ private fun QueueRow(
         }
 
         if (i != null && item.status != ItemStatus.DONE) {
-            val numParts = Converter.partCount(i.durationSec, maxDuration)
+            val numParts = Converter.partCount(i.durationSec, maxDuration, TuningStore.current)
             if (numParts > 1) {
                 Text(
                     "Will be split into $numParts files to fit the ${maxDuration}s limit " +
@@ -650,6 +658,7 @@ fun App(onAbout: () -> Unit = {}) {
                     fastEncode = fastEncode,
                     useVp9 = useVp9,
                     fastest = fastest,
+                    tuning = TuningStore.current,
                 )
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=

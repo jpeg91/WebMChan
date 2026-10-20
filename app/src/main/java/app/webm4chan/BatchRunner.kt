@@ -381,6 +381,11 @@ object BatchRunner {
         progress = -1f // indeterminate until pass 2 reports real progress
         status = "Starting…"
         logBuffer.clear { logLines = it }
+        // Anything changed in About > Advanced goes at the top of the log, so a copied log says
+        // which settings produced it.
+        settings.tuning.changesFromDefault().takeIf { it.isNotEmpty() }?.let { changes ->
+            logBuffer.add("Advanced settings in use: ${changes.joinToString("; ")}") { logLines = it }
+        }
 
         // The foreground service keeps the process alive and the CPU awake while we work.
         // If it can't start for some reason, the batch still runs while the app is open.
@@ -424,10 +429,10 @@ object BatchRunner {
                 // than cut off, each converted and saved on its own. The video is divided evenly
                 // (e.g. 250 s with a 120 s limit = 3 parts of ~83.3 s) so there's never a tiny
                 // leftover part, and no part is longer than the effective limit (the board's limit
-                // minus a 1 s grace; see Converter.effectiveMaxSec). A tiny overshoot is trimmed
+                // minus the length grace; see Converter.effectiveMaxSec). A tiny overshoot is trimmed
                 // off the end instead of becoming a part (see Converter.partCount).
-                val numParts = Converter.partCount(src.durationSec, settings.maxDurationSec)
-                val partDur = min(src.durationSec / numParts, Converter.effectiveMaxSec(settings.maxDurationSec))
+                val numParts = Converter.partCount(src.durationSec, settings.maxDurationSec, settings.tuning)
+                val partDur = min(src.durationSec / numParts, Converter.effectiveMaxSec(settings.maxDurationSec, settings.tuning))
                 val base = item.name.substringBeforeLast('.', item.name)
 
                 // Carry on after the parts that are already saved, if this video was part-way
@@ -522,7 +527,7 @@ object BatchRunner {
                                 // it from the file; if that fails, work it out from what we know.
                                 val outInfo = Converter.probeFile(res.file) ?: run {
                                     val encodedSec = clipDur
-                                        ?: min(src.durationSec, Converter.effectiveMaxSec(settings.maxDurationSec))
+                                        ?: min(src.durationSec, Converter.effectiveMaxSec(settings.maxDurationSec, settings.tuning))
                                     val h = res.height
                                     SourceInfo(
                                         durationSec = encodedSec,
@@ -552,6 +557,10 @@ object BatchRunner {
                                     append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
                                     append(saved.message)
                                     if (res.audioDropped) append("\nSource had no audio.")
+                                    if (res.attempts > 1) {
+                                        append("\nTook ${res.attempts} attempts to fit the size limit")
+                                        append(if (res.audioAnalysed) "; the audio was analysed on its own for a closer fit." else ".")
+                                    }
                                 }
                                 // Each part gets its own card in Finished (a single-part conversion
                                 // is unchanged: one card, same as before).

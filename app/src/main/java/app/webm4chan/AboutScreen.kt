@@ -26,7 +26,7 @@ private const val REPO_URL = "https://github.com/jpeg91/WebMChan"
 
 /** A simple About page: what the app is, how it works, what it's built with, and where to find the source. */
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
     val ctx = LocalContext.current
     val version = remember {
         try {
@@ -50,6 +50,7 @@ fun AboutScreen(onBack: () -> Unit) {
 
         Text("About WebMChan", style = MaterialTheme.typography.headlineMedium)
         if (version != null) Text("Version $version", style = MaterialTheme.typography.bodyMedium)
+        TextButton(onClick = onAdvanced) { Text("Advanced settings (for testing) →") }
 
         Text(
             "WebMChan makes it simple to turn your videos into WebM files that fit a board's rules. " +
