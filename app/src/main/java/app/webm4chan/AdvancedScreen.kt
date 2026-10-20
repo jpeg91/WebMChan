@@ -38,12 +38,14 @@ private data class FieldSpec(
 private val FIELDS = listOf(
     FieldSpec(
         "firstTargetPct", "First attempt target (% of limit)",
-        "Default 97.5. Allowed 80 to 99.5. How full the first encode aims to make the file. " +
-            "The rest is margin against overshooting.", false,
+        "Default 97.5. Allowed 80 to 110. How full the first encode aims to make the file. " +
+            "The rest is margin against overshooting. Above 100 the file is expected to go over " +
+            "the limit (for testing).", false,
     ),
     FieldSpec(
         "retryMarginPct", "Retry target (% of limit)",
-        "Default 99. Allowed 80 to 99.9. What a retry aims for after going over.", false,
+        "Default 99. Allowed 80 to 110. What a retry aims for after going over. Above 100 a " +
+            "retry no longer aims to get under the limit (for testing).", false,
     ),
     FieldSpec(
         "maxAttempts", "Maximum attempts",
@@ -86,6 +88,11 @@ private val FIELDS = listOf(
         "Default 0.5. Allowed 0 to 5. An overshoot this small is trimmed off instead of becoming " +
             "another part.", false,
     ),
+    FieldSpec(
+        "warnVideoKbps", "Low bitrate warning (kbps)",
+        "Default 130. Allowed 20 to 2000. A queued video's card warns that detail will suffer when " +
+            "the estimated video bitrate of its parts is below this. Adding splits raises the estimate.", true,
+    ),
 )
 
 private fun Tuning.asText(): Map<String, String> = mapOf(
@@ -100,6 +107,7 @@ private fun Tuning.asText(): Map<String, String> = mapOf(
     "fastestBpp" to fastestBpp.toString(),
     "lengthGraceSec" to lengthGraceSec.toString(),
     "trimToleranceSec" to trimToleranceSec.toString(),
+    "warnVideoKbps" to warnVideoKbps.toString(),
 )
 
 /**
@@ -129,6 +137,7 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         lengthGraceSec = dbl("lengthGraceSec", base.lengthGraceSec),
         trimToleranceSec = dbl("trimToleranceSec", base.trimToleranceSec),
         audioAnalysisAttempt = int("audioAnalysisAttempt", base.audioAnalysisAttempt),
+        warnVideoKbps = int("warnVideoKbps", base.warnVideoKbps),
     )
 }
 

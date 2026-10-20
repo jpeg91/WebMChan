@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 
@@ -40,6 +41,19 @@ data class Settings(
     val fastest: Boolean = false,
     /** The fitting numbers (targets, attempts, audio bitrate...). See [Tuning]. */
     val tuning: Tuning = Tuning(),
+)
+
+/**
+ * What a queue card shows about how a video would come out with a given number of parts:
+ * how many parts, how long each is, the video bitrate each would get and the frame height that
+ * bitrate would be encoded at. It's an estimate of the first attempt, worked out the same way
+ * [Converter.convert] does it.
+ */
+data class PartEstimate(
+    val parts: Int,
+    val partSec: Double,
+    val videoKbps: Int,
+    val height: Int,
 )
 
 /**
@@ -132,6 +146,9 @@ object Converter {
     /** Max duration used for the Custom option only; board targets carry their own. */
     const val DEFAULT_MAX_DURATION_SEC = 300
 
+    /** Extra splits are never allowed to make a part shorter than this. */
+    const val MIN_PART_SEC = 10.0
+
     // ---- Length limits (back end only: the UI always shows the board's real limit) ----
 
     /** What the app actually aims for: the target's limit minus the length grace (e.g. 300 -> 299). */
@@ -139,13 +156,56 @@ object Converter {
         (maxDurationSec - tuning.lengthGraceSec).coerceAtLeast(1.0)
 
     /**
-     * How many files a video of [durationSec] becomes for a target with this [maxDurationSec]
+     * The fewest files a video of [durationSec] can become for a target with this [maxDurationSec]
      * (1 = no split). A video that only just overshoots (by the trim tolerance or less, per
      * part) is trimmed to fit instead of getting an extra, almost-empty part.
      */
     fun partCount(durationSec: Double, maxDurationSec: Int, tuning: Tuning): Int {
         val eff = effectiveMaxSec(maxDurationSec, tuning)
         return max(1, ceil((durationSec - tuning.trimToleranceSec) / eff).toInt())
+    }
+
+    /**
+     * The most parts a video can be split into: no part shorter than [MIN_PART_SEC]. Never less
+     * than [partCount], which is the original minimum.
+     */
+    fun maxPartCount(durationSec: Double, maxDurationSec: Int, tuning: Tuning): Int =
+        max(partCount(durationSec, maxDurationSec, tuning), floor(durationSec / MIN_PART_SEC).toInt())
+
+    /**
+     * The number of parts actually used: the minimum from [partCount] plus [extraParts] chosen on
+     * the card, kept between that minimum and [maxPartCount].
+     */
+    fun partsFor(durationSec: Double, maxDurationSec: Int, tuning: Tuning, extraParts: Int): Int {
+        val base = partCount(durationSec, maxDurationSec, tuning)
+        val most = maxPartCount(durationSec, maxDurationSec, tuning)
+        return min(base + extraParts.coerceAtLeast(0), most)
+    }
+
+    /**
+     * Estimates how [src] would come out as [partsFor] parts: each part's length, the video bitrate
+     * it would get on the first attempt (after audio) and the frame height that would be chosen.
+     * Uses the same budget, audio and frame size rules as [convert], so the card and the
+     * conversion agree.
+     */
+    fun estimate(src: SourceInfo, settings: Settings, extraParts: Int): PartEstimate {
+        val t = settings.tuning
+        val parts = partsFor(src.durationSec, settings.maxDurationSec, t, extraParts)
+        val partSec = min(src.durationSec / parts, effectiveMaxSec(settings.maxDurationSec, t)).coerceAtLeast(0.1)
+        val totalKbps = settings.limitBytes * (t.firstTargetPct / 100.0) * 8.0 / partSec / 1000.0
+        val audioOn = settings.keepAudio && src.hasAudio
+        val audioKbps = when {
+            !audioOn -> 0
+            totalKbps - t.audioKbps >= t.minVideoKbps -> t.audioKbps
+            totalKbps - t.minAudioKbps >= t.minVideoKbps -> (totalKbps - t.minVideoKbps).toInt()
+            else -> t.minAudioKbps
+        }
+        val vKbps = (totalKbps - audioKbps).toInt()
+        val height = chooseHeight(
+            vKbps, src, minHeightFor(src, settings.minWidth, settings.minHeight),
+            if (settings.fastest) t.fastestBpp else t.normalBpp,
+        )
+        return PartEstimate(parts, partSec, vKbps, height)
     }
 
     fun cancel() {

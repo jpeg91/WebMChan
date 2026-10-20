@@ -45,6 +45,11 @@ data class QueueItem(
      */
     val partsDone: Int = 0,
     val partsTotal: Int = 0,
+    /**
+     * Splits added on the card on top of the minimum the board's length limit needs (see
+     * [Converter.partsFor]). Stored as an offset, so it stays meaningful if the board is changed.
+     */
+    val extraParts: Int = 0,
     /** Whether a thumbnail file exists for this card (see [Thumbnails]). */
     val hasThumb: Boolean = false,
 )
@@ -334,6 +339,24 @@ object BatchRunner {
         persist()
     }
 
+    /**
+     * Sets how many splits a queued video gets on top of the minimum its board needs. Ignored
+     * while a batch is running, and for a video that's already part-way through its parts (changing
+     * the split then would no longer line up with the parts that are saved). The card keeps
+     * [extra] within what the video allows; [Converter.partsFor] clamps it again when converting.
+     */
+    fun setExtraParts(id: Long, extra: Int) {
+        if (busy) return
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val item = queue[at]
+        if (item.partsDone > 0) return
+        val value = extra.coerceAtLeast(0)
+        if (value == item.extraParts) return
+        queue[at] = item.copy(extraParts = value)
+        persist()
+    }
+
     fun removeAt(index: Int) {
         if (index !in queue.indices) return
         appContext?.let {
@@ -430,8 +453,9 @@ object BatchRunner {
                 // (e.g. 250 s with a 120 s limit = 3 parts of ~83.3 s) so there's never a tiny
                 // leftover part, and no part is longer than the effective limit (the board's limit
                 // minus the length grace; see Converter.effectiveMaxSec). A tiny overshoot is trimmed
-                // off the end instead of becoming a part (see Converter.partCount).
-                val numParts = Converter.partCount(src.durationSec, settings.maxDurationSec, settings.tuning)
+                // off the end instead of becoming a part (see Converter.partCount). Splits chosen on
+                // the card (item.extraParts) are added on top of that minimum.
+                val numParts = Converter.partsFor(src.durationSec, settings.maxDurationSec, settings.tuning, item.extraParts)
                 val partDur = min(src.durationSec / numParts, Converter.effectiveMaxSec(settings.maxDurationSec, settings.tuning))
                 val base = item.name.substringBeforeLast('.', item.name)
 
