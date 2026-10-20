@@ -38,6 +38,8 @@ data class Settings(
     val useVp9: Boolean = false,
     /** Fastest: still two-pass, but the highest effort setting, short look-ahead and smaller frames. Overrides [fastEncode]. */
     val fastest: Boolean = false,
+    /** The fitting numbers (targets, attempts, audio bitrate...). See [Tuning]. */
+    val tuning: Tuning = Tuning(),
 )
 
 /**
@@ -97,6 +99,10 @@ sealed class ConvertResult {
         val audioDropped: Boolean,
         /** Whether the output actually has an audio track (false if removed, or source had none). */
         val audioIncluded: Boolean,
+        /** How many encodes it took to fit (1 = first try). */
+        val attempts: Int = 1,
+        /** True if the audio had to be measured on its own to get a close fit. */
+        val audioAnalysed: Boolean = false,
     ) : ConvertResult()
 
     data class Fail(val message: String) : ConvertResult()
@@ -128,43 +134,19 @@ object Converter {
 
     // ---- Length limits (back end only: the UI always shows the board's real limit) ----
 
-    /** Seconds shaved off every target's length limit, in case a board's own check is sloppy. */
-    const val LENGTH_GRACE_SEC = 1.0
-
-    /** An overshoot of this many seconds or less is trimmed off rather than made into another part. */
-    const val TRIM_TOLERANCE_SEC = 0.5
-
-    /** What the app actually aims for: the target's limit minus [LENGTH_GRACE_SEC] (e.g. 300 -> 299). */
-    fun effectiveMaxSec(maxDurationSec: Int): Double =
-        (maxDurationSec - LENGTH_GRACE_SEC).coerceAtLeast(1.0)
+    /** What the app actually aims for: the target's limit minus the length grace (e.g. 300 -> 299). */
+    fun effectiveMaxSec(maxDurationSec: Int, tuning: Tuning): Double =
+        (maxDurationSec - tuning.lengthGraceSec).coerceAtLeast(1.0)
 
     /**
      * How many files a video of [durationSec] becomes for a target with this [maxDurationSec]
-     * (1 = no split). A video that only just overshoots (by [TRIM_TOLERANCE_SEC] or less, per
+     * (1 = no split). A video that only just overshoots (by the trim tolerance or less, per
      * part) is trimmed to fit instead of getting an extra, almost-empty part.
      */
-    fun partCount(durationSec: Double, maxDurationSec: Int): Int {
-        val eff = effectiveMaxSec(maxDurationSec)
-        return max(1, ceil((durationSec - TRIM_TOLERANCE_SEC) / eff).toInt())
+    fun partCount(durationSec: Double, maxDurationSec: Int, tuning: Tuning): Int {
+        val eff = effectiveMaxSec(maxDurationSec, tuning)
+        return max(1, ceil((durationSec - tuning.trimToleranceSec) / eff).toInt())
     }
-
-    private const val AUDIO_KBPS = 64
-    // Audio is allowed to drop this low (rather than fail outright) when the budget is tight.
-    private const val MIN_AUDIO_KBPS = 32
-    private const val MIN_VIDEO_KBPS = 40
-
-    // Aim a little under the limit: container overhead + rate-control overshoot.
-    private const val INITIAL_TARGET = 0.95
-    // Retry headroom: deliberately small. A big fixed cushion here (the old value was 0.97) can
-    // overcorrect a near-miss (e.g. 0.5% over the limit) into a much bigger cut than it needed,
-    // which was pushing audio+video combinations right up against MIN_VIDEO_KBPS and failing.
-    private const val RETRY_MARGIN = 0.99
-    private const val MAX_ATTEMPTS = 4
-
-    // Minimum bits-per-pixel before a frame size is accepted; Fastest uses a higher value,
-    // which picks smaller frames (fewer pixels to encode).
-    private const val NORMAL_BPP = 0.06
-    private const val FASTEST_BPP = 0.12
 
     fun cancel() {
         FFmpegKit.cancel()
@@ -322,7 +304,8 @@ object Converter {
      */
     fun clearWorkFiles(ctx: Context) {
         ctx.cacheDir.listFiles()?.filter {
-            it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name.startsWith("ffpass")
+            it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name == "audioprobe.webm" ||
+                it.name.startsWith("ffpass")
         }?.forEach { it.delete() }
     }
 
@@ -343,14 +326,15 @@ object Converter {
         FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
         try {
             val remaining = (src.durationSec - startSec).coerceAtLeast(0.0)
-            val effMax = effectiveMaxSec(settings.maxDurationSec)
+            val t = settings.tuning
+            val effMax = effectiveMaxSec(settings.maxDurationSec, t)
             val duration = clipDurationSec ?: min(remaining, effMax)
             val trimmed = clipDurationSec == null && src.durationSec > effMax
             val audioOn = settings.keepAudio && src.hasAudio
 
             val out = File(ctx.cacheDir, "out.webm")
             val passLog = File(ctx.cacheDir, "ffpass").absolutePath
-            var budgetBytes = settings.limitBytes * INITIAL_TARGET
+            var budgetBytes = settings.limitBytes * (t.firstTargetPct / 100.0)
             var lastHeight = 0
             var lastKbps = 0
             val hasMin = settings.minWidth > 0 || settings.minHeight > 0
@@ -361,28 +345,76 @@ object Converter {
             val lagFrames = if (settings.fastest) "8" else "25"
             val effortName = if (settings.fastest) "Fastest" else if (settings.fastEncode) "Speed" else "Quality"
 
-            for (attempt in 1..MAX_ATTEMPTS) {
+            // Carried from one attempt to the next, for the audio analysis (see below).
+            var lastSize = 0L
+            var lastVideoKbps = 0
+            var lastAudioKbps = 0
+            // Size of this clip's audio on its own at the normal audio bitrate: -1 = not measured
+            // yet, 0 = tried and couldn't.
+            var audioBytes = -1L
+            var audioAnalysed = false
+
+            for (attempt in 1..t.maxAttempts) {
                 val totalKbps = budgetBytes * 8.0 / duration / 1000.0
-                // Audio normally gets a fixed 64 kbps, but on a tight budget that alone can push
-                // video under MIN_VIDEO_KBPS and fail a clip that would otherwise fit fine. Let
-                // audio flex down (as low as MIN_AUDIO_KBPS) before giving up on the attempt.
-                val audioKbps = when {
+                // Audio normally gets its full bitrate, but on a tight budget that alone can push
+                // video under the minimum and fail a clip that would otherwise fit fine. Let audio
+                // flex down (as low as the minimum audio bitrate) before giving up on the attempt.
+                var audioKbps = when {
                     !audioOn -> 0
-                    totalKbps - AUDIO_KBPS >= MIN_VIDEO_KBPS -> AUDIO_KBPS
-                    totalKbps - MIN_AUDIO_KBPS >= MIN_VIDEO_KBPS -> (totalKbps - MIN_VIDEO_KBPS).toInt()
-                    else -> MIN_AUDIO_KBPS
+                    totalKbps - t.audioKbps >= t.minVideoKbps -> t.audioKbps
+                    totalKbps - t.minAudioKbps >= t.minVideoKbps -> (totalKbps - t.minVideoKbps).toInt()
+                    else -> t.minAudioKbps
                 }
-                val vKbps = (totalKbps - audioKbps).toInt()
-                if (vKbps < MIN_VIDEO_KBPS) {
+                var vKbps = (totalKbps - audioKbps).toInt()
+
+                // AUDIO ANALYSIS. Normally the audio is simply assumed to cost its nominal bitrate,
+                // but Vorbis often comes out under that, and the usual retry (which scales the whole
+                // file) can't tell a video overshoot from an audio one. If the earlier attempts
+                // still went over, measure the audio on its own (a quick audio-only encode), work
+                // out how the video encoder really responded to its bitrate, and give the video
+                // exactly what's left of the limit. Only when the earlier attempt used the normal
+                // audio bitrate, so that the measurement matches the audio inside its file.
+                if (audioOn && attempt >= t.audioAnalysisAttempt &&
+                    lastSize > 0 && lastVideoKbps > 0 && lastAudioKbps == t.audioKbps
+                ) {
+                    if (audioBytes < 0) {
+                        onLog("   still over the limit after ${attempt - 1} attempts: measuring the audio on its own for a closer fit")
+                        onProgress(-1f, "Attempt $attempt/${t.maxAttempts}: still too big, analysing the audio for a closer fit…")
+                        audioBytes = measureAudioBytes(input, startSec, duration, t.audioKbps, File(ctx.cacheDir, "audioprobe.webm"))
+                        if (audioBytes == MEASURE_CANCELLED) return@withContext ConvertResult.Cancelled
+                        if (audioBytes > 0) {
+                            onLog("   audio at ${t.audioKbps} kbps comes out at %.1f kbps for this clip".format(java.util.Locale.US, audioBytes * 8.0 / duration / 1000.0))
+                        } else {
+                            onLog("   couldn't measure the audio; carrying on with the usual retry")
+                        }
+                    }
+                    if (audioBytes > 0) {
+                        val videoObserved = lastSize - audioBytes
+                        val videoAsked = lastVideoKbps * 1000.0 / 8.0 * duration
+                        if (videoObserved > 0 && videoAsked > 0) {
+                            val response = videoObserved / videoAsked // how much video it actually produced per bit asked for
+                            val wanted = settings.limitBytes * (t.retryMarginPct / 100.0) - audioBytes
+                            val analysedKbps = (wanted / response * 8.0 / duration / 1000.0).toInt()
+                            if (analysedKbps >= t.minVideoKbps) {
+                                onLog("   video came out at %.0f%% of its bitrate target; now %d kbps video".format(java.util.Locale.US, response * 100, analysedKbps))
+                                audioKbps = t.audioKbps
+                                vKbps = analysedKbps
+                                audioAnalysed = true
+                            }
+                        }
+                    }
+                }
+
+                if (vKbps < t.minVideoKbps) {
                     return@withContext ConvertResult.Fail(
                         "Video is too long for this size limit" +
                             if (audioOn) " with audio. Try removing audio." else "."
                     )
                 }
-                if (audioOn && audioKbps < AUDIO_KBPS) {
+                if (audioOn && audioKbps < t.audioKbps) {
                     onLog("   audio bitrate reduced to ${audioKbps} kbps to fit the limit")
                 }
-                val height = chooseHeight(vKbps, src, minHeight, if (settings.fastest) FASTEST_BPP else NORMAL_BPP)
+                val height = chooseHeight(vKbps, src, minHeight, if (settings.fastest) t.fastestBpp else t.normalBpp)
                 lastHeight = height
                 lastKbps = vKbps
 
@@ -431,13 +463,13 @@ object Converter {
                         val frac = (st.time.toDouble() / 1000.0 / duration).coerceIn(0.0, 1.0)
                         onProgress(
                             frac.toFloat(),
-                            "Attempt $attempt/$MAX_ATTEMPTS, pass 2/2: encoding (${height}p, ${vKbps} kbps)"
+                            "Attempt $attempt/${t.maxAttempts}, pass 2/2: encoding (${height}p, ${vKbps} kbps)"
                         )
                     }
                 }
 
                 onLog(
-                    "== Attempt $attempt/$MAX_ATTEMPTS: ${height}p, $vKbps kbps video" +
+                    "== Attempt $attempt/${t.maxAttempts}: ${height}p, $vKbps kbps video" +
                         (if (audioOn) " + $audioKbps kbps audio" else ", no audio") +
                         (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
@@ -446,7 +478,7 @@ object Converter {
                 onLog("   encoder effort: $effortName (cpu-used $cpuUsed)")
                 onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
                 FFmpegKitConfig.enableStatisticsCallback { }
-                onProgress(-1f, "Attempt $attempt/$MAX_ATTEMPTS, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
+                onProgress(-1f, "Attempt $attempt/${t.maxAttempts}, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
                 val p1 = FFmpegKit.executeWithArguments(
                     (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
                 )
@@ -456,7 +488,7 @@ object Converter {
                 }
 
                 onLog("-- pass 2/2: encoding")
-                onProgress(0f, "Attempt $attempt/$MAX_ATTEMPTS, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
+                onProgress(0f, "Attempt $attempt/${t.maxAttempts}, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
                 pass2Stats()
                 val audioArgs = if (audioOn) {
                     listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", "2")
@@ -470,26 +502,59 @@ object Converter {
                 }
 
                 val size = out.length()
+                lastSize = size
+                lastVideoKbps = vKbps
+                lastAudioKbps = audioKbps
                 onLog("== Attempt $attempt result: $size bytes (limit ${settings.limitBytes})")
                 if (size in 1..settings.limitBytes) {
                     onProgress(1f, "Done")
                     cleanupLogs(ctx)
                     return@withContext ConvertResult.Ok(
-                        out, size, lastHeight, lastKbps, trimmed, settings.keepAudio && !src.hasAudio, audioOn
+                        out, size, lastHeight, lastKbps, trimmed, settings.keepAudio && !src.hasAudio, audioOn,
+                        attempts = attempt, audioAnalysed = audioAnalysed,
                     )
                 }
                 // Too big: shrink the budget proportionally and retry.
                 onLog("   over the limit, retrying with a smaller bitrate")
-                budgetBytes *= (settings.limitBytes * RETRY_MARGIN) / size.toDouble()
+                budgetBytes *= (settings.limitBytes * (t.retryMarginPct / 100.0)) / size.toDouble()
             }
             cleanupLogs(ctx)
-            ConvertResult.Fail("Couldn't get under the size limit after $MAX_ATTEMPTS attempts.")
+            ConvertResult.Fail("Couldn't get under the size limit after ${t.maxAttempts} attempts.")
         } finally {
             // Detach so later ffprobe/ffmpeg calls don't write into a finished run's log.
             FFmpegKitConfig.enableLogCallback { }
             FFmpegKitConfig.enableStatisticsCallback { }
         }
     }
+
+    private const val MEASURE_CANCELLED = -1L
+
+    /**
+     * Encodes just this clip's audio at [kbps] into [probeOut] and returns its size in bytes, to
+     * learn what the audio really costs (Vorbis often comes out under its nominal bitrate).
+     * 0 = couldn't be measured; [MEASURE_CANCELLED] = the user cancelled. Deletes the file.
+     */
+    private fun measureAudioBytes(input: File, startSec: Double, duration: Double, kbps: Int, probeOut: File): Long {
+        val r = FFmpegKit.executeWithArguments(
+            (listOf("-y") + seekArgs(startSec) + listOf(
+                "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, duration),
+                "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
+                "-c:a", "libvorbis", "-b:a", "${kbps}k", "-ac", "2",
+                "-f", "webm", probeOut.absolutePath,
+            )).toTypedArray()
+        )
+        val bytes = when {
+            ReturnCode.isCancel(r.returnCode) -> MEASURE_CANCELLED
+            ReturnCode.isSuccess(r.returnCode) -> probeOut.length()
+            else -> 0L
+        }
+        probeOut.delete()
+        return bytes
+    }
+
+    /** Input seeking: fast (keyframe-based demux seek), and frame-accurate because we re-encode. */
+    private fun seekArgs(startSec: Double): List<String> =
+        if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()
 
     private fun tail(s: String?): String = s?.takeLast(400)?.trim().orEmpty()
 

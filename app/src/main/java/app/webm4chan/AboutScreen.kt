@@ -4,8 +4,10 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -26,7 +28,7 @@ private const val REPO_URL = "https://github.com/jpeg91/WebMChan"
 
 /** A simple About page: what the app is, how it works, what it's built with, and where to find the source. */
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
     val ctx = LocalContext.current
     val version = remember {
         try {
@@ -50,11 +52,14 @@ fun AboutScreen(onBack: () -> Unit) {
 
         Text("About WebMChan", style = MaterialTheme.typography.headlineMedium)
         if (version != null) Text("Version $version", style = MaterialTheme.typography.bodyMedium)
+        TextButton(onClick = onAdvanced) { Text("Advanced settings (for testing) →") }
 
         Text(
-            "WebMChan makes it simple to turn your videos into WebM files that fit a board's rules. " +
-                "Pick your videos, pick a board, and get files that are ready to post. " +
-                "Everything runs on your phone, and your videos are never uploaded anywhere.",
+            "WebMChan, the no fuss 4chan WebM converter for Android.\n\n" +
+                "Pick a video (or a whole batch), choose a board, get .webm files that fit.\n\n" +
+                "Select from a list of boards and their requirement presets (or set your own).\n\n" +
+                "Converted videos target the highest possible quality within the board's constraints.\n\n" +
+                "Everything runs locally. The app has no network permission, nothing is uploaded.",
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -62,7 +67,7 @@ fun AboutScreen(onBack: () -> Unit) {
         Text(
             "1. Choose one or more videos.\n" +
                 "2. Pick the board you're posting to. Its rules (file size, length, minimum resolution and audio) are applied for you.\n" +
-                "3. Tap Convert. The app works out the best quality that fits under the size limit and encodes each video in two passes, aiming for about 95% of the limit.\n" +
+                "3. Tap Convert. Long videos will be split. The app works out the best quality that fits under the size limit and encodes each video in two passes, aiming for about 97.5% of the limit.\n" +
                 "4. If a result still comes out over the limit, it's retried automatically a little smaller.\n" +
                 "5. Finished videos are saved to your chosen folder (Download/WebMChan by default) and can be shared straight from the app.",
             style = MaterialTheme.typography.bodyMedium
@@ -116,7 +121,7 @@ fun AboutScreen(onBack: () -> Unit) {
         )
 
         Text(
-            "Created by jpeg91",
+            "Created by jpeg91\nWith great thanks to my wife, Lauren",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
@@ -124,11 +129,12 @@ fun AboutScreen(onBack: () -> Unit) {
         // England flag (St George's Cross), written as escapes so it survives any file encoding:
         // black flag + tag letters "gbeng" + cancel tag.
         Text(
-            "\uD83C\uDFF4\uDB40\uDC67\uDB40\uDC62\uDB40\uDC65\uDB40\uDC6E\uDB40\uDC67\uDB40\uDC7F",
+            "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
             fontSize = 32.sp,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
+        Spacer(Modifier.height(16.dp))
     }
 }
 
