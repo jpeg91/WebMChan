@@ -205,7 +205,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 -Note: not necessarily in order-
 - Deeper Custom controls
-- Analysis stage overhaul (with splitting in mind)
+- Android top bar notification icon
 - Add videos to queue during conversion
 - Output renaming
 - UI improvements (split into pages? Wizard style work flow?)
