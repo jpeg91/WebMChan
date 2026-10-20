@@ -55,7 +55,7 @@ You can leave the app, use other apps, lock the screen and completely forget abo
 See what's happening while it converts, and copy the log if you need to report a problem.
 
 <details>
-  <summary><b>Screenshot</b></summary>
+  <summary><b>Screenshot (Outdated)</b></summary>
 
 <img width="1080" height="7213" alt="Screenshot_20261019-211734_WebMChan" src="https://github.com/user-attachments/assets/098eb9a5-9eec-4fad-a3a1-41382f65fdac" />
 
