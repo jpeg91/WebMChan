@@ -4,8 +4,10 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -53,11 +55,11 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         TextButton(onClick = onAdvanced) { Text("Advanced settings (for testing) →") }
 
         Text(
-            "WebMChan, the no fuss 4chan WebM converter for Android." +
-"Pick a video (or a whole batch), choose a board, get .webm files that fit." +
-"Select from a list of boards and their requirement presets (or set your own)." +
-"Converted videos target the highest possible quality within the board's constraints." +
-"Everything runs locally. The app has no network permission, nothing is uploaded.",
+            "WebMChan, the no fuss 4chan WebM converter for Android.\n\n" +
+                "Pick a video (or a whole batch), choose a board, get .webm files that fit.\n\n" +
+                "Select from a list of boards and their requirement presets (or set your own).\n\n" +
+                "Converted videos target the highest possible quality within the board's constraints.\n\n" +
+                "Everything runs locally. The app has no network permission, nothing is uploaded.",
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -119,8 +121,7 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         )
 
         Text(
-            "Created by jpeg91",
-            "With great thanks to my wife, Lauren",
+            "Created by jpeg91\nWith great thanks to my wife, Lauren",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
@@ -128,15 +129,12 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         // England flag (St George's Cross), written as escapes so it survives any file encoding:
         // black flag + tag letters "gbeng" + cancel tag.
         Text(
-            "\uD83C\uDFF4\uDB40\uDC67\uDB40\uDC62\uDB40\uDC65\uDB40\uDC6E\uDB40\uDC67\uDB40\uDC7F",
-            " ",
-            " ",
-            " ",
-            " ",
+            "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
             fontSize = 32.sp,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
+        Spacer(Modifier.height(16.dp))
     }
 }
 
