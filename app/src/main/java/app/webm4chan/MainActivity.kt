@@ -278,7 +278,9 @@ private fun QueueRow(
             val maxParts = Converter.maxPartCount(i.durationSec, maxDuration, t)
             val est = Converter.estimate(i, settings, item.extraParts)
             val numParts = est.parts
-            if (numParts > 1) {
+            // Only when the board's limit forces the split. A clip already under the limit that
+            // was split further with the stepper just shows its part count on the stepper row.
+            if (minParts > 1) {
                 Text(
                     "Will be split into $numParts files to fit the ${maxDuration}s limit " +
                         "(${Converter.partName(1, numParts)}, ${Converter.partName(2, numParts)}, … " +

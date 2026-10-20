@@ -38,13 +38,13 @@ private data class FieldSpec(
 private val FIELDS = listOf(
     FieldSpec(
         "firstTargetPct", "First attempt target (% of limit)",
-        "Default 97.5. Allowed 80 to 110. How full the first encode aims to make the file. " +
+        "Default 99. Allowed 80 to 110. How full the first encode aims to make the file. " +
             "The rest is margin against overshooting. Above 100 the file is expected to go over " +
             "the limit (for testing).", false,
     ),
     FieldSpec(
         "retryMarginPct", "Retry target (% of limit)",
-        "Default 99. Allowed 80 to 110. What a retry aims for after going over. Above 100 a " +
+        "Default 97.5. Allowed 80 to 110. What a retry aims for after going over. Above 100 a " +
             "retry no longer aims to get under the limit (for testing).", false,
     ),
     FieldSpec(

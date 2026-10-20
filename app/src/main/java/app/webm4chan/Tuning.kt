@@ -18,13 +18,13 @@ data class Tuning(
      * First attempt aims for this % of the size limit. The rest is safety margin. Can be taken
      * up to 110% for testing (a file over the limit then counts as too big and is retried).
      */
-    val firstTargetPct: Double = 97.5,
+    val firstTargetPct: Double = 99.0,
     /**
-     * A retry aims for this % of the limit. Deliberately close to the limit: a big cushion can
-     * overcorrect a near-miss into a much bigger cut than needed. Can be taken up to 110% for
-     * testing.
+     * A retry aims for this % of the limit. Lower than the first attempt: a file that has already
+     * come out over has shown the encoder overshooting, so the retry leaves a bigger cushion. Can
+     * be taken up to 110% for testing.
      */
-    val retryMarginPct: Double = 99.0,
+    val retryMarginPct: Double = 97.5,
     /** How many encodes to try before giving up on a clip. */
     val maxAttempts: Int = 4,
     /** Normal audio bitrate, in kbps. */
