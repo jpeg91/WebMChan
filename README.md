@@ -12,23 +12,53 @@ Output is saved to `Download/WebMChan/` by default, or to a `WebMChan` folder in
 
 Everything runs locally. The app has no network permission, nothing is uploaded.
 
-> **Status:** Early development version. Uninstall any previously installed versions, then install as you would any `.apk`. "Unknown Sources" must be enabled in Developer Options. Please report bugs.
+> **Status:** Early development version. **Uninstall any previous version,** then install as you would any `.apk`. Please report bugs.
 
 **[Download the Latest Release](https://github.com/jpeg91/WebMChan/releases/latest)**
 
 ## What it does
 
-- **Board presets.** Pick the board(s) you're posting to and the app applies that board's WebM rules for you: file size, length, minimum resolution and audio. Or choose Custom and set your own size limit.
-- **Batch mode.** Select one video or several, and convert them all in one go with the same settings.
-- **Best quality that fits.** Each video is done in two passes (analysis then encode), aiming for about 95% of the size limit, so you get as much quality as the limit allows.
-- **Simple options.** Choose Quality, Speed or Fastest, VP8 (recommended) or VP9, and whether to keep the audio.
-- **Your choice of save location.** Videos are saved to `Download/WebMChan/` by default, or to a folder you choose, such as one on an SD card. Share them straight from the app.
-- **Progress and log.** See what's happening while it converts, and copy the log if you need to report a problem.
+### Board presets
+
+Pick the board(s) you're posting to and the app applies that board's WebM rules for you: file size, length, minimum resolution and audio. Or choose Custom and set your own size limit.
+
+### Automatic splitting
+
+If a video is longer than the board's maximum length, WebMChan splits it into numbered parts that fit the limit. If a split conversion is interrupted or a part fails, converting again continues from the next part rather than repeating parts already saved.
+
+### Best quality that fits
+
+Each video is converted in two passes (analysis then encode), aiming for about 95% of the size limit, so you get as much quality as the limit allows.
+
+### Batch mode
+
+Select one video or several, and convert them all in one go with the same settings.
+
+### Simple options
+
+Choose Quality, Speed or Fastest modes, VP8 (recommended) or VP9, and whether to keep the audio.
+
+### Your choice of save location
+
+Videos are saved to `Download/WebMChan/` by default, or to a folder you choose, such as one on an SD card. Share them straight from the app.
+
+### Thumbnails and previews
+
+See a thumbnail for each queued or finished video, and tap it to play the source or converted video.
+
+### Background conversion
+
+You can leave the app, use other apps, lock the screen and completely forget about it whilst a batch runs. If Android does manage to kill the background process (likely due to battery savers) the queue can be resumed; a notification shows progress and lets you cancel.
+
+### Progress and log
+
+See what's happening while it converts, and copy the log if you need to report a problem.
 
 <details>
-  <summary><b>Screenshot (Outdated)</b></summary>
+  <summary><b>Screenshot</b></summary>
 
-<img width="1080" height="5113" alt="WebMChan_Screenshot" src="https://github.com/user-attachments/assets/e90a05ba-a7e1-4d9e-9a5c-c66c57aa7559" />
+<img width="1080" height="7213" alt="Screenshot_20261019-211734_WebMChan" src="https://github.com/user-attachments/assets/098eb9a5-9eec-4fad-a3a1-41382f65fdac" />
+
 
 </details>
 
@@ -47,11 +77,11 @@ Finished videos stay in the list. Pressing Convert again only processes the ones
 
 ### 1. Reading the video
 
-When you pick videos, the app asks FFmpeg's probe tool for each one's length, width, height, frame rate and whether it has an audio track. That's all it needs to plan the conversion. When you tap Convert, the videos are processed one at a time: each is copied into the app's private cache so FFmpeg can read it as an ordinary file, and that copy is deleted afterwards.
+When you pick videos, the app asks FFmpeg's probe tool for each one's length, width, height, frame rate and whether it has an audio track. It also creates a thumbnail for the queue card; tapping the thumbnail plays the source video. When you tap Convert, the videos are processed one at a time: each source is copied into the app's private cache so FFmpeg can read it as an ordinary file, and that copy is deleted afterwards.
 
 ### 2. Applying the board's rules
 
-The board you pick supplies four numbers: the file size limit, the maximum length, the minimum resolution and whether audio is allowed. If the clip is longer than the maximum length, only the first part is encoded (splitting into parts is planned). Boards with identical rules are grouped into one option, and each option lists its limits and the boards it covers, for example `4 MB · Min 500×500 · 120 s` for `/hc/ /s/`. Custom has its own size limit, no minimum resolution and a 300 s length cap.
+The board you pick supplies four numbers: the file size limit, the maximum length, the minimum resolution and whether audio is allowed. If the clip is longer than the maximum length, it is split into parts that fit the limit. Each part is saved separately, with numbered filenames. If a split conversion is interrupted or a part fails, pressing Convert again continues from the next part rather than repeating parts already saved. Boards with identical rules are grouped into one option, and each option lists its limits and the boards it covers, for example `4 MB · Min 500×500 · 120 s` for `/hc/ /s/`. Custom has its own size limit, no minimum resolution and a 300 s length cap.
 
 ### 3. Working out the bitrate
 
@@ -92,8 +122,7 @@ In plain terms: **Quality** is the default and gives the best detail. **Speed** 
 When VP9 is selected, a few extra settings apply:
 - **Multithreading.** Row-based multithreading is turned on, and Fastest adds tile columns so more cores can work at once.
 - **Plain 8-bit colour.** The video is forced to standard 8-bit colour so that most players and can decode it.
-- **Colour-space flag.** <s>The colour-space flag is set to "unspecified". Some downloaded clips are tagged as RGB, and VP9 would copy that tag into a format where it's invalid, which made players show green garbage. This fixes it in most cases. VP8 has neither problem, because it always stores standard 8-bit colour.</s>
-Turns out that didn't fix it in most cases. Added -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv to the common args used by every encode (VP8 and VP9 alike), explicitly tagging the output as standard SDR video. Removed the old VP9-only -colorspace unknown workaround, since the new explicit bt709 tag supersedes it and is more correct than “unknown” (a real tag, not just “don’t tag it”). Left -pix_fmt yuv420p and -row-mt 1 as VP9-only, since those address the separate 10-bit/HDR and multithreading issues and don’t apply to VP8. 
+The output is tagged as standard SDR video. VP9 also uses 8-bit colour and row-based multithreading; Fastest mode enables tile columns to make better use of multiple CPU cores.
 
 
 
@@ -109,13 +138,13 @@ After pass 2, the app measures the real file. If it's within the limit, it's don
 
 ### 8. Saving
 
-Each finished file is saved using the original file name plus a short marker for the audio and speed settings used (for example `-MQ` for no audio at Quality, or `-AF` for audio kept at Fastest), and the **Share** button opens Android's share sheet.
+Each finished file is saved using the original file name plus a short marker for the audio and speed settings used (for example `-MQ` for no audio at Quality, or `-AF` for audio kept at Fastest). Split videos also include a numbered part marker. The **Share** button opens Android's share sheet. Tapping a thumbnail on a finished card plays the converted video.
 
 By default the file goes to internal storage at `Download/WebMChan/`. **Choose folder** lets you pick somewhere else, such as a folder on an SD card, and **Use default** switches back. If you've chosen a folder, it's written through Android's Storage Access Framework into a `WebMChan` subfolder there (or straight into the folder if it's already named `WebMChan`). If that folder can't be written to (for example the SD card has been removed), the app quietly saves to `Download/WebMChan/` instead and says so in the result. If the file name already exists in the destination, ` (1)`, ` (2)`, ` (3)`... etc is added to the file name. Temporary files (the cache copy, the pass-1 analysis file and the encoded output once it has been saved) are removed afterwards.
 
 ### Progress and the live log
 
-The first pass only analyses the video and FFmpeg reports no progress during it, so the progress bar animates until the second pass starts, then shows real progress during the second pass. When converting several videos, it also shows which one is being processed (for example "Video 2 of 5").
+The first pass only analyses the video and FFmpeg reports no progress during it, so the progress bar animates until the second pass starts, then shows real progress during the second pass. When converting several videos, it also shows which one is being processed (for example "Video 2 of 5"). Conversion runs in a foreground service, so you can lock the screen or leave the app while it runs. The notification shows progress and has a Cancel button. Android notification permission is needed to see notifications.
 
 The live log is a scrolling readout of what FFmpeg is doing, with a **Copy log** button. It's handy for checking progress and for reporting errors.
 
@@ -162,7 +191,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 ## Known limits
 
-- Keep the app open while converting (the screen will not sleep until conversion is complete). There's no background service yet, so a long batch needs the app left open and the phone awake.
+- Background conversion relies on Android's foreground-service and notification support. On Android 13 and newer, allow notifications so you can see conversion progress and use the notification controls.
 - Android 11 and newer won't let an app use the top level of an SD card, or the `Download` folder, as a custom save folder. Pick or create a subfolder instead (This is why the app always places the outputs in a subfolder named `WebMChan`. If any folder named `WebMChan` is selected as a custom save location, the output will be saved there. Recursive subfolders will not be created).
 - Finished videos stay in the batch list. To convert one again with different settings, remove it and add it again.
 - Encoding on a phone can be slow. VP9 is slower still. Speed and Fastest modes help but Fastest should be used very sparingly.
@@ -174,16 +203,23 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 ## Features still to add
 
-- Background service
-- Split videos over the target time length
-- UI improvements
+-Note: not necessarily in order-
+- Deeper Custom controls
+- Analysis stage overhaul (with splitting in mind)
+- Add videos to queue during conversion
+- Output renaming
+- UI improvements (split into pages? Wizard style work flow?)
+- Conversion history page with options for individual videos (Delete, Share, Info, Rename etc)
+- 'About' page updates and improvements
+- 'Clear video cache' option with cache size readout for peace of mind
+- Tool tips
+- UI theming & mascot
+- App icons etc
 - Frame rate options
 - Custom resolution targets that maintain aspect ratio
-- Custom output time length and custom splitting options
 - Bug reporting (the Copy log button is a start). Please report any issues through github
 - Update handling
 - Naming conventions and further save settings
-- About / app info page
 - App name standardising
+- Proper version number handling
 - Consistent signing key
-- Publish APK

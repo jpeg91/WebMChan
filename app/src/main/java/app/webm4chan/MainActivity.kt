@@ -5,13 +5,18 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.widget.Toast
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -54,10 +59,16 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -67,8 +78,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -114,6 +127,49 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Opens [uri] in whatever video player the phone offers (its default, or a chooser). */
+private fun playVideo(ctx: Context, uri: Uri, mime: String) {
+    val view = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, mime)
+        // The player isn't us, so it needs a read grant for this particular file.
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    try {
+        ctx.startActivity(view)
+    } catch (_: Exception) {
+        Toast.makeText(ctx, "No app found to play this video.", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/**
+ * A card's preview picture. Shows a plain box until the thumbnail exists (or if it never does).
+ * Tapping it ([onClick], when set) plays the video.
+ */
+@Composable
+private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
+    val ctx = LocalContext.current
+    val bitmap by produceState<ImageBitmap?>(null, item.id, item.hasThumb) {
+        value = if (item.hasThumb) {
+            withContext(Dispatchers.IO) {
+                BitmapFactory.decodeFile(Thumbnails.file(ctx, item.id).absolutePath)?.asImageBitmap()
+            }
+        } else null
+    }
+    Box(
+        Modifier
+            .size(width = 112.dp, height = 72.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color.Black)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        bitmap?.let {
+            // Fit, not Crop: shows the whole frame, so a portrait clip isn't cut off.
+            Image(it, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        }
+    }
+}
+
 @Composable
 private fun QueueButton(label: String, enabled: Boolean, onClick: () -> Unit) {
     TextButton(
@@ -141,6 +197,16 @@ private fun QueueRow(
 ) {
     val ctx = LocalContext.current
     val i = item.info
+
+    // Tapping the thumbnail plays the video: the converted file on a Finished card, the original
+    // on a queue card. Nothing to play if the file is gone or the original couldn't be read.
+    val finishedCard = item.status == ItemStatus.DONE
+    val playUri: Uri? = when {
+        finishedCard -> item.savedUri
+        item.probeFailed || i == null -> null
+        else -> item.uri
+    }
+
     Column(
         Modifier
             .fillMaxWidth()
@@ -149,6 +215,19 @@ private fun QueueRow(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            if (!item.probeFailed) {
+                Thumb(
+                    item,
+                    onClick = playUri?.let { u ->
+                        {
+                            // The file type is looked up only when tapped, not on every redraw.
+                            val mime = if (finishedCard) "video/webm" else (ctx.contentResolver.getType(u) ?: "video/*")
+                            playVideo(ctx, u, mime)
+                        }
+                    },
+                )
+                Spacer(Modifier.size(10.dp))
+            }
             Column(Modifier.weight(1f)) {
                 Text(item.name, style = MaterialTheme.typography.titleSmall)
                 when {
@@ -182,9 +261,12 @@ private fun QueueRow(
         }
 
         if (i != null && item.status != ItemStatus.DONE) {
-            if (i.durationSec > maxDuration) {
+            val numParts = Converter.partCount(i.durationSec, maxDuration)
+            if (numParts > 1) {
                 Text(
-                    "Longer than ${maxDuration}s: it will be cut to the first ${maxDuration}s.",
+                    "Will be split into $numParts files to fit the ${maxDuration}s limit " +
+                        "(${Converter.partName(1, numParts)}, ${Converter.partName(2, numParts)}, … " +
+                        "${Converter.partName(numParts, numParts)}).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary
                 )

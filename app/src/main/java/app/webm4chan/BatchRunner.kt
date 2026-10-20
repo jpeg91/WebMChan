@@ -16,7 +16,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
+import kotlin.math.min
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -36,6 +38,15 @@ data class QueueItem(
     val detail: String? = null,
     /** Where the converted file was saved, once done. */
     val savedUri: Uri? = null,
+    /**
+     * Split videos only: how many parts have already been converted and saved, and how many there
+     * are in total. Lets Convert carry on from the next part after a failure, skip or app restart
+     * instead of redoing (and duplicating) the parts that are already saved. 0 / 0 = not split.
+     */
+    val partsDone: Int = 0,
+    val partsTotal: Int = 0,
+    /** Whether a thumbnail file exists for this card (see [Thumbnails]). */
+    val hasThumb: Boolean = false,
 )
 
 /**
@@ -133,6 +144,10 @@ object BatchRunner {
         if (restored) return
         restored = true
 
+        // A fresh process means nothing is converting: clear working files (staged source copies,
+        // encoder output) that a run the system killed part-way left in the cache.
+        Converter.clearWorkFiles(appCtx)
+
         val state = BatchStore.load(appCtx) ?: return
         ids.set(maxOf(ids.get(), state.lastId))
         queue.addAll(
@@ -141,7 +156,10 @@ object BatchRunner {
                 if (it.status == ItemStatus.CONVERTING) {
                     it.copy(
                         status = ItemStatus.CANCELLED,
-                        detail = "Interrupted when the app closed. Press Convert to try again.",
+                        detail = if (it.partsDone > 0 && it.partsDone < it.partsTotal) {
+                            "Interrupted when the app closed (${it.partsDone} of ${it.partsTotal} parts saved). " +
+                                "Press Convert to continue from part ${it.partsDone + 1}."
+                        } else "Interrupted when the app closed. Press Convert to try again.",
                     )
                 } else it
             }
@@ -197,6 +215,15 @@ object BatchRunner {
                 if (at >= 0) queue[at] = queue[at].copy(info = i, probeFailed = i == null)
             }
 
+            // Thumbnails for queued videos that don't have one (or lost the file).
+            for (id in queue.map { it.id }) {
+                val item = queue.firstOrNull { it.id == id } ?: continue
+                val info = item.info ?: continue
+                if (item.status == ItemStatus.FAILED && item.probeFailed) continue
+                if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
+                setThumb(ctx, id, item.uri, null, info.durationSec, queue)
+            }
+
             // Finished files might have been deleted or moved outside the app (or the SD card
             // removed). Keep the card, but drop its Share button and say why.
             for (id in finished.map { it.id }) {
@@ -212,9 +239,42 @@ object BatchRunner {
                     )
                 }
             }
+
+            // Thumbnails for finished videos that don't have one (made before thumbnails existed,
+            // or lost): taken from the saved file itself.
+            for (id in finished.map { it.id }) {
+                val item = finished.firstOrNull { it.id == id } ?: continue
+                val saved = item.savedUri ?: continue
+                val info = item.info ?: continue
+                if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
+                setThumb(ctx, id, saved, null, info.durationSec, finished)
+            }
+
+            Thumbnails.pruneExcept(ctx, (queue + finished).map { it.id }.toSet())
         } finally {
             probing--
             persist()
+        }
+    }
+
+    /**
+     * Makes the thumbnail for card [id] (from [uri] or [file]) and marks it on the card in [list].
+     * If the card was removed in the meantime, the new thumbnail is thrown away.
+     */
+    private suspend fun setThumb(
+        ctx: Context,
+        id: Long,
+        uri: Uri?,
+        file: File?,
+        durationSec: Double,
+        list: MutableList<QueueItem>,
+    ) {
+        val ok = Thumbnails.create(ctx, id, uri, file, durationSec)
+        val at = list.indexOfFirst { it.id == id }
+        if (at < 0) {
+            Thumbnails.delete(ctx, id)
+        } else if (list[at].hasThumb != ok) {
+            list[at] = list[at].copy(hasThumb = ok)
         }
     }
 
@@ -256,6 +316,7 @@ object BatchRunner {
                     // The item may have been removed while probing.
                     val at = queue.indexOfFirst { it.id == item.id }
                     if (at >= 0) queue[at] = queue[at].copy(info = i, probeFailed = i == null)
+                    if (i != null) setThumb(appCtx, item.id, item.uri, null, i.durationSec, queue)
                 }
             } finally {
                 probing--
@@ -275,20 +336,29 @@ object BatchRunner {
 
     fun removeAt(index: Int) {
         if (index !in queue.indices) return
-        appContext?.let { releaseAccess(it, queue[index].uri) }
+        appContext?.let {
+            releaseAccess(it, queue[index].uri)
+            Thumbnails.delete(it, queue[index].id)
+        }
         queue.removeAt(index)
         persist()
     }
 
     fun clearQueue() {
         if (busy) return
-        appContext?.let { ctx -> queue.forEach { releaseAccess(ctx, it.uri) } }
+        appContext?.let { ctx ->
+            queue.forEach {
+                releaseAccess(ctx, it.uri)
+                Thumbnails.delete(ctx, it.id)
+            }
+        }
         queue.clear()
         summary = null
         persist()
     }
 
     fun clearFinished() {
+        appContext?.let { ctx -> finished.forEach { Thumbnails.delete(ctx, it.id) } }
         finished.clear()
         persist()
     }
@@ -348,84 +418,218 @@ object BatchRunner {
                 val src = item.info ?: continue
 
                 skipFlag.set(false)
-                queue[idx] = item.copy(status = ItemStatus.CONVERTING, detail = null, savedUri = null)
-                persist()
                 val pos = "Video ${n + 1} of ${todo.size}"
-                progress = -1f
-                status = "$pos: Starting…"
-                logBuffer.add("=== $pos: ${item.name} ===") { logLines = it }
-                notifyProgress(ctx, pos, item.name, "Starting…", force = true)
 
-                val res = Converter.convert(
-                    ctx, item.uri, src, settings,
-                    onLog = { line -> logBuffer.add(line) { logLines = it } },
-                ) { p, s ->
-                    progress = p
-                    status = "$pos: $s"
-                    // A Skip/Cancel pressed before ffmpeg was running (e.g. while the
-                    // video was being copied) would otherwise be missed.
-                    if (skipFlag.get() || cancelAllFlag.get()) Converter.cancel()
-                    notifyProgress(ctx, pos, item.name, s, force = false)
+                // Videos longer than the target's limit are split into consecutive parts rather
+                // than cut off, each converted and saved on its own. The video is divided evenly
+                // (e.g. 250 s with a 120 s limit = 3 parts of ~83.3 s) so there's never a tiny
+                // leftover part, and no part is longer than the effective limit (the board's limit
+                // minus a 1 s grace; see Converter.effectiveMaxSec). A tiny overshoot is trimmed
+                // off the end instead of becoming a part (see Converter.partCount).
+                val numParts = Converter.partCount(src.durationSec, settings.maxDurationSec)
+                val partDur = min(src.durationSec / numParts, Converter.effectiveMaxSec(settings.maxDurationSec))
+                val base = item.name.substringBeforeLast('.', item.name)
+
+                // Carry on after the parts that are already saved, if this video was part-way
+                // through. That only holds if it would be split exactly the same way now (the same
+                // number of parts means identical boundaries); if the target changed since, the
+                // earlier parts don't line up with the new ones, so start again from part 1.
+                val resumeFrom = if (numParts > 1 && item.partsDone in 1 until numParts && item.partsTotal == numParts) {
+                    item.partsDone + 1
+                } else 1
+                if (resumeFrom > 1) {
+                    logBuffer.add("=== $pos: ${item.name}: parts 1-${resumeFrom - 1} already saved, continuing from part $resumeFrom/$numParts ===") { logLines = it }
+                } else if (item.partsDone > 0) {
+                    logBuffer.add("=== $pos: ${item.name}: split has changed since the earlier attempt, starting again from part 1 ===") { logLines = it }
                 }
 
-                val at = queue.indexOfFirst { it.id == id }
-                if (at < 0) continue
-                when (res) {
-                    is ConvertResult.Ok -> {
-                        val base = item.name.substringBeforeLast('.', item.name)
-                        // Marks the audio and encoding-effort choices used, e.g. "-AQ" for
-                        // audio kept at Quality, "-MF" for muted at Fastest.
-                        val audioMarker = if (res.audioIncluded) "A" else "M"
-                        val effortMarker = if (settings.fastest) "F" else if (settings.fastEncode) "S" else "Q"
-                        val outName = "$base-$audioMarker$effortMarker.webm"
-                        val saved = withContext(Dispatchers.IO) {
-                            OutputStorage.save(ctx, res.file, outName) {
-                                Converter.saveToDownloads(ctx, res.file, outName)
+                queue[idx] = item.copy(
+                    status = ItemStatus.CONVERTING, detail = null, savedUri = null,
+                    partsDone = resumeFrom - 1, partsTotal = if (numParts > 1) numParts else 0,
+                )
+                persist()
+
+                var partsSaved = resumeFrom - 1
+                var itemFailMsg: String? = null
+                var itemCancelledAll = false
+                var itemSkipped = false
+
+                // One private copy of the source serves every part (and every attempt) of this video,
+                // and is deleted as soon as the video is finished with, however that happens.
+                var staged: File? = null
+                try {
+                    for (part in resumeFrom..numParts) {
+                        if (cancelAllFlag.get()) { itemCancelledAll = true; break }
+
+                        val startSec = (part - 1) * partDur
+                        val clipDur = if (numParts > 1) min(partDur, src.durationSec - startSec) else null
+                        val partLabel = if (numParts > 1) ", part $part/$numParts" else ""
+                        val partTag = if (numParts > 1) " (part $part/$numParts)" else ""
+
+                        skipFlag.set(false)
+                        progress = -1f
+                        status = "$pos$partLabel: Starting…"
+                        logBuffer.add("=== $pos$partTag: ${item.name} ===") { logLines = it }
+                        notifyProgress(ctx, "$pos$partLabel", item.name, "Starting…", force = true)
+
+                        if (staged == null) {
+                            logBuffer.add("   copying video to app cache…") { logLines = it }
+                            val st = Converter.stageSource(
+                                ctx, item.uri,
+                                shouldStop = { skipFlag.get() || cancelAllFlag.get() },
+                            ) { f ->
+                                progress = f
+                                status = "$pos: Preparing video…"
+                                notifyProgress(ctx, "$pos$partLabel", item.name, "Preparing video…", force = false)
+                            }
+                            when (st) {
+                                is StageResult.Ok -> staged = st.file
+                                is StageResult.Fail -> { itemFailMsg = st.message; break }
+                                StageResult.Cancelled -> {
+                                    if (cancelAllFlag.get()) itemCancelledAll = true else itemSkipped = true
+                                    break
+                                }
                             }
                         }
-                        res.file.delete()
-                        val mb = String.format(Locale.US, "%.2f", res.bytes / 1048576.0)
-                        val detail = buildString {
-                            append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
-                            append(saved.message)
-                            if (res.trimmed) append("\nCut to ${settings.maxDurationSec}s.")
-                            if (res.audioDropped) append("\nSource had no audio.")
+
+                        val res = Converter.convert(
+                            ctx, staged!!, src, settings,
+                            startSec = startSec, clipDurationSec = clipDur,
+                            onLog = { line -> logBuffer.add(line) { logLines = it } },
+                        ) { p, s ->
+                            progress = p
+                            status = "$pos$partLabel: $s"
+                            // A Skip/Cancel pressed before ffmpeg was running (e.g. while the
+                            // video was being copied) would otherwise be missed.
+                            if (skipFlag.get() || cancelAllFlag.get()) Converter.cancel()
+                            notifyProgress(ctx, "$pos$partLabel", item.name, s, force = false)
                         }
-                        val now = queue.indexOfFirst { it.id == id }
-                        if (now >= 0) {
-                            if (saved.uri != null) {
-                                // Done: the card moves from the queue to the Finished list.
-                                val doneItem = queue[now].copy(
-                                    status = ItemStatus.DONE,
-                                    detail = detail,
-                                    savedUri = saved.uri,
+
+                        when (res) {
+                            is ConvertResult.Ok -> {
+                                // Marks the audio and encoding-effort choices used, e.g. "-AQ" for
+                                // audio kept at Quality, "-MF" for muted at Fastest. Split parts also
+                                // get a "-Part1", "-Part2"... marker ahead of that (zero-padded when
+                                // there are 10 or more, so they sort), and every name ends with the
+                                // app tag: "clip-Part02-MQ-WebMChan_for_Android.webm".
+                                val audioMarker = if (res.audioIncluded) "A" else "M"
+                                val effortMarker = if (settings.fastest) "F" else if (settings.fastEncode) "S" else "Q"
+                                val partSuffix = if (numParts > 1) "-${Converter.partName(part, numParts)}" else ""
+                                val outName = "$base$partSuffix-$audioMarker$effortMarker-${Converter.OUTPUT_NAME_TAG}.webm"
+
+                                // What the Finished card shows is the converted file itself (its own
+                                // length, size and so on), not the source video it came from. Read
+                                // it from the file; if that fails, work it out from what we know.
+                                val outInfo = Converter.probeFile(res.file) ?: run {
+                                    val encodedSec = clipDur
+                                        ?: min(src.durationSec, Converter.effectiveMaxSec(settings.maxDurationSec))
+                                    val h = res.height
+                                    SourceInfo(
+                                        durationSec = encodedSec,
+                                        width = (h * src.width.toDouble() / src.height / 2).toInt() * 2,
+                                        height = h,
+                                        fps = min(src.fps, 30.0),
+                                        hasAudio = res.audioIncluded,
+                                    )
+                                }
+                                // Each part gets its own thumbnail, from its own converted file.
+                                val cardId = ids.incrementAndGet()
+                                val hasThumb = Thumbnails.create(ctx, cardId, null, res.file, outInfo.durationSec)
+
+                                val saved = withContext(Dispatchers.IO) {
+                                    OutputStorage.save(ctx, res.file, outName) {
+                                        Converter.saveToDownloads(ctx, res.file, outName)
+                                    }
+                                }
+                                res.file.delete()
+                                if (saved.uri == null) {
+                                    Thumbnails.delete(ctx, cardId)
+                                    itemFailMsg = saved.message
+                                    break
+                                }
+                                val mb = String.format(Locale.US, "%.2f", res.bytes / 1048576.0)
+                                val detail = buildString {
+                                    append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
+                                    append(saved.message)
+                                    if (res.audioDropped) append("\nSource had no audio.")
+                                }
+                                // Each part gets its own card in Finished (a single-part conversion
+                                // is unchanged: one card, same as before).
+                                finished.add(
+                                    QueueItem(
+                                        id = cardId,
+                                        uri = item.uri,
+                                        name = if (numParts > 1) "${item.name}$partTag" else item.name,
+                                        info = outInfo,
+                                        hasThumb = hasThumb,
+                                        status = ItemStatus.DONE,
+                                        detail = detail,
+                                        savedUri = saved.uri,
+                                    )
                                 )
-                                queue.removeAt(now)
-                                finished.add(doneItem)
-                                // The source video isn't needed any more.
-                                releaseAccess(ctx, item.uri)
-                                okCount++
-                            } else {
-                                queue[now] = queue[now].copy(status = ItemStatus.FAILED, detail = detail, savedUri = null)
-                                failCount++
+                                partsSaved++
+                                // Remember how far this video got (see QueueItem.partsDone).
+                                if (numParts > 1) {
+                                    val at = queue.indexOfFirst { it.id == id }
+                                    if (at >= 0) queue[at] = queue[at].copy(partsDone = part, partsTotal = numParts)
+                                }
+                                persist()
+                            }
+                            is ConvertResult.Fail -> {
+                                itemFailMsg = res.message
+                                break
+                            }
+                            ConvertResult.Cancelled -> {
+                                if (cancelAllFlag.get()) itemCancelledAll = true else itemSkipped = true
+                                break
                             }
                         }
                     }
-                    is ConvertResult.Fail -> {
-                        queue[at] = queue[at].copy(status = ItemStatus.FAILED, detail = res.message)
-                        failCount++
-                    }
-                    ConvertResult.Cancelled -> {
-                        val all = cancelAllFlag.get()
-                        queue[at] = queue[at].copy(
-                            status = ItemStatus.CANCELLED,
-                            detail = if (all) "Cancelled." else "Skipped.",
-                        )
-                        skipCount++
-                        if (all) break
+                } finally {
+                    staged?.delete()
+                    Converter.clearWorkFiles(ctx) // out.webm / pass logs a failed or cancelled part left behind
+                }
+
+                val now = queue.indexOfFirst { it.id == id }
+                if (now >= 0) {
+                    // For a split video that stopped part-way: Convert carries on from here.
+                    val resumeHint = if (numParts > 1 && partsSaved in 1 until numParts) {
+                        " Press Convert to continue from part ${partsSaved + 1}."
+                    } else ""
+                    when {
+                        itemCancelledAll -> {
+                            val note = if (resumeHint.isNotEmpty()) {
+                                "Cancelled ($partsSaved of $numParts parts saved).$resumeHint"
+                            } else "Cancelled."
+                            queue[now] = queue[now].copy(status = ItemStatus.CANCELLED, detail = note)
+                            skipCount++
+                        }
+                        itemSkipped -> {
+                            val note = if (partsSaved > 0) {
+                                "Skipped ($partsSaved of $numParts parts saved).$resumeHint"
+                            } else "Skipped."
+                            queue[now] = queue[now].copy(status = ItemStatus.CANCELLED, detail = note)
+                            skipCount++
+                        }
+                        itemFailMsg != null -> {
+                            val note = (if (partsSaved > 0) "$partsSaved of $numParts parts saved before this failed.$resumeHint\n" else "") +
+                                itemFailMsg
+                            queue[now] = queue[now].copy(status = ItemStatus.FAILED, detail = note)
+                            failCount++
+                        }
+                        else -> {
+                            // All parts done: the card moves from the queue (the per-part cards
+                            // above are what shows up in Finished).
+                            queue.removeAt(now)
+                            // The source video isn't needed any more, nor its thumbnail.
+                            releaseAccess(ctx, item.uri)
+                            Thumbnails.delete(ctx, item.id)
+                            okCount++
+                        }
                     }
                 }
                 persist()
+                if (itemCancelledAll) break
             }
         } finally {
             persist()

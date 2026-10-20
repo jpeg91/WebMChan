@@ -103,15 +103,62 @@ sealed class ConvertResult {
     object Cancelled : ConvertResult()
 }
 
+/** Outcome of [Converter.stageSource]. */
+sealed class StageResult {
+    /** [file] is a private copy of the video; whoever asked for it deletes it when finished. */
+    data class Ok(val file: File) : StageResult()
+    data class Fail(val message: String) : StageResult()
+    object Cancelled : StageResult()
+}
+
 object Converter {
+
+    /** Added to the end of every converted file's name, just before ".webm". */
+    const val OUTPUT_NAME_TAG = "WebMChan_for_Android"
+
+    /**
+     * "Part1" ... "Part9", or zero-padded to the width of the part count ("Part01" ... "Part12")
+     * so the files sort in order.
+     */
+    fun partName(part: Int, numParts: Int): String =
+        "Part" + part.toString().padStart(numParts.toString().length, '0')
 
     /** Max duration used for the Custom option only; board targets carry their own. */
     const val DEFAULT_MAX_DURATION_SEC = 300
 
+    // ---- Length limits (back end only: the UI always shows the board's real limit) ----
+
+    /** Seconds shaved off every target's length limit, in case a board's own check is sloppy. */
+    const val LENGTH_GRACE_SEC = 1.0
+
+    /** An overshoot of this many seconds or less is trimmed off rather than made into another part. */
+    const val TRIM_TOLERANCE_SEC = 0.5
+
+    /** What the app actually aims for: the target's limit minus [LENGTH_GRACE_SEC] (e.g. 300 -> 299). */
+    fun effectiveMaxSec(maxDurationSec: Int): Double =
+        (maxDurationSec - LENGTH_GRACE_SEC).coerceAtLeast(1.0)
+
+    /**
+     * How many files a video of [durationSec] becomes for a target with this [maxDurationSec]
+     * (1 = no split). A video that only just overshoots (by [TRIM_TOLERANCE_SEC] or less, per
+     * part) is trimmed to fit instead of getting an extra, almost-empty part.
+     */
+    fun partCount(durationSec: Double, maxDurationSec: Int): Int {
+        val eff = effectiveMaxSec(maxDurationSec)
+        return max(1, ceil((durationSec - TRIM_TOLERANCE_SEC) / eff).toInt())
+    }
+
     private const val AUDIO_KBPS = 64
+    // Audio is allowed to drop this low (rather than fail outright) when the budget is tight.
+    private const val MIN_AUDIO_KBPS = 32
+    private const val MIN_VIDEO_KBPS = 40
 
     // Aim a little under the limit: container overhead + rate-control overshoot.
     private const val INITIAL_TARGET = 0.95
+    // Retry headroom: deliberately small. A big fixed cushion here (the old value was 0.97) can
+    // overcorrect a near-miss (e.g. 0.5% over the limit) into a much bigger cut than it needed,
+    // which was pushing audio+video combinations right up against MIN_VIDEO_KBPS and failing.
+    private const val RETRY_MARGIN = 0.99
     private const val MAX_ATTEMPTS = 4
 
     // Minimum bits-per-pixel before a frame size is accepted; Fastest uses a higher value,
@@ -129,8 +176,13 @@ object Converter {
         return "video"
     }
 
-    suspend fun probe(ctx: Context, uri: Uri): SourceInfo? = withContext(Dispatchers.IO) {
-        val path = FFmpegKitConfig.getSafParameterForRead(ctx, uri)
+    suspend fun probe(ctx: Context, uri: Uri): SourceInfo? =
+        probePath(FFmpegKitConfig.getSafParameterForRead(ctx, uri))
+
+    /** Same as [probe] but for a plain file, e.g. a finished conversion in the cache. */
+    suspend fun probeFile(file: File): SourceInfo? = probePath(file.absolutePath)
+
+    private suspend fun probePath(path: String): SourceInfo? = withContext(Dispatchers.IO) {
         val info = FFprobeKit.getMediaInformation(path).mediaInformation ?: return@withContext null
         val dur = info.duration?.toDoubleOrNull() ?: return@withContext null
 
@@ -197,50 +249,104 @@ object Converter {
         return candidates.last() / 2 * 2
     }
 
-    suspend fun convert(
+    // Spare room wanted in the cache on top of the source's own size (encoder output, pass logs).
+    private const val STAGE_SPARE_BYTES = 64L * 1024 * 1024
+
+    /**
+     * Copies the picked video into the app's private cache so ffmpeg can read it as an ordinary
+     * file. Call once per video (not once per part of a split video) and delete the file when
+     * the video is finished with. Checks for enough free space first, reports progress as it
+     * copies, and stops early (deleting the partial copy) when [shouldStop] turns true.
+     */
+    suspend fun stageSource(
         ctx: Context,
         uri: Uri,
-        src: SourceInfo,
-        settings: Settings,
-        onLog: (line: String) -> Unit,
-        onProgress: (fraction: Float, status: String) -> Unit, // fraction < 0 = indeterminate
-    ): ConvertResult = withContext(Dispatchers.IO) {
-        onLog("Copying video to app cache…")
-        val inputFile = File.createTempFile(
-            "webmchan-input-",
-            ".video",
-            ctx.cacheDir
-        )
-
-        try {
-            val source = ctx.contentResolver.openInputStream(uri)
-                ?: run {
-                    inputFile.delete()
-                    return@withContext ConvertResult.Fail(
-                        "Could not open the selected video."
-                    )
-                }
-
-            source.use { srcStream ->
-                inputFile.outputStream().use { dst ->
-                    srcStream.copyTo(dst)
-                }
-            }
-        } catch (e: Exception) {
-            inputFile.delete()
-            return@withContext ConvertResult.Fail(
-                "Could not copy selected video: ${e.message}"
+        shouldStop: () -> Boolean,
+        onProgress: (fraction: Float) -> Unit, // fraction < 0 = size unknown
+    ): StageResult = withContext(Dispatchers.IO) {
+        val size = try {
+            ctx.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+        } catch (_: Exception) {
+            -1L
+        }
+        if (size > 0 && ctx.cacheDir.usableSpace < size + STAGE_SPARE_BYTES) {
+            val needMb = (size + STAGE_SPARE_BYTES) / 1048576
+            return@withContext StageResult.Fail(
+                "Not enough free storage to prepare this video (about $needMb MB needed). " +
+                    "Free up some space and try again."
             )
         }
 
-        val input = inputFile.absolutePath
+        val file = File.createTempFile("webmchan-input-", ".video", ctx.cacheDir)
+        try {
+            val input = ctx.contentResolver.openInputStream(uri)
+            if (input == null) {
+                file.delete()
+                return@withContext StageResult.Fail("Could not open the selected video.")
+            }
+            var stopped = false
+            input.use { src ->
+                file.outputStream().use { dst ->
+                    val buf = ByteArray(256 * 1024)
+                    var copied = 0L
+                    var lastPct = -1
+                    onProgress(if (size > 0) 0f else -1f)
+                    while (true) {
+                        if (shouldStop()) { stopped = true; break }
+                        val n = src.read(buf)
+                        if (n < 0) break
+                        dst.write(buf, 0, n)
+                        copied += n
+                        if (size > 0) {
+                            val pct = (copied * 100 / size).toInt().coerceIn(0, 100)
+                            if (pct != lastPct) { lastPct = pct; onProgress(pct / 100f) }
+                        }
+                    }
+                }
+            }
+            if (stopped) {
+                file.delete()
+                return@withContext StageResult.Cancelled
+            }
+            StageResult.Ok(file)
+        } catch (e: Exception) {
+            file.delete()
+            StageResult.Fail("Could not copy selected video: ${e.message}")
+        }
+    }
 
+    /**
+     * Deletes working files left in the cache: staged source copies, the encoder's output and
+     * the pass-1 logs. Safe between videos; also run once when the app starts, to clear what a
+     * killed run left behind.
+     */
+    fun clearWorkFiles(ctx: Context) {
+        ctx.cacheDir.listFiles()?.filter {
+            it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name.startsWith("ffpass")
+        }?.forEach { it.delete() }
+    }
+
+    suspend fun convert(
+        ctx: Context,
+        /** The staged copy of the video (see [stageSource]). Not deleted here: the caller owns it. */
+        input: File,
+        src: SourceInfo,
+        settings: Settings,
+        /** Where in the source this clip starts. 0 for a normal (non-split) conversion. */
+        startSec: Double = 0.0,
+        /** Length of this clip. null = the old behaviour: min(source length, the effective limit). Set by
+         *  the caller for a split part, so each part gets an exact slice regardless of the limit. */
+        clipDurationSec: Double? = null,
+        onLog: (line: String) -> Unit,
+        onProgress: (fraction: Float, status: String) -> Unit, // fraction < 0 = indeterminate
+    ): ConvertResult = withContext(Dispatchers.IO) {
         FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
         try {
-            val duration = min(src.durationSec, settings.maxDurationSec.toDouble())
-            val trimmed = src.durationSec > settings.maxDurationSec
+            val remaining = (src.durationSec - startSec).coerceAtLeast(0.0)
+            val effMax = effectiveMaxSec(settings.maxDurationSec)
+            val duration = clipDurationSec ?: min(remaining, effMax)
+            val trimmed = clipDurationSec == null && src.durationSec > effMax
             val audioOn = settings.keepAudio && src.hasAudio
-            val audioKbps = if (audioOn) AUDIO_KBPS else 0
 
             val out = File(ctx.cacheDir, "out.webm")
             val passLog = File(ctx.cacheDir, "ffpass").absolutePath
@@ -257,12 +363,24 @@ object Converter {
 
             for (attempt in 1..MAX_ATTEMPTS) {
                 val totalKbps = budgetBytes * 8.0 / duration / 1000.0
+                // Audio normally gets a fixed 64 kbps, but on a tight budget that alone can push
+                // video under MIN_VIDEO_KBPS and fail a clip that would otherwise fit fine. Let
+                // audio flex down (as low as MIN_AUDIO_KBPS) before giving up on the attempt.
+                val audioKbps = when {
+                    !audioOn -> 0
+                    totalKbps - AUDIO_KBPS >= MIN_VIDEO_KBPS -> AUDIO_KBPS
+                    totalKbps - MIN_AUDIO_KBPS >= MIN_VIDEO_KBPS -> (totalKbps - MIN_VIDEO_KBPS).toInt()
+                    else -> MIN_AUDIO_KBPS
+                }
                 val vKbps = (totalKbps - audioKbps).toInt()
-                if (vKbps < 40) {
+                if (vKbps < MIN_VIDEO_KBPS) {
                     return@withContext ConvertResult.Fail(
                         "Video is too long for this size limit" +
                             if (audioOn) " with audio. Try removing audio." else "."
                     )
+                }
+                if (audioOn && audioKbps < AUDIO_KBPS) {
+                    onLog("   audio bitrate reduced to ${audioKbps} kbps to fit the limit")
                 }
                 val height = chooseHeight(vKbps, src, minHeight, if (settings.fastest) FASTEST_BPP else NORMAL_BPP)
                 lastHeight = height
@@ -282,21 +400,25 @@ object Converter {
                     }
                 }.joinToString(",").ifEmpty { "null" }
 
-                val common = listOf(
-                    "-y", "-i", input, "-t", "%.3f".format(java.util.Locale.US, duration),
-                    "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
-                    "-vf", filters,
-                    "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
-                    "-deadline", "good", "-cpu-used", cpuUsed,
-                    "-lag-in-frames", lagFrames,
-                    // Tag the output's colour metadata explicitly. Without this, ffmpeg can leave
-                    // it unset or carry over a tag from the source (sometimes "gbr"/identity, which
-                    // tells a strict player to decode the YUV pixels as if they were RGB, producing
-                    // wrong colours) even though the pixels themselves are normal YUV. bt709/tv is
-                    // the standard tag for ordinary SDR video and matches what the encoder produces.
-                    "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-                    "-color_range", "tv",
-                ) + (if (settings.useVp9) {
+                val common = listOf("-y") +
+                    // Input seeking: fast (keyframe-based demux seek), and still frame-accurate
+                    // because we're re-encoding rather than stream-copying.
+                    (if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()) +
+                    listOf(
+                        "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, duration),
+                        "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
+                        "-vf", filters,
+                        "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
+                        "-deadline", "good", "-cpu-used", cpuUsed,
+                        "-lag-in-frames", lagFrames,
+                        // Tag the output's colour metadata explicitly. Without this, ffmpeg can leave
+                        // it unset or carry over a tag from the source (sometimes "gbr"/identity, which
+                        // tells a strict player to decode the YUV pixels as if they were RGB, producing
+                        // wrong colours) even though the pixels themselves are normal YUV. bt709/tv is
+                        // the standard tag for ordinary SDR video and matches what the encoder produces.
+                        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+                        "-color_range", "tv",
+                    ) + (if (settings.useVp9) {
                     listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
                 } else emptyList()) + listOf(
@@ -316,7 +438,8 @@ object Converter {
 
                 onLog(
                     "== Attempt $attempt/$MAX_ATTEMPTS: ${height}p, $vKbps kbps video" +
-                        if (audioOn) " + $audioKbps kbps audio" else ", no audio"
+                        (if (audioOn) " + $audioKbps kbps audio" else ", no audio") +
+                        (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
                 onLog("   filters: $filters")
                 onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
@@ -357,12 +480,11 @@ object Converter {
                 }
                 // Too big: shrink the budget proportionally and retry.
                 onLog("   over the limit, retrying with a smaller bitrate")
-                budgetBytes *= (settings.limitBytes * 0.97) / size.toDouble()
+                budgetBytes *= (settings.limitBytes * RETRY_MARGIN) / size.toDouble()
             }
             cleanupLogs(ctx)
             ConvertResult.Fail("Couldn't get under the size limit after $MAX_ATTEMPTS attempts.")
         } finally {
-            inputFile.delete()
             // Detach so later ffprobe/ffmpeg calls don't write into a finished run's log.
             FFmpegKitConfig.enableLogCallback { }
             FFmpegKitConfig.enableStatisticsCallback { }
