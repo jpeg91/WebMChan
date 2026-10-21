@@ -444,9 +444,13 @@ fun App(onAbout: () -> Unit = {}) {
         if (logLines.isNotEmpty()) logListState.scrollToItem(logLines.lastIndex)
     }
 
-    // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 1.2s.
-    LaunchedEffect(progress < 0f) {
-        if (progress < 0f) {
+    // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 4s.
+    // It only runs while a batch is actually in pass 1 and the screen is visible: keyed on
+    // just "progress < 0f", it kept waking up 60 times a second after a run was cancelled or
+    // failed in pass 1 (progress stays at -1 then), and while the app was in the background.
+    val sweeping = busy && progress < 0f && BatchRunner.uiVisible
+    LaunchedEffect(sweeping) {
+        if (sweeping) {
             var t = 0L
             while (isActive) {
                 val phase = (t % 4000L) / 4000f
