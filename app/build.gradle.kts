@@ -12,8 +12,8 @@ android {
         applicationId = "app.webmchan"
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.6.0"
+        versionCode = 7
+        versionName = "0.6.5"
         // The maintained FFmpegKit fork only publishes arm64-v8a prebuilts.
         ndk { abiFilters += "arm64-v8a" }
     }
