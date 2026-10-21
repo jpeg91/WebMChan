@@ -157,10 +157,14 @@ object Converter {
 
     /**
      * The fewest files a video of [durationSec] can become for a target with this [maxDurationSec]
-     * (1 = no split). A video that only just overshoots (by the trim tolerance or less, per
-     * part) is trimmed to fit instead of getting an extra, almost-empty part.
+     * (1 = no split). A video that is within the board's real limit always stays one file: if it
+     * is longer than the effective limit (the real limit minus the length grace) the end is
+     * trimmed, by no more than the grace. Beyond the real limit, a video that only just overshoots
+     * (by the trim tolerance or less, per part) is trimmed to fit instead of getting an extra,
+     * almost-empty part.
      */
     fun partCount(durationSec: Double, maxDurationSec: Int, tuning: Tuning): Int {
+        if (durationSec <= maxDurationSec) return 1
         val eff = effectiveMaxSec(maxDurationSec, tuning)
         return max(1, ceil((durationSec - tuning.trimToleranceSec) / eff).toInt())
     }
