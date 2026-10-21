@@ -67,7 +67,7 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         Text(
             "1. Choose one or more videos.\n" +
                 "2. Pick the board you're posting to. Its rules (file size, length, minimum resolution and audio) are applied for you.\n" +
-                "3. Tap Convert. Long videos will be split. The app works out the best quality that fits under the size limit and encodes each video in two passes, aiming for about 97.5% of the limit.\n" +
+                "3. Tap Convert. Long videos will be split. The app works out the best quality that fits under the size limit and encodes each video in two passes, aiming for about 99% of the limit.\n" +
                 "4. If a result still comes out over the limit, it's retried automatically a little smaller.\n" +
                 "5. Finished videos are saved to your chosen folder (Download/WebMChan by default) and can be shared straight from the app.",
             style = MaterialTheme.typography.bodyMedium
