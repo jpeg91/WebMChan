@@ -846,7 +846,7 @@ fun App(onAbout: () -> Unit = {}) {
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Share all (${savedUris.size})") }
             }
-        
+        }
         Spacer(Modifier.height(8.dp))
     }
 }
