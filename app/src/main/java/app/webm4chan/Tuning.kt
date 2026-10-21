@@ -14,13 +14,17 @@ import androidx.compose.runtime.setValue
  * misbehave.
  */
 data class Tuning(
-    /** First attempt aims for this % of the size limit. The rest is safety margin. */
-    val firstTargetPct: Double = 97.5,
     /**
-     * A retry aims for this % of the limit. Deliberately close to the limit: a big cushion can
-     * overcorrect a near-miss into a much bigger cut than needed.
+     * First attempt aims for this % of the size limit. The rest is safety margin. Can be taken
+     * up to 110% for testing (a file over the limit then counts as too big and is retried).
      */
-    val retryMarginPct: Double = 99.0,
+    val firstTargetPct: Double = 99.0,
+    /**
+     * A retry aims for this % of the limit. Lower than the first attempt: a file that has already
+     * come out over has shown the encoder overshooting, so the retry leaves a bigger cushion. Can
+     * be taken up to 110% for testing.
+     */
+    val retryMarginPct: Double = 97.5,
     /** How many encodes to try before giving up on a clip. */
     val maxAttempts: Int = 4,
     /** Normal audio bitrate, in kbps. */
@@ -42,13 +46,18 @@ data class Tuning(
      * left. Set above [maxAttempts] to turn it off.
      */
     val audioAnalysisAttempt: Int = 3,
+    /**
+     * A queue card warns that detail will suffer when the estimated video bitrate of its parts
+     * falls below this (kbps).
+     */
+    val warnVideoKbps: Int = 130,
 ) {
     /** The same values, forced into their allowed ranges. */
     fun sanitized(): Tuning {
         val audio = audioKbps.coerceIn(16, 192)
         return Tuning(
-            firstTargetPct = firstTargetPct.coerceIn(80.0, 99.5),
-            retryMarginPct = retryMarginPct.coerceIn(80.0, 99.9),
+            firstTargetPct = firstTargetPct.coerceIn(80.0, 110.0),
+            retryMarginPct = retryMarginPct.coerceIn(80.0, 110.0),
             maxAttempts = maxAttempts.coerceIn(1, 8),
             audioKbps = audio,
             minAudioKbps = minAudioKbps.coerceIn(8, audio),
@@ -58,6 +67,7 @@ data class Tuning(
             lengthGraceSec = lengthGraceSec.coerceIn(0.0, 10.0),
             trimToleranceSec = trimToleranceSec.coerceIn(0.0, 5.0),
             audioAnalysisAttempt = audioAnalysisAttempt.coerceIn(2, 9),
+            warnVideoKbps = warnVideoKbps.coerceIn(20, 2000),
         )
     }
 
@@ -76,6 +86,7 @@ data class Tuning(
             if (lengthGraceSec != d.lengthGraceSec) add("length grace = $lengthGraceSec s")
             if (trimToleranceSec != d.trimToleranceSec) add("trim tolerance = $trimToleranceSec s")
             if (audioAnalysisAttempt != d.audioAnalysisAttempt) add("audio analysis from attempt $audioAnalysisAttempt")
+            if (warnVideoKbps != d.warnVideoKbps) add("low bitrate warning = $warnVideoKbps kbps")
         }
     }
 }
@@ -105,6 +116,7 @@ object TuningStore {
             lengthGraceSec = dbl("lengthGraceSec", d.lengthGraceSec),
             trimToleranceSec = dbl("trimToleranceSec", d.trimToleranceSec),
             audioAnalysisAttempt = int("audioAnalysisAttempt", d.audioAnalysisAttempt),
+            warnVideoKbps = int("warnVideoKbps", d.warnVideoKbps),
         ).sanitized()
     }
 
@@ -123,6 +135,7 @@ object TuningStore {
             .putString("lengthGraceSec", s.lengthGraceSec.toString())
             .putString("trimToleranceSec", s.trimToleranceSec.toString())
             .putString("audioAnalysisAttempt", s.audioAnalysisAttempt.toString())
+            .putString("warnVideoKbps", s.warnVideoKbps.toString())
             .apply()
         current = s
         return s

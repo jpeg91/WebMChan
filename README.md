@@ -26,9 +26,11 @@ Pick the board(s) you're posting to and the app applies that board's WebM rules 
 
 If a video is longer than the board's maximum length, WebMChan splits it into numbered parts that fit the limit. If a split conversion is interrupted or a part fails, converting again continues from the next part rather than repeating parts already saved.
 
+Long parts on a small size limit get very little bitrate, and detailed footage (anything live action) suffers for it. Every queued video shows what each part would get, warns you when it's going to look poor, and has **−** and **+** buttons to split it into more (or fewer) parts. You can't go below the minimum the board needs, and parts never get shorter than 10 seconds.
+
 ### Best quality that fits
 
-Each video is converted in two passes (analysis then encode), aiming for about 95% of the size limit, so you get as much quality as the limit allows.
+Each video is converted in two passes (analysis then encode), aiming for about 99% of the size limit, so you get as much quality as the limit allows.
 
 ### Batch mode
 
@@ -54,6 +56,10 @@ You can leave the app, use other apps, lock the screen and completely forget abo
 
 See what's happening while it converts, and copy the log if you need to report a problem.
 
+### Advanced settings (for testing)
+
+**About > Advanced settings** lets you change the numbers that steer how a video is fitted into a size limit (targets, attempts, audio bitrate and so on) without rebuilding the app. The defaults are the recommended values, **Reset to defaults** puts them back, and anything you've changed is listed at the top of the log.
+
 <details>
   <summary><b>Screenshot (Outdated)</b></summary>
 
@@ -69,34 +75,52 @@ The app is a front end for FFmpeg (the community `ffmpegkit-maintained` build). 
 
 ### Batch queue
 
-Use **Choose videos** to select one video or several, and **Add videos** to keep adding more (a video that's already in the list is ignored). They queue up in the order you picked them. Before you start, you can reorder them (▲ ▼) or remove them (✕), and each shows its details and any warnings, such as being cut to the board's length limit or scaled up to its minimum resolution.
+Use **Choose videos** to select one video or several, and **Add videos** to keep adding more (a video that's already in the list is ignored). They queue up in the order you picked them. Before you start, you can reorder them (▲ ▼) or remove them (✕), and each shows its details and any warnings, such as being split into parts for the board's length limit or scaled up to its minimum resolution. Each card also has the split controls described in step 2.
 
-Every video in the queue is converted with the same settings, one after another. If a video fails, it's marked as failed and the rest carry on. **Skip current** drops the video being converted and moves to the next, and **Cancel all** stops the whole batch. Each finished video has its own **Share** button, and **Share all** appears when the queue has finished encoding.
+Every video in the queue is converted with the same settings, one after another. If a video fails, it's marked as failed and the rest carry on. **Skip current** drops the video being converted and moves to the next, and **Cancel all** stops the whole batch. Each finished video has its own **Share** button, and **Share all** appears once two or more finished files are saved.
 
 Finished videos stay in the list. Pressing Convert again only processes the ones that haven't finished, which also lets you retry failures. To convert a finished video again with different settings, remove it and add it again.
 
 ### 1. Reading the video
 
-When you pick videos, the app asks FFmpeg's probe tool for each one's length, width, height, frame rate and whether it has an audio track. It also creates a thumbnail for the queue card; tapping the thumbnail plays the source video. When you tap Convert, the videos are processed one at a time: each source is copied into the app's private cache so FFmpeg can read it as an ordinary file, and that copy is deleted afterwards.
+When you pick videos, the app asks FFmpeg's probe tool for each one's length, width, height, frame rate and whether it has an audio track. It also creates a thumbnail for the queue card; tapping the thumbnail plays the source video. Android only lets an app read a picked video for a short while, so the app asks for a lasting read grant on each one. That's what lets a restored queue still open its videos after the app has been stopped.
+
+When you tap Convert, the videos are processed one at a time: each source is copied into the app's private cache so FFmpeg can read it as an ordinary file (after checking there's enough free space), and that copy is deleted afterwards. One copy serves every part and every attempt for that video.
 
 ### 2. Applying the board's rules
 
-The board you pick supplies four numbers: the file size limit, the maximum length, the minimum resolution and whether audio is allowed. If the clip is longer than the maximum length, it is split into parts that fit the limit. Each part is saved separately, with numbered filenames. If a split conversion is interrupted or a part fails, pressing Convert again continues from the next part rather than repeating parts already saved. Boards with identical rules are grouped into one option, and each option lists its limits and the boards it covers, for example `4 MB · Min 500×500 · 120 s` for `/hc/ /s/`. Custom has its own size limit, no minimum resolution and a 300 s length cap.
+The board you pick supplies four numbers: the file size limit, the maximum length, the minimum resolution and whether audio is allowed. Boards with identical rules are grouped into one option, and each option lists its limits and the boards it covers, for example `4 MB · Min 500×500 · 120 s` for `/hc/` `/s/`. Custom has its own size limit, no minimum resolution and a 300 s length cap.
+
+**Length and splitting.** The app aims a second under each board's limit (a 300 s board is treated as 299 s) as a safety margin. The screens still show the board's real limit. If the clip is longer than that, it's split into parts, and the parts are worked out like this:
+
+1. The number of parts is the clip length divided by the limit, rounded up. An overshoot of half a second or less is trimmed off the end instead of becoming another part.
+2. The clip is divided **evenly** between them. A 250 s video on a 120 s board becomes 3 parts of about 83.3 s, rather than 119 s + 119 s + a 12 s scrap.
+3. Each part is encoded from its own slice of the source and saved separately, with numbered filenames.
+
+If a split conversion is interrupted or a part fails, pressing Convert again continues from the next part rather than repeating parts already saved. That only works if the clip would still be split the same way (same number of parts means identical boundaries), so if you change the board in the meantime it starts again from part 1.
+
+**Splitting further.** Each queued card shows what its parts would come out as: the video bitrate and frame height each part would get, worked out exactly as steps 3 and 4 below do it. The **−** and **+** buttons add splits on top of the board's minimum, or take them away again. It's stored as a number of *extra* parts, so it survives a change of board. Parts are never allowed to be shorter than 10 seconds, and the buttons lock while a batch runs and once a video has parts saved.
+
+The card warns when the estimated video bitrate falls under 130 kbps (changeable in Advanced settings). That's roughly where even the smallest frame size stops looking acceptable for detailed footage. The app can't tell live action from animation, so treat it as a nudge, not a rule.
 
 ### 3. Working out the bitrate
 
 A WebM's size is roughly its bitrate multiplied by its length, so the app works backwards from the limit:
 
-1. The target size is **95% of the limit.** The small gap covers file overhead and the encoder's tendency to overshoot slightly.
-2. That size, divided by the clip length, gives the total bitrate available.
-3. If audio is being kept, 64 kbps is taken off for it. The rest is the **video bitrate.**
-4. If the video bitrate would be under 40 kbps, the app stops and tells you the clip is too long for this limit. Removing audio gives the video more room.
+1. The target size is **99% of the limit** on the first attempt. The small gap covers file overhead and the encoder's tendency to overshoot slightly. If it does overshoot, retries aim lower (see step 7).
+2. That size, divided by the clip (or part) length, gives the total bitrate available.
+3. If audio is being kept, 64 kbps is taken off for it. The rest is the **video bitrate.** If that would leave the video starved, the audio is allowed to drop, as low as 32 kbps, before giving up.
+4. If the video bitrate would still be under 40 kbps, the app stops and tells you the clip is too long for this limit. Removing audio gives the video more room.
+
+For example, a 60 s clip with no audio on a 4 MB board gets roughly 554 kbps of video. A 280 s clip on the same limit gets only about 119 kbps, which is why long clips on a small limit look so rough, and why splitting them more helps.
 
 Removing audio improves quality: all of that bitrate goes to the picture.
 
 ### 4. Choosing the frame size
 
-More pixels need more bitrate to look good. The app measures this as **bits per pixel**: the video bitrate divided by the number of pixels per second. It tries sizes from large to small, using the source's own height plus 1080, 720, 480, 360 and 240, and takes the first one that gets at least 0.06 bits per pixel (0.12 in Fastest mode, which is why Fastest ends up with smaller frames). It never goes above 1080p, never above the source's own size, and never below the board's minimum.
+More pixels need more bitrate to look good. The app measures this as **bits per pixel**: the video bitrate divided by the number of pixels per second (width × height × frame rate, with the frame rate capped at 30). It tries sizes from large to small, using the source's own height plus 1080, 720, 480, 360 and 240, and takes the first one that gets at least 0.06 bits per pixel (0.12 in Fastest mode, which is why Fastest ends up with smaller frames). It never goes above 1080p, never above the source's own size, and never below the board's minimum.
+
+For example, a 1080p 16:9 clip at 554 kbps comes out at 360p: 480p would need about 740 kbps to reach 0.06 bits per pixel, 360p needs about 415.
 
 If the source is below the board's minimum, it's scaled **up**. The scaling keeps the original aspect ratio and uses even width and height, as the encoder requires. Frame rates above about 30 fps are reduced to 30.
 
@@ -106,6 +130,8 @@ The video is encoded twice:
 
 - **Pass 1** is analysis only. The encoder watches the whole clip and records where the hard-to-compress scenes are. No file is produced, and FFmpeg reports no progress during this pass.
 - **Pass 2** is the real encode. Using what pass 1 learned, it spreads the bitrate across the clip, spending more on busy scenes and less on simple ones. The result is more consistent quality and a file much closer to the target size than a single pass would give.
+
+Both passes use the same filters and settings, and each part is cut from the source by seeking to its start. Because the video is being re-encoded anyway, the cuts land on the exact frame.
 
 The encoder settings depend on what you chose:
 
@@ -121,32 +147,62 @@ In plain terms: **Quality** is the default and gives the best detail. **Speed** 
 
 When VP9 is selected, a few extra settings apply:
 - **Multithreading.** Row-based multithreading is turned on, and Fastest adds tile columns so more cores can work at once.
-- **Plain 8-bit colour.** The video is forced to standard 8-bit colour so that most players and can decode it.
-The output is tagged as standard SDR video. VP9 also uses 8-bit colour and row-based multithreading; Fastest mode enables tile columns to make better use of multiple CPU cores.
+- **Plain 8-bit colour.** The video is forced to standard 8-bit colour so that most players can decode it.
 
-
+The output of both codecs is explicitly tagged as standard SDR video (BT.709). Without the tag, a strict player can misread the colours of a file that's carrying a leftover tag from its source.
 
 Metadata (titles, GPS and so on) and subtitles are stripped from the output.
 
 ### 6. Audio
 
-If audio is kept, it's encoded as Vorbis at 64 kbps stereo during pass 2. Otherwise the output has no audio stream at all. Removing audio gives all the space to video quality. Boards that don't allow audio lock the switch to "remove".
+If audio is kept, it's encoded as Vorbis at 64 kbps stereo during pass 2, or lower if a tight budget needs it (see step 3). Otherwise the output has no audio stream at all. Removing audio gives all the space to video quality. Boards that don't allow audio lock the switch to "remove".
 
 ### 7. Checking the size and retrying
 
-After pass 2, the app measures the real file. If it's within the limit, it's done. If it's over, the app shrinks the budget in proportion (aiming a little below the limit) and runs both passes again, up to 4 attempts in total. In practice the first attempt nearly always fits. If it still doesn't fit after 4 tries, the app says so.
+After pass 2, the app measures the real file. If it's within the limit, it's done. If it's over, the budget is scaled down in proportion (aiming for 97.5% of the limit, a little lower than the first attempt, since the encoder has just shown it overshoots) and both passes run again, up to 4 attempts in total. In practice the first attempt nearly always fits.
+
+The proportional retry can't tell whether the video or the audio overshot. So if audio is on and the file is still too big by the third attempt, the app encodes just the audio on its own to measure what it really costs (Vorbis often comes out under its nominal bitrate), works out how the video encoder actually responded to its bitrate, and gives the video exactly what's left of the limit. It's noted in the log and on the result card when that happens. If it still doesn't fit after 4 tries, the app says so.
 
 ### 8. Saving
 
-Each finished file is saved using the original file name plus a short marker for the audio and speed settings used (for example `-MQ` for no audio at Quality, or `-AF` for audio kept at Fastest). Split videos also include a numbered part marker. The **Share** button opens Android's share sheet. Tapping a thumbnail on a finished card plays the converted video.
+Each finished file is saved using the original file name plus a short marker for the audio and speed settings used (for example `-MQ` for no audio at Quality, or `-AF` for audio kept at Fastest), and ends with the app's tag. Split videos also include a numbered part marker, zero-padded when there are ten or more so they sort properly: `clip-Part02-MQ-WebMChan_for_Android.webm`. The **Share** button opens Android's share sheet. Tapping a thumbnail on a finished card plays the converted video.
 
 By default the file goes to internal storage at `Download/WebMChan/`. **Choose folder** lets you pick somewhere else, such as a folder on an SD card, and **Use default** switches back. If you've chosen a folder, it's written through Android's Storage Access Framework into a `WebMChan` subfolder there (or straight into the folder if it's already named `WebMChan`). If that folder can't be written to (for example the SD card has been removed), the app quietly saves to `Download/WebMChan/` instead and says so in the result. If the file name already exists in the destination, ` (1)`, ` (2)`, ` (3)`... etc is added to the file name. Temporary files (the cache copy, the pass-1 analysis file and the encoded output once it has been saved) are removed afterwards.
+
+Each part gets its own card in the Finished list, with a thumbnail taken from the converted file and its own length, size and resolution read back from it.
 
 ### Progress and the live log
 
 The first pass only analyses the video and FFmpeg reports no progress during it, so the progress bar animates until the second pass starts, then shows real progress during the second pass. When converting several videos, it also shows which one is being processed (for example "Video 2 of 5"). Conversion runs in a foreground service, so you can lock the screen or leave the app while it runs. The notification shows progress and has a Cancel button. Android notification permission is needed to see notifications.
 
 The live log is a scrolling readout of what FFmpeg is doing, with a **Copy log** button. It's handy for checking progress and for reporting errors.
+
+### Staying alive, and remembering the queue
+
+The batch runs in the app's process, not in the screen, so closing the screen doesn't stop it. The foreground service gives the process priority and holds a wake lock so the CPU isn't throttled while the screen is off. Android 15 ends this kind of service after about 6 hours, and the app cancels cleanly rather than crashing if that happens.
+
+The queue and the Finished list are saved to a small file in the app's private storage whenever they change, and loaded again when the app starts. After a restart the app checks that each queued video can still be read and that each finished file is still there (a card whose file has gone loses its Share button and says why), and anything that was mid-conversion when the app stopped is marked so Convert picks it back up.
+
+### Advanced settings
+
+These are the numbers behind the steps above. Every value is kept inside an allowed range, so a typo can't break anything. Changes apply from the next conversion.
+
+| Setting | Default | Allowed |
+|---|---|---|
+| First attempt target (% of limit) | 99 | 80 to 110 |
+| Retry target (% of limit) | 97.5 | 80 to 110 |
+| Maximum attempts | 4 | 1 to 8 |
+| Audio analysis from attempt | 3 | 2 to 9 |
+| Audio bitrate (kbps) | 64 | 16 to 192 |
+| Lowest audio bitrate (kbps) | 32 | 8 up to the audio bitrate |
+| Lowest video bitrate (kbps) | 40 | 10 to 500 |
+| Detail threshold, Quality and Speed (bits per pixel) | 0.06 | 0.01 to 0.5 |
+| Detail threshold, Fastest (bits per pixel) | 0.12 | 0.01 to 1 |
+| Length grace (seconds) | 1 | 0 to 10 |
+| Trim tolerance (seconds) | 0.5 | 0 to 5 |
+| Low bitrate warning (kbps) | 130 | 20 to 2000 |
+
+Targets above 100% are there for testing: the file is expected to go over the limit, so it counts as too big. Setting the audio analysis attempt above the maximum attempts turns it off.
 
 ### Why VP9 is slower, and why there's no hardware encoding
 
@@ -194,6 +250,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Background conversion relies on Android's foreground-service and notification support. On Android 13 and newer, allow notifications so you can see conversion progress and use the notification controls.
 - Android 11 and newer won't let an app use the top level of an SD card, or the `Download` folder, as a custom save folder. Pick or create a subfolder instead (This is why the app always places the outputs in a subfolder named `WebMChan`. If any folder named `WebMChan` is selected as a custom save location, the output will be saved there. Recursive subfolders will not be created).
 - Finished videos stay in the batch list. To convert one again with different settings, remove it and add it again.
+- Extra splits can't be changed while a batch is running, or once a video has some of its parts saved.
 - Encoding on a phone can be slow. VP9 is slower still. Speed and Fastest modes help but Fastest should be used very sparingly.
 - VP9 isn't accepted everywhere, and some older devices can't play it. VP8 is the safe choice.
 - Boards with a high minimum resolution and a small size limit (e.g. `/hr/` at 1000×1000 in 4 MB) leave very little bitrate per pixel, so expect low quality there. That's a limit of the board's rules, not a bug.
