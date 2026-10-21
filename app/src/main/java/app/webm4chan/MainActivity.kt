@@ -193,13 +193,19 @@ private fun QueueRow(
     item: QueueItem,
     busy: Boolean,
     maxDuration: Int,
+    /** True when the Custom target is selected (its length cap isn't a board's rule). */
+    isCustom: Boolean,
     minW: Int,
     minH: Int,
+    /** The settings the next conversion would use; the split estimate is worked out from them. */
+    settings: Settings,
     canMoveUp: Boolean = false,
     canMoveDown: Boolean = false,
     onUp: () -> Unit = {},
     onDown: () -> Unit = {},
     onRemove: () -> Unit = {},
+    /** Called with the new number of extra splits when the card's - / + is pressed. */
+    onExtraParts: (Int) -> Unit = {},
     /** false for cards in the Finished list. */
     showControls: Boolean = true,
 ) {
@@ -269,12 +275,26 @@ private fun QueueRow(
         }
 
         if (i != null && item.status != ItemStatus.DONE) {
-            val numParts = Converter.partCount(i.durationSec, maxDuration, TuningStore.current)
-            if (numParts > 1) {
+            val t = settings.tuning
+            val minParts = Converter.partCount(i.durationSec, maxDuration, t)
+            val maxParts = Converter.maxPartCount(i.durationSec, maxDuration, t)
+            val est = Converter.estimate(i, settings, item.extraParts)
+            val numParts = est.parts
+            // Only when the board's limit forces the split. A clip already under the limit that
+            // was split further with the stepper just shows its part count on the stepper row.
+            if (minParts > 1) {
+                val names = if (numParts == 2) {
+                    "${Converter.partName(1, numParts)}, ${Converter.partName(2, numParts)}"
+                } else {
+                    "${Converter.partName(1, numParts)}, ${Converter.partName(2, numParts)}, … " +
+                        Converter.partName(numParts, numParts)
+                }
                 Text(
-                    "Will be split into $numParts files to fit the ${maxDuration}s limit " +
-                        "(${Converter.partName(1, numParts)}, ${Converter.partName(2, numParts)}, … " +
-                        "${Converter.partName(numParts, numParts)}).",
+                    if (isCustom) {
+                        "Source is over the custom target length. It will be split to fit. ($names)"
+                    } else {
+                        "Will be split into $numParts files to fit the ${maxDuration}s limit ($names)."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary
                 )
@@ -282,6 +302,39 @@ private fun QueueRow(
             if ((minW > 0 || minH > 0) && (i.width < minW || i.height < minH)) {
                 Text(
                     "Below this target's minimum (${minW}×${minH}): it will be scaled up, keeping its aspect ratio.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+
+            // Splits: live estimate of what each part would get, and (for queued videos) the
+            // buttons to add splits or take them away again, down to the minimum the board needs.
+            val estimateText = buildString {
+                if (numParts > 1) append("Each part about ${String.format(Locale.US, "%.0f", est.partSec)}s · ")
+                append("about ${est.height}p at ${est.videoKbps} kbps video")
+            }
+            if (showControls) {
+                val locked = busy || item.partsDone > 0
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (numParts == 1) "No split" else "$numParts parts",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(estimateText, style = MaterialTheme.typography.bodySmall)
+                    }
+                    QueueButton("−", !locked && numParts > minParts) { onExtraParts(numParts - minParts - 1) }
+                    QueueButton("+", !locked && numParts < maxParts) { onExtraParts(numParts - minParts + 1) }
+                }
+            } else {
+                Text(estimateText, style = MaterialTheme.typography.bodySmall)
+            }
+
+            // Below the warning bitrate, detail will suffer. Not shown for an invalid custom limit.
+            if (settings.limitBytes >= 256 * 1024L && est.videoKbps < t.warnVideoKbps) {
+                Text(
+                    "High-detail clips (e.g. live action) will look poor at this bitrate." +
+                        if (showControls && numParts < maxParts) " Increased splitting recommended." else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary
                 )
@@ -486,6 +539,16 @@ fun App(onAbout: () -> Unit = {}) {
     val audioAllowed: Boolean = target?.audioAllowed ?: true
     val effectiveRemoveAudio = removeAudio || !audioAllowed
 
+    // What the next conversion would use. The queue cards work their split estimates out from it,
+    // so they follow the board, size limit, audio, effort and Advanced settings as they change.
+    val cardSettings = Settings(
+        limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
+        fastEncode = fastEncode,
+        useVp9 = useVp9,
+        fastest = fastest,
+        tuning = TuningStore.current,
+    )
+
     Column(
         Modifier
             .fillMaxSize()
@@ -519,13 +582,16 @@ fun App(onAbout: () -> Unit = {}) {
                     item = item,
                     busy = busy,
                     maxDuration = maxDuration,
+                    isCustom = isCustom,
                     minW = minW,
                     minH = minH,
+                    settings = cardSettings,
                     canMoveUp = idx > 0,
                     canMoveDown = idx < queue.lastIndex,
                     onUp = { BatchRunner.move(idx, -1) },
                     onDown = { BatchRunner.move(idx, 1) },
                     onRemove = { BatchRunner.removeAt(idx) },
+                    onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
                 )
             }
         }
@@ -575,7 +641,7 @@ fun App(onAbout: () -> Unit = {}) {
                     when {
                         !audioAllowed -> "This target doesn't allow audio; the space goes to video quality."
                         removeAudio -> "Output has no sound; the space goes to video quality."
-                        else -> "Keeps sound (about 64 kbps). Only targets marked \"Audio OK\" accept it."
+                        else -> "Keeps sound (starts at 64 kbps). Only targets marked \"Audio OK\" accept it."
                     },
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -755,8 +821,10 @@ fun App(onAbout: () -> Unit = {}) {
                         item = item,
                         busy = busy,
                         maxDuration = maxDuration,
+                        isCustom = isCustom,
                         minW = minW,
                         minH = minH,
+                        settings = cardSettings,
                         showControls = false,
                     )
                 }
