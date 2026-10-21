@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
 
@@ -85,6 +86,21 @@ object OutputStorage {
     }
 
     /**
+     * The name a saved file really ended up with. MediaStore renames a file that clashes with an
+     * existing one in the same folder (adding " (1)" and so on), so the name we asked for isn't
+     * always the name that exists. Falls back to [requested] if it can't be read.
+     */
+    private fun actualName(ctx: Context, uri: Uri, requested: String): String {
+        val found: String? = try {
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        } catch (_: Exception) {
+            null
+        }
+        return if (found.isNullOrBlank()) requested else found
+    }
+
+    /**
      * Saves into <chosen folder>/WebMChan/. If no folder is chosen, or it can't be written to,
      * silently falls back to [fallback] (the existing saveToDownloads) and says so in the message.
      */
@@ -94,7 +110,7 @@ object OutputStorage {
             val uri = fallback()
             return SaveResult(
                 uri,
-                if (uri != null) "Saved to internal storage: Download/WebMChan/$name"
+                if (uri != null) "Saved to internal storage: Download/WebMChan/${actualName(ctx, uri, name)}"
                 else "Couldn't save to Downloads."
             )
         }
@@ -107,7 +123,7 @@ object OutputStorage {
         val uri = fallback()
         return SaveResult(
             uri,
-            if (uri != null) "Chosen folder unavailable. Saved to internal storage instead: Download/WebMChan/$name"
+            if (uri != null) "Chosen folder unavailable. Saved to internal storage instead: Download/WebMChan/${actualName(ctx, uri, name)}"
             else "Chosen folder unavailable, and saving to Downloads failed too."
         )
     }
