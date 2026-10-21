@@ -403,6 +403,18 @@ object BatchRunner {
         busy = true
         progress = -1f // indeterminate until pass 2 reports real progress
         status = "Starting…"
+
+        // Every video about to be tried again goes back to "Waiting", so a leftover "Cancelled",
+        // "Skipped" or "Failed" message from an earlier run doesn't sit on cards the batch hasn't
+        // reached yet. (Parts already saved are remembered separately in partsDone / partsTotal.)
+        for (id in todo) {
+            val at = queue.indexOfFirst { it.id == id }
+            if (at >= 0 && (queue[at].status != ItemStatus.WAITING || queue[at].detail != null)) {
+                queue[at] = queue[at].copy(status = ItemStatus.WAITING, detail = null)
+            }
+        }
+        persist()
+
         logBuffer.clear { logLines = it }
         // Anything changed in About > Advanced goes at the top of the log, so a copied log says
         // which settings produced it.
