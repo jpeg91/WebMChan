@@ -193,6 +193,8 @@ private fun QueueRow(
     item: QueueItem,
     busy: Boolean,
     maxDuration: Int,
+    /** True when the Custom target is selected (its length cap isn't a board's rule). */
+    isCustom: Boolean,
     minW: Int,
     minH: Int,
     /** The settings the next conversion would use; the split estimate is worked out from them. */
@@ -281,10 +283,18 @@ private fun QueueRow(
             // Only when the board's limit forces the split. A clip already under the limit that
             // was split further with the stepper just shows its part count on the stepper row.
             if (minParts > 1) {
+                val names = if (numParts == 2) {
+                    "${Converter.partName(1, numParts)}, ${Converter.partName(2, numParts)}"
+                } else {
+                    "${Converter.partName(1, numParts)}, ${Converter.partName(2, numParts)}, … " +
+                        Converter.partName(numParts, numParts)
+                }
                 Text(
-                    "Will be split into $numParts files to fit the ${maxDuration}s limit " +
-                        "(${Converter.partName(1, numParts)}, ${Converter.partName(2, numParts)}, … " +
-                        "${Converter.partName(numParts, numParts)}).",
+                    if (isCustom) {
+                        "Source is over the custom target length. It will be split to fit. ($names)"
+                    } else {
+                        "Will be split into $numParts files to fit the ${maxDuration}s limit ($names)."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary
                 )
@@ -572,6 +582,7 @@ fun App(onAbout: () -> Unit = {}) {
                     item = item,
                     busy = busy,
                     maxDuration = maxDuration,
+                    isCustom = isCustom,
                     minW = minW,
                     minH = minH,
                     settings = cardSettings,
@@ -630,7 +641,7 @@ fun App(onAbout: () -> Unit = {}) {
                     when {
                         !audioAllowed -> "This target doesn't allow audio; the space goes to video quality."
                         removeAudio -> "Output has no sound; the space goes to video quality."
-                        else -> "Keeps sound (about 64 kbps). Only targets marked \"Audio OK\" accept it."
+                        else -> "Keeps sound (starts at 64 kbps). Only targets marked \"Audio OK\" accept it."
                     },
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -810,6 +821,7 @@ fun App(onAbout: () -> Unit = {}) {
                         item = item,
                         busy = busy,
                         maxDuration = maxDuration,
+                        isCustom = isCustom,
                         minW = minW,
                         minH = minH,
                         settings = cardSettings,
@@ -834,7 +846,7 @@ fun App(onAbout: () -> Unit = {}) {
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Share all (${savedUris.size})") }
             }
-        }
+        
         Spacer(Modifier.height(8.dp))
     }
 }

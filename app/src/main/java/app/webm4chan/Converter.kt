@@ -353,7 +353,7 @@ object Converter {
             StageResult.Ok(file)
         } catch (e: Exception) {
             file.delete()
-            StageResult.Fail("Could not copy selected video: ${e.message}")
+            StageResult.Fail("Could not copy the selected video: ${e.message}")
         }
     }
 
@@ -467,8 +467,7 @@ object Converter {
 
                 if (vKbps < t.minVideoKbps) {
                     return@withContext ConvertResult.Fail(
-                        "Video is too long for this size limit" +
-                            if (audioOn) " with audio. Try removing audio." else "."
+                        "Video is too long for this size limit. Try setting it to split."
                     )
                 }
                 if (audioOn && audioKbps < t.audioKbps) {
@@ -579,7 +578,11 @@ object Converter {
                 budgetBytes *= (settings.limitBytes * (t.retryMarginPct / 100.0)) / size.toDouble()
             }
             cleanupLogs(ctx)
-            ConvertResult.Fail("Couldn't get under the size limit after ${t.maxAttempts} attempts.")
+            ConvertResult.Fail(
+                "Couldn't get under the size limit after ${t.maxAttempts} attempts. " +
+                    "You've probably changed something in Advanced Settings. If not, please copy " +
+                    "the log and report this edge case on Github. In the meantime, try splitting."
+            )
         } finally {
             // Detach so later ffprobe/ffmpeg calls don't write into a finished run's log.
             FFmpegKitConfig.enableLogCallback { }
