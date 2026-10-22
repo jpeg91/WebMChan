@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -106,6 +107,15 @@ object BatchRunner {
     var probing by mutableIntStateOf(0)
         private set
 
+    /**
+     * Shared videos still being copied into app storage (see [addShared]): how many in this share,
+     * and how many are done. 0 means nothing is being copied, and the UI shows nothing.
+     */
+    var copyingTotal by mutableIntStateOf(0)
+        private set
+    var copyingDone by mutableIntStateOf(0)
+        private set
+
     /** < 0 means indeterminate (pass 1). */
     var progress by mutableFloatStateOf(0f)
         private set
@@ -119,6 +129,16 @@ object BatchRunner {
         private set
     var logLines by mutableStateOf<List<String>>(emptyList())
         private set
+
+    /** True from Cancel all until the run has stopped (the UI stops accepting new videos then). */
+    var cancelling by mutableStateOf(false)
+        private set
+
+    /**
+     * The ids the current run works through, in order. Videos added while it runs are appended
+     * (see [pickUpNewVideos]); one removed before its turn is dropped. Main thread only.
+     */
+    private val runList = ArrayList<Long>()
 
     /** Set by the activity: whether the app screen is visible (no "finished" notification if so). */
     @Volatile
@@ -153,7 +173,7 @@ object BatchRunner {
         // encoder output) that a run the system killed part-way left in the cache.
         Converter.clearWorkFiles(appCtx)
 
-        val state = BatchStore.load(appCtx) ?: return
+        val state = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); return }
         ids.set(maxOf(ids.get(), state.lastId))
         queue.addAll(
             state.queue.map {
@@ -170,6 +190,7 @@ object BatchRunner {
             }
         )
         finished.addAll(state.finished)
+        cleanOrphanCopies(appCtx)
         scope.launch { verifyRestored(appCtx) }
     }
 
@@ -293,6 +314,68 @@ object BatchRunner {
         }
     }
 
+    // ---- Videos shared to us from other apps ----
+    // A share only grants temporary read access, which is lost when the app stops. So a shared
+    // video is copied into the app's own storage first; the queue then points at that copy.
+
+    private fun sharedDir(ctx: Context) = File(ctx.filesDir, "shared")
+
+    /** Copies shared videos into app storage (in the background), then adds them to the queue. */
+    fun addShared(ctx: Context, shared: List<Uri>) {
+        val appCtx = ctx.applicationContext
+        appContext = appCtx
+        // A second share while one is still copying adds to the same count.
+        if (copyingTotal == 0) copyingDone = 0
+        copyingTotal += shared.size
+        scope.launch {
+            val copies = mutableListOf<Uri>()
+            try {
+                for (u in shared) {
+                    // If a copy fails (e.g. no space), fall back to the original; it works until the app stops.
+                    copies.add(withContext(Dispatchers.IO) { copyShared(appCtx, u) } ?: u)
+                    copyingDone++
+                }
+            } finally {
+                if (copies.isNotEmpty()) addVideos(appCtx, copies)
+                copyingTotal -= shared.size
+                if (copyingTotal <= 0) {
+                    copyingTotal = 0
+                    copyingDone = 0
+                }
+            }
+        }
+    }
+
+    private fun copyShared(ctx: Context, uri: Uri): Uri? {
+        val dir = File(sharedDir(ctx), java.util.UUID.randomUUID().toString())
+        return try {
+            val name = Converter.displayName(ctx, uri).replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "video" }
+            if (!dir.mkdirs()) return null
+            val out = File(dir, name)
+            val input = ctx.contentResolver.openInputStream(uri) ?: run { dir.deleteRecursively(); return null }
+            input.use { src -> out.outputStream().use { dst -> src.copyTo(dst, 256 * 1024) } }
+            Uri.fromFile(out)
+        } catch (_: Exception) {
+            dir.deleteRecursively()
+            null
+        }
+    }
+
+    /** Deletes the app-storage copy behind [uri], if it is one (does nothing for any other video). */
+    private fun deleteOwnCopy(ctx: Context, uri: Uri) {
+        if (uri.scheme != "file") return
+        val f = File(uri.path ?: return)
+        val root = sharedDir(ctx)
+        val dir = f.parentFile ?: return
+        if (dir.parentFile?.canonicalPath == root.canonicalPath) dir.deleteRecursively()
+    }
+
+    /** Removes copies no queue item points at (left by a crash, or a removal that didn't finish). */
+    private fun cleanOrphanCopies(ctx: Context) {
+        val keep = queue.mapNotNull { q -> q.uri.takeIf { it.scheme == "file" }?.path?.let { File(it).parentFile?.canonicalPath } }.toSet()
+        sharedDir(ctx).listFiles()?.forEach { if (it.canonicalPath !in keep) it.deleteRecursively() }
+    }
+
     private fun releaseAccess(ctx: Context, uri: Uri) {
         try {
             ctx.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -359,8 +442,17 @@ object BatchRunner {
 
     fun removeAt(index: Int) {
         if (index !in queue.indices) return
+        val item = queue[index]
+        // The video being converted can't be removed (the UI greys its button out too).
+        if (busy && item.status == ItemStatus.CONVERTING) return
+        // A video still waiting for its turn in the running batch: take it out of the run, so the
+        // "Video n of N" count stays right. Videos already tried this run are left where they are.
+        if (busy && item.status == ItemStatus.WAITING && runList.remove(item.id)) {
+            runTotal = (runTotal - 1).coerceAtLeast(0)
+        }
         appContext?.let {
             releaseAccess(it, queue[index].uri)
+            deleteOwnCopy(it, queue[index].uri)
             Thumbnails.delete(it, queue[index].id)
         }
         queue.removeAt(index)
@@ -372,6 +464,7 @@ object BatchRunner {
         appContext?.let { ctx ->
             queue.forEach {
                 releaseAccess(ctx, it.uri)
+                deleteOwnCopy(ctx, it.uri)
                 Thumbnails.delete(ctx, it.id)
             }
         }
@@ -398,6 +491,9 @@ object BatchRunner {
 
         summary = null
         runTotal = todo.size
+        runList.clear()
+        runList.addAll(todo)
+        cancelling = false
         skipFlag.set(false)
         cancelAllFlag.set(false)
         busy = true
@@ -430,7 +526,7 @@ object BatchRunner {
             logBuffer.add("Couldn't start the background service: ${e.message}") { logLines = it }
         }
 
-        scope.launch { runBatch(appCtx, todo, settings) }
+        scope.launch { runBatch(appCtx, settings) }
     }
 
     fun skipCurrent() {
@@ -441,24 +537,55 @@ object BatchRunner {
 
     fun cancelAll() {
         if (!busy) return
+        cancelling = true
         cancelAllFlag.set(true)
         Converter.cancel()
     }
 
-    private suspend fun runBatch(ctx: Context, todo: List<Long>, settings: Settings) {
+    /**
+     * Adds videos that joined the queue while the run was going (a share, say) to the end of the
+     * run. Only brand-new, readable, waiting videos qualify: anything already tried this run
+     * (done, failed, skipped) is in [runList] already and isn't picked up again.
+     */
+    private fun pickUpNewVideos() {
+        val known = runList.toHashSet()
+        for (q in queue) {
+            if (q.id !in known && q.info != null && q.status == ItemStatus.WAITING) runList.add(q.id)
+        }
+        runTotal = runList.size
+    }
+
+    private suspend fun runBatch(ctx: Context, settings: Settings) {
         var okCount = 0
         var failCount = 0
         var skipCount = 0
+        var processed = 0 // videos actually started so far, for the "Video n of N" label
+        var n = -1
         try {
-            for ((n, id) in todo.withIndex()) {
+            while (true) {
+                n++
+                if (n >= runList.size) {
+                    // Nothing left. Videos added during the run may still be copying or being read:
+                    // wait for them, then take whatever has arrived. Everything between the last
+                    // check and finishing runs without a pause, so a late video can't slip through.
+                    pickUpNewVideos()
+                    while (n >= runList.size && (copyingTotal > 0 || probing > 0) && !cancelAllFlag.get()) {
+                        status = "Waiting for added videos…"
+                        delay(100)
+                        pickUpNewVideos()
+                    }
+                    if (n >= runList.size) break
+                }
                 if (cancelAllFlag.get()) break
+                val id = runList[n]
                 val idx = queue.indexOfFirst { it.id == id }
                 if (idx < 0) continue
                 val item = queue[idx]
                 val src = item.info ?: continue
 
                 skipFlag.set(false)
-                val pos = "Video ${n + 1} of ${todo.size}"
+                val pos = "Video ${processed + 1} of $runTotal"
+                processed++
 
                 // Videos longer than the target's limit are split into consecutive parts rather
                 // than cut off, each converted and saved on its own. The video is divided evenly
@@ -673,6 +800,7 @@ object BatchRunner {
                             queue.removeAt(now)
                             // The source video isn't needed any more, nor its thumbnail.
                             releaseAccess(ctx, item.uri)
+                            deleteOwnCopy(ctx, item.uri)
                             Thumbnails.delete(ctx, item.id)
                             okCount++
                         }
@@ -691,6 +819,8 @@ object BatchRunner {
             }
             summary = text
             busy = false
+            cancelling = false
+            runList.clear()
             // Remove the ongoing notification; tell the user the result if the app isn't on screen.
             try {
                 ctx.stopService(Intent(ctx, ConvertService::class.java))
