@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -97,6 +98,9 @@ class MainActivity : ComponentActivity() {
         BatchRunner.restore(applicationContext)
         // The fitting numbers from About > Advanced (defaults unless changed).
         TuningStore.load(applicationContext)
+        // Videos shared to us from another app. Skipped when the system recreates the activity,
+        // so videos the user already removed don't come back.
+        if (savedInstanceState == null) handleShare(intent)
         setContent {
             val ctx = LocalContext.current
             val dark = isSystemInDarkTheme()
@@ -127,6 +131,34 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // Sharing again while the app is open arrives here (launchMode singleTop).
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShare(intent)
+    }
+
+    /** Adds any videos from a Share (SEND / SEND_MULTIPLE) intent to the queue. */
+    private fun handleShare(intent: Intent?) {
+        if (intent == null) return
+        if (intent.action != Intent.ACTION_SEND && intent.action != Intent.ACTION_SEND_MULTIPLE) return
+        val uris = LinkedHashSet<Uri>()
+        if (intent.action == Intent.ACTION_SEND) {
+            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.add(it) }
+        } else {
+            IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                ?.let { uris.addAll(it) }
+        }
+        // Some apps only put the video in the clip data.
+        intent.clipData?.let { clip ->
+            for (n in 0 until clip.itemCount) clip.getItemAt(n).uri?.let { uris.add(it) }
+        }
+        if (uris.isEmpty()) return
+        BatchRunner.addShared(this, uris.toList())
+        // Handled; stops a later recreation from adding them again.
+        intent.action = null
     }
 
     // BatchRunner skips the "finished" notification if the screen is already visible.
@@ -290,10 +322,13 @@ private fun QueueRow(
                     }
                 }
             }
-            if (showControls && !busy) {
-                QueueButton("▲", canMoveUp, onUp)
-                QueueButton("▼", canMoveDown, onDown)
-                QueueButton("✕", true, onRemove)
+            if (showControls) {
+                if (!busy) {
+                    QueueButton("▲", canMoveUp, onUp)
+                    QueueButton("▼", canMoveDown, onDown)
+                }
+                // Removing is allowed during a run, except for the video being converted.
+                QueueButton("✕", item.status != ItemStatus.CONVERTING, onRemove)
             }
         }
 
@@ -479,6 +514,9 @@ fun App(onAbout: () -> Unit = {}) {
     val finished = BatchRunner.finished
     val busy = BatchRunner.busy
     val probing = BatchRunner.probing
+    val copyingTotal = BatchRunner.copyingTotal
+    val cancelling = BatchRunner.cancelling
+    val copyingDone = BatchRunner.copyingDone
     val progress = BatchRunner.progress
     val status = BatchRunner.status
     val summary = BatchRunner.summary
@@ -540,8 +578,8 @@ fun App(onAbout: () -> Unit = {}) {
     }
 
     // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 1.2s.
-    LaunchedEffect(progress < 0f) {
-        if (progress < 0f) {
+    LaunchedEffect(progress < 0f || copyingTotal > 0) {
+        if (progress < 0f || copyingTotal > 0) {
             var t = 0L
             while (isActive) {
                 val phase = (t % 4000L) / 4000f
@@ -695,11 +733,24 @@ fun App(onAbout: () -> Unit = {}) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = { picker.launch(arrayOf("video/*")) },
-                enabled = !busy,
+                enabled = !cancelling, // allowed during a run: new videos join it
                 modifier = Modifier.weight(1f),
             ) { Text(if (queue.isEmpty()) "Choose videos" else "Add videos") }
             if (queue.isNotEmpty()) {
                 OutlinedButton(onClick = { BatchRunner.clearQueue() }, enabled = !busy) { Text("Clear") }
+            }
+        }
+
+        // Only while a shared video is being copied in; gone as soon as it's in the queue.
+        if (copyingTotal > 0) {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    if (copyingTotal == 1) "Copying shared video…"
+                    else "Copying shared videos… ${minOf(copyingDone + 1, copyingTotal)} of $copyingTotal",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                // Hand-driven (pass1Sweep), not Compose's own indeterminate animation: see pass1Sweep.
+                LinearProgressIndicator(progress = { pass1Sweep }, modifier = Modifier.fillMaxWidth())
             }
         }
 
@@ -928,7 +979,7 @@ fun App(onAbout: () -> Unit = {}) {
         }
 
         val pending = queue.count { it.info != null }
-        val canGo = pending > 0 && probing == 0 && limitOk && fpsOk && !busy
+        val canGo = pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && !busy
         Button(
             onClick = {
                 val settings = Settings(
