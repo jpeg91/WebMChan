@@ -264,7 +264,6 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Deeper Custom controls
 - Android top bar notification icon
 - Add videos to queue during conversion
-- Output renaming
 - UI improvements (split into pages? Wizard style work flow?)
 - Conversion history page with options for individual videos (Delete, Share, Info, Rename etc)
 - 'About' page updates and improvements
@@ -272,8 +271,10 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Tool tips
 - UI theming & mascot
 - App icons etc
-- Frame rate options
+- Deeper frame rate targets and controls
 - Custom resolution targets that maintain aspect ratio
+- Pre-conversion video editing (trim, crop etc)
+- Output renaming
 - Bug reporting (the Copy log button is a start). Please report any issues through github
 - Update handling
 - Naming conventions and further save settings
