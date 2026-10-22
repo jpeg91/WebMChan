@@ -39,6 +39,11 @@ data class Settings(
     val useVp9: Boolean = false,
     /** Fastest: still two-pass, but the highest effort setting, short look-ahead and smaller frames. Overrides [fastEncode]. */
     val fastest: Boolean = false,
+    /**
+     * The highest frame rate the output may have. A source at or below this keeps its own rate;
+     * a faster source is reduced to it. Never raises a source's rate. See [Converter.effectiveFps].
+     */
+    val targetFps: Int = Converter.DEFAULT_FPS,
     /** The fitting numbers (targets, attempts, audio bitrate...). See [Tuning]. */
     val tuning: Tuning = Tuning(),
 )
@@ -149,6 +154,25 @@ object Converter {
     /** Extra splits are never allowed to make a part shorter than this. */
     const val MIN_PART_SEC = 10.0
 
+    // ---- Frame rate ----
+
+    /** The frame rate cap used unless another is chosen. */
+    const val DEFAULT_FPS = 30
+
+    /** The range a Custom frame rate cap is kept within. */
+    const val MIN_FPS = 1
+    const val MAX_FPS = 120
+
+    /** [fps] forced into the allowed range. */
+    fun clampFps(fps: Int): Int = fps.coerceIn(MIN_FPS, MAX_FPS)
+
+    /**
+     * The frame rate the output is planned around: the source's own rate, or [targetFps] if the
+     * source is faster. Never higher than the source.
+     */
+    fun effectiveFps(src: SourceInfo, targetFps: Int): Double =
+        min(src.fps, clampFps(targetFps).toDouble())
+
     // ---- Length limits (back end only: the UI always shows the board's real limit) ----
 
     /** What the app actually aims for: the target's limit minus the length grace (e.g. 300 -> 299). */
@@ -157,14 +181,10 @@ object Converter {
 
     /**
      * The fewest files a video of [durationSec] can become for a target with this [maxDurationSec]
-     * (1 = no split). A video that is within the board's real limit always stays one file: if it
-     * is longer than the effective limit (the real limit minus the length grace) the end is
-     * trimmed, by no more than the grace. Beyond the real limit, a video that only just overshoots
-     * (by the trim tolerance or less, per part) is trimmed to fit instead of getting an extra,
-     * almost-empty part.
+     * (1 = no split). A video that only just overshoots (by the trim tolerance or less, per
+     * part) is trimmed to fit instead of getting an extra, almost-empty part.
      */
     fun partCount(durationSec: Double, maxDurationSec: Int, tuning: Tuning): Int {
-        if (durationSec <= maxDurationSec) return 1
         val eff = effectiveMaxSec(maxDurationSec, tuning)
         return max(1, ceil((durationSec - tuning.trimToleranceSec) / eff).toInt())
     }
@@ -208,6 +228,7 @@ object Converter {
         val height = chooseHeight(
             vKbps, src, minHeightFor(src, settings.minWidth, settings.minHeight),
             if (settings.fastest) t.fastestBpp else t.normalBpp,
+            settings.targetFps,
         )
         return PartEstimate(parts, partSec, vKbps, height)
     }
@@ -274,10 +295,11 @@ object Converter {
 
     /**
      * Biggest height (<=1080, <= source) that still gets a decent bits-per-pixel for VP8,
-     * never below [minHeight]. A source smaller than the minimum is scaled up to it.
+     * never below [minHeight]. A source smaller than the minimum is scaled up to it. The frame
+     * rate used for the bits-per-pixel sum is the output's: the source's, capped at [targetFps].
      */
-    private fun chooseHeight(vKbps: Int, src: SourceInfo, minHeight: Int, minBpp: Double): Int {
-        val fps = min(src.fps, 30.0)
+    private fun chooseHeight(vKbps: Int, src: SourceInfo, minHeight: Int, minBpp: Double, targetFps: Int): Int {
+        val fps = effectiveFps(src, targetFps)
         val aspect = src.width.toDouble() / src.height
         val ladder = listOf(1080, 720, 480, 360, 240)
         val base = if (src.height <= 1080) {
@@ -396,6 +418,12 @@ object Converter {
             val trimmed = clipDurationSec == null && src.durationSec > effMax
             val audioOn = settings.keepAudio && src.hasAudio
 
+            // The frame rate cap. The fps filter is only added when the source is faster than it
+            // (with half a frame of leeway, so 29.97 and 59.94 sources aren't touched by a 30 or
+            // 60 cap). A slower source is never sped up.
+            val fpsCap = clampFps(settings.targetFps)
+            val reduceFps = src.fps > fpsCap + 0.5
+
             val out = File(ctx.cacheDir, "out.webm")
             val passLog = File(ctx.cacheDir, "ffpass").absolutePath
             var budgetBytes = settings.limitBytes * (t.firstTargetPct / 100.0)
@@ -477,12 +505,15 @@ object Converter {
                 if (audioOn && audioKbps < t.audioKbps) {
                     onLog("   audio bitrate reduced to ${audioKbps} kbps to fit the limit")
                 }
-                val height = chooseHeight(vKbps, src, minHeight, if (settings.fastest) t.fastestBpp else t.normalBpp)
+                val height = chooseHeight(
+                    vKbps, src, minHeight, if (settings.fastest) t.fastestBpp else t.normalBpp,
+                    settings.targetFps,
+                )
                 lastHeight = height
                 lastKbps = vKbps
 
                 val filters = buildList {
-                    if (src.fps > 30.5) add("fps=30")
+                    if (reduceFps) add("fps=$fpsCap")
                     if (hasMin) {
                         // Evaluated by ffmpeg on the (auto-rotated) frame: aspect kept, even
                         // sizes, and never below the board's minimum width/height.
@@ -537,6 +568,10 @@ object Converter {
                         (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
                 onLog("   filters: $filters")
+                onLog(
+                    "   frame rate: source %.2f fps, cap $fpsCap fps, ".format(java.util.Locale.US, src.fps) +
+                        if (reduceFps) "reduced to $fpsCap fps" else "kept at the source rate"
+                )
                 onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
                 onLog("   encoder effort: $effortName (cpu-used $cpuUsed)")
                 onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")

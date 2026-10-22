@@ -84,6 +84,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
+/** The frame rate caps offered as presets. Custom follows them in the radio list. */
+private val FPS_PRESETS = listOf(24, 30, 60)
+
+/** Index into [FPS_PRESETS] of the default (30). */
+private const val FPS_DEFAULT_INDEX = 1
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -389,6 +395,63 @@ private fun TargetRow(
     }
 }
 
+/**
+ * A settings group that opens and closes when its header is tapped. While closed, the header
+ * shows [summary] (the current choice), so you can see what's set without opening it. A
+ * [summaryIsError] summary is drawn in the error colour, so a setting that blocks Convert is
+ * still noticed while closed. The header stays tappable while a batch runs; the controls inside
+ * are disabled by their own `enabled` flags as before.
+ */
+@Composable
+private fun CollapsibleSection(
+    title: String,
+    summary: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    summaryIsError: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp)),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle)
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                if (!expanded) {
+                    Text(
+                        summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (summaryIsError) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Text(if (expanded) "▲" else "▼", style = MaterialTheme.typography.titleSmall)
+        }
+        if (expanded) {
+            Column(
+                Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) { content() }
+        }
+    }
+}
+
+/** e.g. "/3/ /a/ /aco/ /adv/ /an/ /biz/ … (66 boards)" for the long list, the full list when short. */
+private fun boardsSummary(t: Target): String {
+    val shown = 6
+    return if (t.boards.size <= shown) t.boardsLabel
+    else t.boards.take(shown).joinToString(" ") { "/$it/" } + " … (${t.boards.size} boards)"
+}
+
 @Composable
 fun App(onAbout: () -> Unit = {}) {
     val ctx = LocalContext.current
@@ -414,7 +477,12 @@ fun App(onAbout: () -> Unit = {}) {
     var fastEncode by remember { mutableStateOf(prefs.getBoolean("ui_fast_encode", false)) }
     var useVp9 by remember { mutableStateOf(prefs.getBoolean("ui_use_vp9", false)) }
     var fastest by remember { mutableStateOf(prefs.getBoolean("ui_fastest", false)) }
-    LaunchedEffect(targetIdx, customMb, removeAudio, fastEncode, useVp9, fastest) {
+    // Index into FPS_PRESETS; FPS_PRESETS.size means "Custom".
+    var fpsChoice by remember {
+        mutableIntStateOf(prefs.getInt("ui_fps_choice", FPS_DEFAULT_INDEX).coerceIn(0, FPS_PRESETS.size))
+    }
+    var customFps by remember { mutableStateOf(prefs.getString("ui_custom_fps", "30") ?: "30") }
+    LaunchedEffect(targetIdx, customMb, removeAudio, fastEncode, useVp9, fastest, fpsChoice, customFps) {
         prefs.edit()
             .putInt("ui_target_idx", targetIdx)
             .putString("ui_custom_mb", customMb)
@@ -422,8 +490,18 @@ fun App(onAbout: () -> Unit = {}) {
             .putBoolean("ui_fast_encode", fastEncode)
             .putBoolean("ui_use_vp9", useVp9)
             .putBoolean("ui_fastest", fastest)
+            .putInt("ui_fps_choice", fpsChoice)
+            .putString("ui_custom_fps", customFps)
             .apply()
     }
+
+    // Which settings groups are open. All start closed.
+    var boardsOpen by remember { mutableStateOf(false) }
+    var audioOpen by remember { mutableStateOf(false) }
+    var fpsOpen by remember { mutableStateOf(false) }
+    var encodingOpen by remember { mutableStateOf(false) }
+    var codecOpen by remember { mutableStateOf(false) }
+    var saveOpen by remember { mutableStateOf(false) }
 
     // Pass 1 has no real progress to report. Compose's built-in indeterminate bar relies on
     // Compose's own animation system, which some phones freeze (the "Animator duration scale"
@@ -444,13 +522,9 @@ fun App(onAbout: () -> Unit = {}) {
         if (logLines.isNotEmpty()) logListState.scrollToItem(logLines.lastIndex)
     }
 
-    // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 4s.
-    // It only runs while a batch is actually in pass 1 and the screen is visible: keyed on
-    // just "progress < 0f", it kept waking up 60 times a second after a run was cancelled or
-    // failed in pass 1 (progress stays at -1 then), and while the app was in the background.
-    val sweeping = busy && progress < 0f && BatchRunner.uiVisible
-    LaunchedEffect(sweeping) {
-        if (sweeping) {
+    // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 1.2s.
+    LaunchedEffect(progress < 0f) {
+        if (progress < 0f) {
             var t = 0L
             while (isActive) {
                 val phase = (t % 4000L) / 4000f
@@ -543,15 +617,47 @@ fun App(onAbout: () -> Unit = {}) {
     val audioAllowed: Boolean = target?.audioAllowed ?: true
     val effectiveRemoveAudio = removeAudio || !audioAllowed
 
+    // The frame rate cap. A Custom entry that isn't a whole number in range can't be used: Convert
+    // stays disabled until it is fixed, and in the meantime the cards use the default.
+    val isCustomFps = fpsChoice >= FPS_PRESETS.size
+    val customFpsValue: Int? = customFps.trim().toIntOrNull()?.takeIf { it in Converter.MIN_FPS..Converter.MAX_FPS }
+    val fpsOk = !isCustomFps || customFpsValue != null
+    val targetFps: Int = if (!isCustomFps) FPS_PRESETS[fpsChoice] else (customFpsValue ?: Converter.DEFAULT_FPS)
+
     // What the next conversion would use. The queue cards work their split estimates out from it,
-    // so they follow the board, size limit, audio, effort and Advanced settings as they change.
+    // so they follow the board, size limit, audio, effort, frame rate and Advanced settings as they change.
     val cardSettings = Settings(
         limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
         fastEncode = fastEncode,
         useVp9 = useVp9,
         fastest = fastest,
+        targetFps = targetFps,
         tuning = TuningStore.current,
     )
+
+    // What each closed settings group shows as its current choice.
+    val limitOk = limitKb >= 256
+    val boardsSummaryText = if (target != null) {
+        "${target.title}\n${boardsSummary(target)}"
+    } else if (limitOk) {
+        "Custom · $customMb MB limit, no minimum resolution"
+    } else {
+        "Custom · enter a limit of at least 0.25 MB"
+    }
+    val audioSummaryText = when {
+        !audioAllowed -> "Off · this target doesn't allow sound"
+        removeAudio -> "Off · output has no sound"
+        else -> "On · sound is kept"
+    }
+    val fpsSummaryText = when {
+        isCustomFps && customFpsValue == null ->
+            "Custom · enter a whole number from ${Converter.MIN_FPS} to ${Converter.MAX_FPS}"
+        isCustomFps -> "Custom · up to $customFpsValue fps"
+        fpsChoice == FPS_DEFAULT_INDEX -> "${FPS_PRESETS[fpsChoice]} fps (default)"
+        else -> "${FPS_PRESETS[fpsChoice]} fps"
+    }
+    val encodingSummaryText = if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality"
+    val codecSummaryText = if (useVp9) "VP9" else "VP8"
 
     Column(
         Modifier
@@ -606,121 +712,206 @@ fun App(onAbout: () -> Unit = {}) {
             )
         }
 
-        Text("Target boards", style = MaterialTheme.typography.titleSmall)
-        TARGETS.forEachIndexed { idx, t ->
-            TargetRow(
-                selected = targetIdx == idx,
-                enabled = !busy,
-                title = t.title,
-                subtitle = t.boardsLabel,
-            ) {
-                targetIdx = idx
-                if (t.audioAllowed) removeAudio = false
-            }
-        }
-        TargetRow(
-            selected = isCustom,
-            enabled = !busy,
-            title = "Custom",
-            subtitle = "Your own size limit, no minimum resolution",
+        CollapsibleSection(
+            title = "Target boards",
+            summary = boardsSummaryText,
+            expanded = boardsOpen,
+            onToggle = { boardsOpen = !boardsOpen },
+            summaryIsError = isCustom && !limitOk,
         ) {
-            targetIdx = TARGETS.size
-            removeAudio = false
-        }
-        if (isCustom) {
-            OutlinedTextField(
-                value = customMb,
-                onValueChange = { customMb = it },
-                label = { Text("Limit in MB") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                singleLine = true,
+            TARGETS.forEachIndexed { idx, t ->
+                TargetRow(
+                    selected = targetIdx == idx,
+                    enabled = !busy,
+                    title = t.title,
+                    subtitle = t.boardsLabel,
+                ) {
+                    targetIdx = idx
+                    if (t.audioAllowed) removeAudio = false
+                }
+            }
+            TargetRow(
+                selected = isCustom,
                 enabled = !busy,
-            )
-        }
-
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Column(Modifier.weight(1f)) {
-                Text("Remove audio", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    when {
-                        !audioAllowed -> "This target doesn't allow audio; the space goes to video quality."
-                        removeAudio -> "Output has no sound; the space goes to video quality."
-                        else -> "Keeps sound (starts at 64 kbps). Only targets marked \"Audio OK\" accept it."
-                    },
-                    style = MaterialTheme.typography.bodySmall
+                title = "Custom",
+                subtitle = "Your own size limit, no minimum resolution",
+            ) {
+                targetIdx = TARGETS.size
+                removeAudio = false
+            }
+            if (isCustom) {
+                OutlinedTextField(
+                    value = customMb,
+                    onValueChange = { customMb = it },
+                    label = { Text("Limit in MB") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    enabled = !busy,
                 )
             }
-            Switch(
-                checked = effectiveRemoveAudio,
-                onCheckedChange = { removeAudio = it },
-                enabled = !busy && audioAllowed,
-            )
         }
 
-        Text("Encoding", style = MaterialTheme.typography.titleSmall)
-        TargetRow(
-            selected = !fastEncode && !fastest,
-            enabled = !busy,
-            title = "Quality",
-            subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
-        ) { fastEncode = false; fastest = false }
-        TargetRow(
-            selected = fastEncode && !fastest,
-            enabled = !busy,
-            title = "Speed",
-            subtitle = "Faster than Quality mode, only slightly softer detail.",
-        ) { fastEncode = true; fastest = false }
-        TargetRow(
-            selected = fastest,
-            enabled = !busy,
-            title = "Fastest",
-            subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
-        ) { fastest = true }
+        CollapsibleSection(
+            title = "Sound",
+            summary = audioSummaryText,
+            expanded = audioOpen,
+            onToggle = { audioOpen = !audioOpen },
+        ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        when {
+                            !audioAllowed -> "This target doesn't allow sound; the space goes to video quality."
+                            removeAudio -> "Sound is off: the output has no sound and the space goes to video quality."
+                            else -> "Sound is on: kept in the output (starts at 64 kbps). Only targets marked \"Audio OK\" allow it."
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                // On = sound kept. (removeAudio is the opposite way round internally.)
+                Switch(
+                    checked = !effectiveRemoveAudio,
+                    onCheckedChange = { removeAudio = !it },
+                    enabled = !busy && audioAllowed,
+                )
+            }
+        }
 
-        Text("Codec", style = MaterialTheme.typography.titleSmall)
-        TargetRow(
-            selected = !useVp9,
-            enabled = !busy,
-            title = "VP8",
-            subtitle = "Recommended default. Fastest. It just works.",
-        ) { useVp9 = false }
-        TargetRow(
-            selected = useVp9,
-            enabled = !busy,
-            title = "VP9",
-            subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
-        ) { useVp9 = true }
-
-        Text("Save location", style = MaterialTheme.typography.titleSmall)
-        Text(outputLabel, style = MaterialTheme.typography.bodyMedium)
-        Text(
-            "Videos are saved in a WebMChan folder inside the location you choose. " +
-                "If it becomes unavailable (e.g. SD card removed), they go to Download/WebMChan instead.",
-            style = MaterialTheme.typography.bodySmall
-        )
-        folderError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = { folderPicker.launch(null) },
+        CollapsibleSection(
+            title = "Frame rate",
+            summary = fpsSummaryText,
+            expanded = fpsOpen,
+            onToggle = { fpsOpen = !fpsOpen },
+            summaryIsError = !fpsOk,
+        ) {
+            Text(
+                "The most frames per second the output may have. A video that's already slower keeps its own rate; frame rates are never raised.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            TargetRow(
+                selected = fpsChoice == 0,
                 enabled = !busy,
-                modifier = Modifier.weight(1f),
-            ) { Text("Choose folder") }
-            if (hasCustomDir) {
-                OutlinedButton(
-                    onClick = {
-                        OutputStorage.clearDir(ctx)
-                        outputLabel = OutputStorage.displayName(ctx)
-                        hasCustomDir = false
-                        folderError = null
+                title = "24 fps",
+                subtitle = "Film standard. Fewer frames means more detail in each one on a tight limit. A 30 or 60 fps source loses frames unevenly, so motion can look slightly juddery.",
+            ) { fpsChoice = 0 }
+            TargetRow(
+                selected = fpsChoice == 1,
+                enabled = !busy,
+                title = "30 fps (default)",
+                subtitle = "Recommended. A good balance of smooth motion and detail.",
+            ) { fpsChoice = 1 }
+            TargetRow(
+                selected = fpsChoice == 2,
+                enabled = !busy,
+                title = "60 fps",
+                subtitle = "Smoother motion, but each second needs twice the bits for the same detail. On small size limits expect smaller frames and a rougher picture.",
+            ) { fpsChoice = 2 }
+            TargetRow(
+                selected = isCustomFps,
+                enabled = !busy,
+                title = "Custom",
+                subtitle = "Your own limit, ${Converter.MIN_FPS} to ${Converter.MAX_FPS} fps.",
+            ) { fpsChoice = FPS_PRESETS.size }
+            if (isCustomFps) {
+                OutlinedTextField(
+                    value = customFps,
+                    onValueChange = { customFps = it },
+                    label = { Text("Frame rate limit (fps)") },
+                    isError = customFpsValue == null,
+                    supportingText = {
+                        if (customFpsValue == null) {
+                            Text("Enter a whole number from ${Converter.MIN_FPS} to ${Converter.MAX_FPS}.")
+                        }
                     },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    enabled = !busy,
+                )
+            }
+        }
+
+        CollapsibleSection(
+            title = "Encoding",
+            summary = encodingSummaryText,
+            expanded = encodingOpen,
+            onToggle = { encodingOpen = !encodingOpen },
+        ) {
+            TargetRow(
+                selected = !fastEncode && !fastest,
+                enabled = !busy,
+                title = "Quality",
+                subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
+            ) { fastEncode = false; fastest = false }
+            TargetRow(
+                selected = fastEncode && !fastest,
+                enabled = !busy,
+                title = "Speed",
+                subtitle = "Faster than Quality mode, only slightly softer detail.",
+            ) { fastEncode = true; fastest = false }
+            TargetRow(
+                selected = fastest,
+                enabled = !busy,
+                title = "Fastest",
+                subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
+            ) { fastest = true }
+        }
+
+        CollapsibleSection(
+            title = "Codec",
+            summary = codecSummaryText,
+            expanded = codecOpen,
+            onToggle = { codecOpen = !codecOpen },
+        ) {
+            TargetRow(
+                selected = !useVp9,
+                enabled = !busy,
+                title = "VP8",
+                subtitle = "Recommended default. Fastest. It just works.",
+            ) { useVp9 = false }
+            TargetRow(
+                selected = useVp9,
+                enabled = !busy,
+                title = "VP9",
+                subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
+            ) { useVp9 = true }
+        }
+
+        CollapsibleSection(
+            title = "Save location",
+            summary = outputLabel,
+            expanded = saveOpen,
+            onToggle = { saveOpen = !saveOpen },
+        ) {
+            Text(outputLabel, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "Videos are saved in a WebMChan folder inside the location you choose. " +
+                    "If it becomes unavailable (e.g. SD card removed), they go to Download/WebMChan instead.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            folderError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { folderPicker.launch(null) },
                     enabled = !busy,
                     modifier = Modifier.weight(1f),
-                ) { Text("Use default") }
+                ) { Text("Choose folder") }
+                if (hasCustomDir) {
+                    OutlinedButton(
+                        onClick = {
+                            OutputStorage.clearDir(ctx)
+                            outputLabel = OutputStorage.displayName(ctx)
+                            hasCustomDir = false
+                            folderError = null
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Use default") }
+                }
             }
         }
 
         val pending = queue.count { it.info != null }
-        val canGo = pending > 0 && probing == 0 && limitKb >= 256 && !busy
+        val canGo = pending > 0 && probing == 0 && limitOk && fpsOk && !busy
         Button(
             onClick = {
                 val settings = Settings(
@@ -728,6 +919,7 @@ fun App(onAbout: () -> Unit = {}) {
                     fastEncode = fastEncode,
                     useVp9 = useVp9,
                     fastest = fastest,
+                    targetFps = targetFps,
                     tuning = TuningStore.current,
                 )
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&

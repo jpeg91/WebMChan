@@ -120,11 +120,9 @@ object BatchRunner {
     var logLines by mutableStateOf<List<String>>(emptyList())
         private set
 
-    /**
-     * Set by the activity: whether the app screen is visible (no "finished" notification if so).
-     * Compose state, so the screen can also stop its pass-1 animation while it isn't visible.
-     */
-    var uiVisible by mutableStateOf(false)
+    /** Set by the activity: whether the app screen is visible (no "finished" notification if so). */
+    @Volatile
+    var uiVisible = false
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val ids = AtomicLong(0)
@@ -459,9 +457,6 @@ object BatchRunner {
                 val item = queue[idx]
                 val src = item.info ?: continue
 
-                // A Skip applies to one video, so it's cleared once per video here, not per part:
-                // a Skip pressed while no ffmpeg was running (between parts, or during a
-                // thumbnail or save) must still be seen at the top of the next part.
                 skipFlag.set(false)
                 val pos = "Video ${n + 1} of ${todo.size}"
 
@@ -469,10 +464,9 @@ object BatchRunner {
                 // than cut off, each converted and saved on its own. The video is divided evenly
                 // (e.g. 250 s with a 120 s limit = 3 parts of ~83.3 s) so there's never a tiny
                 // leftover part, and no part is longer than the effective limit (the board's limit
-                // minus the length grace; see Converter.effectiveMaxSec). A video within the
-                // board's real limit stays one file, trimmed to the effective limit if needed, and
-                // so does a tiny overshoot (see Converter.partCount). Splits chosen on the card
-                // (item.extraParts) are added on top of that minimum.
+                // minus the length grace; see Converter.effectiveMaxSec). A tiny overshoot is trimmed
+                // off the end instead of becoming a part (see Converter.partCount). Splits chosen on
+                // the card (item.extraParts) are added on top of that minimum.
                 val numParts = Converter.partsFor(src.durationSec, settings.maxDurationSec, settings.tuning, item.extraParts)
                 val partDur = min(src.durationSec / numParts, Converter.effectiveMaxSec(settings.maxDurationSec, settings.tuning))
                 val base = item.name.substringBeforeLast('.', item.name)
@@ -507,13 +501,13 @@ object BatchRunner {
                 try {
                     for (part in resumeFrom..numParts) {
                         if (cancelAllFlag.get()) { itemCancelledAll = true; break }
-                        if (skipFlag.get()) { itemSkipped = true; break }
 
                         val startSec = (part - 1) * partDur
                         val clipDur = if (numParts > 1) min(partDur, src.durationSec - startSec) else null
                         val partLabel = if (numParts > 1) ", part $part/$numParts" else ""
                         val partTag = if (numParts > 1) " (part $part/$numParts)" else ""
 
+                        skipFlag.set(false)
                         progress = -1f
                         status = "$pos$partLabel: Starting…"
                         logBuffer.add("=== $pos$partTag: ${item.name} ===") { logLines = it }
@@ -575,7 +569,7 @@ object BatchRunner {
                                         durationSec = encodedSec,
                                         width = (h * src.width.toDouble() / src.height / 2).toInt() * 2,
                                         height = h,
-                                        fps = min(src.fps, 30.0),
+                                        fps = Converter.effectiveFps(src, settings.targetFps),
                                         hasAudio = res.audioIncluded,
                                     )
                                 }
@@ -691,8 +685,6 @@ object BatchRunner {
                 if (cancelAllFlag.get()) append(" (cancelled)")
             }
             summary = text
-            // Don't leave progress at -1 (pass 1) after a cancel or failure.
-            progress = 0f
             busy = false
             // Remove the ongoing notification; tell the user the result if the app isn't on screen.
             try {
