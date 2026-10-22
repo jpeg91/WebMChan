@@ -561,7 +561,7 @@ object BatchRunner {
                                 // What the Finished card shows is the converted file itself (its own
                                 // length, size and so on), not the source video it came from. Read
                                 // it from the file; if that fails, work it out from what we know.
-                                val outInfo = Converter.probeFile(res.file) ?: run {
+                                val probedOut = Converter.probeFile(res.file) ?: run {
                                     val encodedSec = clipDur
                                         ?: min(src.durationSec, Converter.effectiveMaxSec(settings.maxDurationSec, settings.tuning))
                                     val h = res.height
@@ -569,10 +569,15 @@ object BatchRunner {
                                         durationSec = encodedSec,
                                         width = (h * src.width.toDouble() / src.height / 2).toInt() * 2,
                                         height = h,
-                                        fps = Converter.effectiveFps(src, settings.targetFps),
+                                        fps = 0.0,
+                                        fpsReadable = false,
                                         hasAudio = res.audioIncluded,
                                     )
                                 }
+                                // If the converted file's frame rate couldn't be read, don't guess it: the card
+                                // says so and shows the rate the encoder aimed for instead.
+                                val outInfo = if (probedOut.fpsReadable) probedOut else
+                                    probedOut.copy(targetedFps = Converter.targetedFps(src, settings.targetFps))
                                 // Each part gets its own thumbnail, from its own converted file.
                                 val cardId = ids.incrementAndGet()
                                 val hasThumb = Thumbnails.create(ctx, cardId, null, res.file, outInfo.durationSec)

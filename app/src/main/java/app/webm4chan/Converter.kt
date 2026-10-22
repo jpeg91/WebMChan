@@ -25,6 +25,16 @@ data class SourceInfo(
     val height: Int,
     val fps: Double,
     val hasAudio: Boolean,
+    /**
+     * false when the frame rate couldn't be read. [fps] is then only a placeholder (30) used for
+     * planning, and must never be shown as if it were the real rate.
+     */
+    val fpsReadable: Boolean = true,
+    /**
+     * Finished clips whose frame rate couldn't be read only: the rate the encoder aimed for,
+     * or 0 when that isn't known either (the source's rate was kept and it wasn't readable).
+     */
+    val targetedFps: Double = 0.0,
 )
 
 data class Settings(
@@ -173,6 +183,20 @@ object Converter {
     fun effectiveFps(src: SourceInfo, targetFps: Int): Double =
         min(src.fps, clampFps(targetFps).toDouble())
 
+    /**
+     * The frame rate the encoder aimed for, for a clip whose own frame rate couldn't be read
+     * afterwards. Known when the source's rate was readable (see [effectiveFps]) or when the
+     * rate cap was applied by the fps filter. 0 = the source's own, unreadable, rate was kept.
+     */
+    fun targetedFps(src: SourceInfo, targetFps: Int): Double {
+        val cap = clampFps(targetFps)
+        return when {
+            src.fpsReadable -> effectiveFps(src, targetFps)
+            src.fps > cap + 0.5 -> cap.toDouble()
+            else -> 0.0
+        }
+    }
+
     // ---- Length limits (back end only: the UI always shows the board's real limit) ----
 
     /** What the app actually aims for: the target's limit minus the length grace (e.g. 300 -> 299). */
@@ -256,19 +280,22 @@ object Converter {
         var w = 0
         var h = 0
         var fps = 30.0
+        var fpsReadable = false
         var audio = false
         for (s in info.streams) {
             when (s.type) {
                 "video" -> if (w == 0) {
                     w = s.width?.toInt() ?: 0
                     h = s.height?.toInt() ?: 0
-                    fps = parseRate(s.averageFrameRate) ?: 30.0
+                    val parsed = parseRate(s.averageFrameRate)
+                    fpsReadable = parsed != null
+                    fps = parsed ?: 30.0
                 }
                 "audio" -> audio = true
             }
         }
         if (w == 0 || h == 0) return@withContext null
-        SourceInfo(dur, w, h, fps, audio)
+        SourceInfo(dur, w, h, fps, audio, fpsReadable)
     }
 
     private fun parseRate(r: String?): Double? {
@@ -569,7 +596,8 @@ object Converter {
                 )
                 onLog("   filters: $filters")
                 onLog(
-                    "   frame rate: source %.2f fps, cap $fpsCap fps, ".format(java.util.Locale.US, src.fps) +
+                    (if (src.fpsReadable) "   frame rate: source %.2f fps, cap $fpsCap fps, ".format(java.util.Locale.US, src.fps)
+                    else "   frame rate: source fps unreadable (treated as ${src.fps.toInt()} fps for planning), cap $fpsCap fps, ") +
                         if (reduceFps) "reduced to $fpsCap fps" else "kept at the source rate"
                 )
                 onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")

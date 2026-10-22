@@ -184,6 +184,23 @@ private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
     }
 }
 
+/** A frame rate for display: "30" for a whole number, otherwise two decimals ("29.97"). */
+private fun formatFps(fps: Double): String {
+    val whole = Math.round(fps)
+    return if (Math.abs(fps - whole) < 0.005) whole.toString() else String.format(Locale.US, "%.2f", fps)
+}
+
+/**
+ * The frame rate part of a card's info line. A rate that couldn't be read is never guessed at:
+ * a queued video says it's unreadable, and a finished one also says what the encoder aimed for.
+ */
+private fun fpsLabel(i: SourceInfo, finished: Boolean): String = when {
+    i.fpsReadable -> "${formatFps(i.fps)} fps"
+    !finished -> "fps unreadable"
+    i.targetedFps > 0 -> "Cannot read fps. Encoder targeted ${formatFps(i.targetedFps)} fps"
+    else -> "Cannot read fps. Encoder kept the source rate"
+}
+
 @Composable
 private fun QueueButton(label: String, enabled: Boolean, onClick: () -> Unit) {
     TextButton(
@@ -267,7 +284,7 @@ private fun QueueRow(
                             ItemStatus.CANCELLED -> "Not converted"
                         }
                         Text(
-                            "${i.width}×${i.height}, ${len}s, ${if (i.hasAudio) "has audio" else "no audio"} · $state",
+                            "${i.width}×${i.height}, ${len}s, ${fpsLabel(i, finishedCard)}, ${if (i.hasAudio) "has audio" else "no audio"} · $state",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -656,8 +673,8 @@ fun App(onAbout: () -> Unit = {}) {
         fpsChoice == FPS_DEFAULT_INDEX -> "${FPS_PRESETS[fpsChoice]} fps (default)"
         else -> "${FPS_PRESETS[fpsChoice]} fps"
     }
-    val encodingSummaryText = if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality"
-    val codecSummaryText = if (useVp9) "VP9" else "VP8"
+    val encodingSummaryText = if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality (default)"
+    val codecSummaryText = if (useVp9) "VP9" else "VP8 (default)"
 
     Column(
         Modifier
@@ -839,7 +856,7 @@ fun App(onAbout: () -> Unit = {}) {
             TargetRow(
                 selected = !fastEncode && !fastest,
                 enabled = !busy,
-                title = "Quality",
+                title = "Quality (default)",
                 subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
             ) { fastEncode = false; fastest = false }
             TargetRow(
@@ -865,7 +882,7 @@ fun App(onAbout: () -> Unit = {}) {
             TargetRow(
                 selected = !useVp9,
                 enabled = !busy,
-                title = "VP8",
+                title = "VP8 (default)",
                 subtitle = "Recommended default. Fastest. It just works.",
             ) { useVp9 = false }
             TargetRow(
