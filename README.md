@@ -61,10 +61,9 @@ See what's happening while it converts, and copy the log if you need to report a
 **About > Advanced settings** lets you change the numbers that steer how a video is fitted into a size limit (targets, attempts, audio bitrate and so on) without rebuilding the app. The defaults are the recommended values, **Reset to defaults** puts them back, and anything you've changed is listed at the top of the log.
 
 <details>
-  <summary><b>Screenshot (Outdated)</b></summary>
+  <summary><b>Screenshot</b></summary>
 
-<img width="1080" height="7213" alt="Screenshot_20261019-211734_WebMChan" src="https://github.com/user-attachments/assets/098eb9a5-9eec-4fad-a3a1-41382f65fdac" />
-
+<img width="1080" height="7560" alt="29713" src="https://github.com/user-attachments/assets/8b7de56e-2864-4c70-b064-8f99b7391850" />
 
 </details>
 
