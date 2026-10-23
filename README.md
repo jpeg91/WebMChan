@@ -262,11 +262,13 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 -Note: not necessarily in order-
 - Deeper Custom controls
 - Android top bar notification icons
-- Add videos to queue during conversion
+- Clean up text and warnings
+- Background usage permission nag
+- Split videos in queue show multiple sub-cards
 - Video preview during conversion
 - Individual queue item settings
 - Music mode (High bitrate audio, low bitrate video)
-- Image+audio WebM creator
+- Image+audio WebM creator (.gif support?)
 - Fix 'skip' button not always showing
 - UI improvements (split into pages? Wizard style work flow?)
 - Conversion history page with options for individual videos (Delete, Share, Info, Rename etc)
@@ -284,4 +286,6 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Naming conventions and further save settings
 - App name standardising
 - Proper version number handling
+- Custom ffmpeg arguments mode
 - Consistent signing key
+- Possible ports of the engine to Linux etc?
