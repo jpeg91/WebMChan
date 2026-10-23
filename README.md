@@ -261,8 +261,13 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 -Note: not necessarily in order-
 - Deeper Custom controls
-- Android top bar notification icon
+- Android top bar notification icons
 - Add videos to queue during conversion
+- Video preview during conversion
+- Individual queue item settings
+- Music mode (High bitrate audio, low bitrate video)
+- Image+audio WebM creator
+- Fix 'skip' button not always showing
 - UI improvements (split into pages? Wizard style work flow?)
 - Conversion history page with options for individual videos (Delete, Share, Info, Rename etc)
 - 'About' page updates and improvements
