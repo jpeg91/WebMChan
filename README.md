@@ -1,6 +1,6 @@
 # WebMChan
 
-No fuss 4chan WebM converter for Android.
+No fuss 4chan WebM converter for Android with smart targeting and powerful controls.
 
 Pick a video (or a whole batch), choose a board, get `.webm` files that fit.
 
@@ -261,6 +261,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 -Note: not necessarily in order-
 - Deeper Custom controls
+- Improved title
 - Android top bar notification icons
 - Clean up text and warnings
 - Background usage permission nag
@@ -280,7 +281,8 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Deeper frame rate targets and controls
 - Custom resolution targets that maintain aspect ratio
 - Pre-conversion video editing (trim, crop etc)
-- Output renaming
+- Output renaming (before and after conversion)
+- Extended converted video card options (clear, delete, move etc (implement 'converted videos' screen with these options first))
 - Bug reporting (the Copy log button is a start). Please report any issues through github
 - Update handling
 - Naming conventions and further save settings
