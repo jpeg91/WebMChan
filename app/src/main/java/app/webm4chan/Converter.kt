@@ -56,6 +56,8 @@ data class Settings(
     val targetFps: Int = Converter.DEFAULT_FPS,
     /** The fitting numbers (targets, attempts, audio bitrate...). See [Tuning]. */
     val tuning: Tuning = Tuning(),
+    /** True when the Custom target was selected (its length cap isn't a board's rule). Only affects card wording. */
+    val isCustom: Boolean = false,
 )
 
 /**
