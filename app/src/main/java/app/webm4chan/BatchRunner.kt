@@ -53,6 +53,12 @@ data class QueueItem(
     val extraParts: Int = 0,
     /** Whether a thumbnail file exists for this card (see [Thumbnails]). */
     val hasThumb: Boolean = false,
+    /**
+     * The settings this video is converted with, fixed when it joins a run and cleared when the run
+     * ends. null whenever no run is active: the cards then follow the settings on screen. The
+     * Advanced tuning is not part of it (that stays global; the run supplies it).
+     */
+    val settings: Settings? = null,
 )
 
 /**
@@ -139,6 +145,9 @@ object BatchRunner {
      * (see [pickUpNewVideos]); one removed before its turn is dropped. Main thread only.
      */
     private val runList = ArrayList<Long>()
+
+    /** The settings the current run started with. Videos that join it mid-run get these. */
+    private var runSettings: Settings? = null
 
     /** Set by the activity: whether the app screen is visible (no "finished" notification if so). */
     @Volatile
@@ -495,6 +504,7 @@ object BatchRunner {
         runTotal = todo.size
         runList.clear()
         runList.addAll(todo)
+        runSettings = settings
         cancelling = false
         skipFlag.set(false)
         cancelAllFlag.set(false)
@@ -505,10 +515,11 @@ object BatchRunner {
         // Every video about to be tried again goes back to "Waiting", so a leftover "Cancelled",
         // "Skipped" or "Failed" message from an earlier run doesn't sit on cards the batch hasn't
         // reached yet. (Parts already saved are remembered separately in partsDone / partsTotal.)
+        // Each of them also takes the settings it will be converted with, for as long as the run lasts.
         for (id in todo) {
             val at = queue.indexOfFirst { it.id == id }
-            if (at >= 0 && (queue[at].status != ItemStatus.WAITING || queue[at].detail != null)) {
-                queue[at] = queue[at].copy(status = ItemStatus.WAITING, detail = null)
+            if (at >= 0) {
+                queue[at] = queue[at].copy(status = ItemStatus.WAITING, detail = null, settings = settings)
             }
         }
         persist()
@@ -551,13 +562,18 @@ object BatchRunner {
      */
     private fun pickUpNewVideos() {
         val known = runList.toHashSet()
-        for (q in queue) {
-            if (q.id !in known && q.info != null && q.status == ItemStatus.WAITING) runList.add(q.id)
+        val joining = queue.filter { it.id !in known && it.info != null && it.status == ItemStatus.WAITING }.map { it.id }
+        for (id in joining) {
+            runList.add(id)
+            // It joins with the settings the run started with.
+            val at = queue.indexOfFirst { it.id == id }
+            if (at >= 0) queue[at] = queue[at].copy(settings = runSettings)
         }
         runTotal = runList.size
+        if (joining.isNotEmpty()) persist()
     }
 
-    private suspend fun runBatch(ctx: Context, settings: Settings) {
+    private suspend fun runBatch(ctx: Context, startSettings: Settings) {
         var okCount = 0
         var failCount = 0
         var skipCount = 0
@@ -584,6 +600,8 @@ object BatchRunner {
                 if (idx < 0) continue
                 val item = queue[idx]
                 val src = item.info ?: continue
+                // This video's own settings (the Advanced tuning always comes from the run).
+                val settings = item.settings?.copy(tuning = startSettings.tuning) ?: startSettings
 
                 skipFlag.set(false)
                 processed++
@@ -815,6 +833,11 @@ object BatchRunner {
                 if (itemCancelledAll) break
             }
         } finally {
+            // The run is over: what's left in the queue goes back to following the settings on screen.
+            for (i in queue.indices) {
+                if (queue[i].settings != null) queue[i] = queue[i].copy(settings = null)
+            }
+            runSettings = null
             persist()
             val text = buildString {
                 append("Finished: $okCount done")
