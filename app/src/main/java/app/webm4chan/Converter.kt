@@ -262,6 +262,8 @@ object Converter {
     }
 
     fun displayName(ctx: Context, uri: Uri): String {
+        // A copy in app storage (see BatchRunner.addShared) has no content provider to ask.
+        if (uri.scheme == "file") uri.path?.let { return File(it).name }
         ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
             ?.use { c -> if (c.moveToFirst()) return c.getString(0) }
         return "video"
