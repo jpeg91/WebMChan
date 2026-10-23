@@ -763,7 +763,8 @@ fun App(onAbout: () -> Unit = {}) {
                     isCustom = isCustom,
                     minW = minW,
                     minH = minH,
-                    settings = cardSettings,
+                    // While a run is active a video shows the settings it is being converted with.
+                    settings = if (busy) item.settings?.copy(tuning = cardSettings.tuning) ?: cardSettings else cardSettings,
                     canMoveUp = idx > 0,
                     canMoveDown = idx < queue.lastIndex,
                     onUp = { BatchRunner.move(idx, -1) },
