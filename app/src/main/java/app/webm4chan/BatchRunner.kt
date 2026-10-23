@@ -63,8 +63,8 @@ data class QueueItem(
      */
     val settings: Settings? = null,
     /**
-     * Added while a batch was running: waits in the Holding Pen until it is added to that batch
-     * (or the batch ends, when the pen becomes an ordinary queue again).
+     * In the Holding Pen: added to the app but not yet sent to the queue. The button on the main
+     * screen moves everything ready from the pen to the queue (starting the batch if none is running).
      */
     val inPen: Boolean = false,
 )
@@ -215,10 +215,10 @@ object BatchRunner {
         queue.addAll(
             state.queue.map {
                 if (!interrupted) {
-                    // No batch to come back to: the Holding Pen is an ordinary queue again, and the
-                    // videos follow the settings on screen. Whatever was being converted when the
-                    // app stopped has to start again from the top.
-                    val plain = it.copy(inPen = false, settings = null)
+                    // No batch to come back to: the videos follow the settings on screen (the Holding
+                    // Pen stays as it was). Whatever was being converted when the app stopped has to
+                    // start again from the top.
+                    val plain = it.copy(settings = null)
                     if (plain.status == ItemStatus.CONVERTING) {
                         plain.copy(
                             status = ItemStatus.CANCELLED,
@@ -452,9 +452,8 @@ object BatchRunner {
         if (fresh.isEmpty()) return
         fresh.forEach { keepAccess(appCtx, it) }
         summary = null
-        // While a batch is running (or paused), new videos wait in the Holding Pen.
-        val toPen = busy
-        val added = fresh.map { u -> QueueItem(ids.incrementAndGet(), u, Converter.displayName(appCtx, u), inPen = toPen) }
+        // New videos always wait in the Holding Pen until they are sent to the queue.
+        val added = fresh.map { u -> QueueItem(ids.incrementAndGet(), u, Converter.displayName(appCtx, u), inPen = true) }
         queue.addAll(added)
         persist()
         scope.launch {
@@ -533,16 +532,17 @@ object BatchRunner {
         persist()
     }
 
+    /** Empties the queue (not the Holding Pen). */
     fun clearQueue() {
         if (busy) return
         appContext?.let { ctx ->
-            queue.forEach {
+            queue.filter { !it.inPen }.forEach {
                 releaseAccess(ctx, it.uri)
                 deleteOwnCopy(ctx, it.uri)
                 Thumbnails.delete(ctx, it.id)
             }
         }
-        queue.clear()
+        queue.removeAll { !it.inPen }
         summary = null
         persist()
     }
@@ -560,7 +560,9 @@ object BatchRunner {
         if (busy) return
         val appCtx = ctx.applicationContext
         appContext = appCtx
-        val todo = queue.filter { it.info != null }.map { it.id }
+        // Everything ready in the Holding Pen goes to the queue (after anything already left there).
+        movePenToQueue(settings)
+        val todo = queue.filter { !it.inPen && it.info != null }.map { it.id }
         if (todo.isEmpty()) return
 
         summary = null
@@ -631,7 +633,7 @@ object BatchRunner {
     private fun finishWithoutLoop(ctx: Context, text: String) {
         for (i in queue.indices) {
             val q = queue[i]
-            if (q.settings != null || q.inPen) queue[i] = q.copy(settings = null, inPen = false)
+            if (q.settings != null) queue[i] = q.copy(settings = null)
         }
         runSettings = null
         runList.clear()
@@ -645,17 +647,24 @@ object BatchRunner {
         persist()
     }
 
-    /** Adds the Holding Pen videos to the running batch, each converted with [settings] (the ones on screen). */
+    /**
+     * Moves the Holding Pen videos that are ready to the end of the queue (after what is already
+     * there, so the queue's order is the order they will convert in), each fixed to [settings].
+     * Returns their ids.
+     */
+    private fun movePenToQueue(settings: Settings): List<Long> {
+        val moving = queue.filter { it.inPen && it.info != null }
+        if (moving.isEmpty()) return emptyList()
+        val movingIds = moving.map { it.id }.toHashSet()
+        queue.removeAll { it.id in movingIds }
+        queue.addAll(moving.map { it.copy(inPen = false, settings = settings, status = ItemStatus.WAITING, detail = null) })
+        return moving.map { it.id }
+    }
+
+    /** While a batch runs (or is paused): sends the Holding Pen videos to the queue, using [settings] (the ones on screen). */
     fun addPenToRun(settings: Settings) {
         if (!busy) return
-        val ready = queue.filter { it.inPen && it.info != null }.map { it.id }
-        if (ready.isEmpty()) return
-        for (id in ready) {
-            val at = queue.indexOfFirst { it.id == id }
-            if (at >= 0) {
-                queue[at] = queue[at].copy(inPen = false, settings = settings, status = ItemStatus.WAITING, detail = null)
-            }
-        }
+        if (movePenToQueue(settings).isEmpty()) return
         pickUpNewVideos()
         persist()
     }
@@ -1035,10 +1044,10 @@ object BatchRunner {
             }
         } finally {
             // The run is over: what's left in the queue goes back to following the settings on screen.
-            // The Holding Pen, if there is one, becomes an ordinary queue again.
+            // Whatever is left in the queue goes back to following the settings on screen.
             for (i in queue.indices) {
                 val q = queue[i]
-                if (q.settings != null || q.inPen) queue[i] = q.copy(settings = null, inPen = false)
+                if (q.settings != null) queue[i] = q.copy(settings = null)
             }
             runSettings = null
             val text = buildString {
