@@ -504,6 +504,48 @@ private fun boardsSummary(t: Target): String {
     else t.boards.take(shown).joinToString(" ") { "/$it/" } + " … (${t.boards.size} boards)"
 }
 
+/** One line saying what a running batch is being converted with. */
+private fun settingsLine(s: Settings): String {
+    val mb = String.format(Locale.US, "%.2f", s.limitBytes / 1048576.0).trimEnd('0').trimEnd('.')
+    val sound = if (s.keepAudio) "sound on" else "no sound"
+    val effort = if (s.fastest) "Fastest" else if (s.fastEncode) "Speed" else "Quality"
+    val codec = if (s.useVp9) "VP9" else "VP8"
+    return "Converting with: $mb MB limit, up to ${s.maxDurationSec} s, $sound, up to ${s.targetFps} fps, $effort, $codec"
+}
+
+/**
+ * The cards of the Holding Pen ([pen] true) or of the batch/queue (false). A video in a running
+ * batch shows the settings it is being converted with; anything else follows [liveSettings].
+ */
+@Composable
+private fun QueueCards(pen: Boolean, busy: Boolean, liveSettings: Settings) {
+    val queue = BatchRunner.queue
+    queue.forEachIndexed { idx, item ->
+        if (item.inPen == pen) {
+            key(item.id) {
+                val s = if (busy && !item.inPen) {
+                    item.settings?.copy(tuning = liveSettings.tuning) ?: liveSettings
+                } else liveSettings
+                QueueRow(
+                    item = item,
+                    busy = busy && !item.inPen,
+                    maxDuration = s.maxDurationSec,
+                    isCustom = s.isCustom,
+                    minW = s.minWidth,
+                    minH = s.minHeight,
+                    settings = s,
+                    canMoveUp = BatchRunner.canMove(idx, -1),
+                    canMoveDown = BatchRunner.canMove(idx, 1),
+                    onUp = { BatchRunner.move(idx, -1) },
+                    onDown = { BatchRunner.move(idx, 1) },
+                    onRemove = { BatchRunner.removeAt(idx) },
+                    onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun App(onAbout: () -> Unit = {}) {
     val ctx = LocalContext.current
@@ -516,6 +558,9 @@ fun App(onAbout: () -> Unit = {}) {
     val probing = BatchRunner.probing
     val copyingTotal = BatchRunner.copyingTotal
     val cancelling = BatchRunner.cancelling
+    val paused = BatchRunner.paused
+    val pauseRequest = BatchRunner.pauseRequest
+    val notice = BatchRunner.notice
     val copyingDone = BatchRunner.copyingDone
     val progress = BatchRunner.progress
     val status = BatchRunner.status
@@ -688,6 +733,7 @@ fun App(onAbout: () -> Unit = {}) {
         fastest = fastest,
         targetFps = targetFps,
         tuning = TuningStore.current,
+        isCustom = isCustom,
     )
 
     // What each closed settings group shows as its current choice.
@@ -714,6 +760,13 @@ fun App(onAbout: () -> Unit = {}) {
     val encodingSummaryText = if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality (default)"
     val codecSummaryText = if (useVp9) "VP9" else "VP8 (default)"
 
+    // The Holding Pen: videos added while a batch is running (or paused) wait there. While it has
+    // videos, the settings on screen are for them; the running batch keeps its own.
+    val penAny = queue.any { it.inPen }
+    val penCount = queue.count { it.inPen && it.info != null }
+    val penMode = busy && penAny
+    val settingsLocked = busy && !penMode
+
     Column(
         Modifier
             .fillMaxSize()
@@ -737,7 +790,10 @@ fun App(onAbout: () -> Unit = {}) {
                 modifier = Modifier.weight(1f),
             ) { Text(if (queue.isEmpty()) "Choose videos" else "Add videos") }
             if (queue.isNotEmpty()) {
-                OutlinedButton(onClick = { BatchRunner.clearQueue() }, enabled = !busy) { Text("Clear") }
+                OutlinedButton(
+                    onClick = { if (penMode) BatchRunner.clearPen() else BatchRunner.clearQueue() },
+                    enabled = !busy || penMode,
+                ) { Text(if (penMode) "Clear pen" else "Clear") }
             }
         }
 
@@ -754,31 +810,21 @@ fun App(onAbout: () -> Unit = {}) {
             }
         }
 
-        queue.forEachIndexed { idx, item ->
-            key(item.id) {
-                QueueRow(
-                    item = item,
-                    busy = busy,
-                    maxDuration = maxDuration,
-                    isCustom = isCustom,
-                    minW = minW,
-                    minH = minH,
-                    // While a run is active a video shows the settings it is being converted with.
-                    settings = if (busy) item.settings?.copy(tuning = cardSettings.tuning) ?: cardSettings else cardSettings,
-                    canMoveUp = idx > 0,
-                    canMoveDown = idx < queue.lastIndex,
-                    onUp = { BatchRunner.move(idx, -1) },
-                    onDown = { BatchRunner.move(idx, 1) },
-                    onRemove = { BatchRunner.removeAt(idx) },
-                    onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
-                )
-            }
-        }
-        if (queue.size > 1) {
+        if (penMode) {
+            Text("Holding pen", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Videos are converted in this order, all with the settings below.",
+                "Videos added during a run wait here. Change the settings below, then add them to the running batch.",
                 style = MaterialTheme.typography.bodySmall
             )
+            QueueCards(pen = true, busy = busy, liveSettings = cardSettings)
+        } else {
+            QueueCards(pen = false, busy = busy, liveSettings = cardSettings)
+            if (queue.size > 1) {
+                Text(
+                    "Videos are converted in this order, all with the settings below.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
 
         CollapsibleSection(
@@ -791,7 +837,7 @@ fun App(onAbout: () -> Unit = {}) {
             TARGETS.forEachIndexed { idx, t ->
                 TargetRow(
                     selected = targetIdx == idx,
-                    enabled = !busy,
+                    enabled = !settingsLocked,
                     title = t.title,
                     subtitle = t.boardsLabel,
                 ) {
@@ -801,7 +847,7 @@ fun App(onAbout: () -> Unit = {}) {
             }
             TargetRow(
                 selected = isCustom,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "Custom",
                 subtitle = "Your own size limit, no minimum resolution",
             ) {
@@ -815,7 +861,7 @@ fun App(onAbout: () -> Unit = {}) {
                     label = { Text("Limit in MB") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
-                    enabled = !busy,
+                    enabled = !settingsLocked,
                 )
             }
         }
@@ -841,7 +887,7 @@ fun App(onAbout: () -> Unit = {}) {
                 Switch(
                     checked = !effectiveRemoveAudio,
                     onCheckedChange = { removeAudio = !it },
-                    enabled = !busy && audioAllowed,
+                    enabled = !settingsLocked && audioAllowed,
                 )
             }
         }
@@ -859,25 +905,25 @@ fun App(onAbout: () -> Unit = {}) {
             )
             TargetRow(
                 selected = fpsChoice == 0,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "24 fps",
                 subtitle = "Film standard. Fewer frames means more detail in each one on a tight limit. A 30 or 60 fps source loses frames unevenly, so motion can look slightly juddery.",
             ) { fpsChoice = 0 }
             TargetRow(
                 selected = fpsChoice == 1,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "30 fps (default)",
                 subtitle = "Recommended. A good balance of smooth motion and detail.",
             ) { fpsChoice = 1 }
             TargetRow(
                 selected = fpsChoice == 2,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "60 fps",
                 subtitle = "Smoother motion, but each second needs twice the bits for the same detail. On small size limits expect smaller frames and a rougher picture.",
             ) { fpsChoice = 2 }
             TargetRow(
                 selected = isCustomFps,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "Custom",
                 subtitle = "Your own limit, ${Converter.MIN_FPS} to ${Converter.MAX_FPS} fps.",
             ) { fpsChoice = FPS_PRESETS.size }
@@ -894,7 +940,7 @@ fun App(onAbout: () -> Unit = {}) {
                     },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
-                    enabled = !busy,
+                    enabled = !settingsLocked,
                 )
             }
         }
@@ -907,19 +953,19 @@ fun App(onAbout: () -> Unit = {}) {
         ) {
             TargetRow(
                 selected = !fastEncode && !fastest,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "Quality (default)",
                 subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
             ) { fastEncode = false; fastest = false }
             TargetRow(
                 selected = fastEncode && !fastest,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "Speed",
                 subtitle = "Faster than Quality mode, only slightly softer detail.",
             ) { fastEncode = true; fastest = false }
             TargetRow(
                 selected = fastest,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "Fastest",
                 subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
             ) { fastest = true }
@@ -933,13 +979,13 @@ fun App(onAbout: () -> Unit = {}) {
         ) {
             TargetRow(
                 selected = !useVp9,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "VP8 (default)",
                 subtitle = "Recommended default. Fastest. It just works.",
             ) { useVp9 = false }
             TargetRow(
                 selected = useVp9,
-                enabled = !busy,
+                enabled = !settingsLocked,
                 title = "VP9",
                 subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
             ) { useVp9 = true }
@@ -981,6 +1027,93 @@ fun App(onAbout: () -> Unit = {}) {
 
         val pending = queue.count { it.info != null }
         val canGo = pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && !busy
+        val penReady = penCount > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && !cancelling
+
+        // The running batch's progress and controls (or, when it is paused, the Resume controls).
+        val progressBlock: @Composable () -> Unit = {
+            if (paused) {
+                Text("Paused", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    notice ?: "Nothing is converting. Press Resume to carry on.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { BatchRunner.resume(ctx, cardSettings) },
+                        enabled = probing == 0 && !cancelling,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Resume") }
+                    OutlinedButton(
+                        onClick = { BatchRunner.cancelAll() },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Cancel all") }
+                }
+            } else {
+            if (progress < 0f) {
+                LinearProgressIndicator(progress = { pass1Sweep }, modifier = Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+            }
+            Text(status, style = MaterialTheme.typography.bodySmall)
+            when (pauseRequest) {
+                PauseRequest.NOW -> Text("Pausing…", style = MaterialTheme.typography.bodySmall)
+                PauseRequest.AFTER -> Text(
+                    "Will pause when this video has finished.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                PauseRequest.NONE -> {}
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { BatchRunner.pauseNow() },
+                    enabled = pauseRequest != PauseRequest.NOW,
+                    modifier = Modifier.weight(1f),
+                ) { Text("Pause now") }
+                OutlinedButton(
+                    onClick = { BatchRunner.pauseAfter() },
+                    enabled = pauseRequest != PauseRequest.NOW,
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after this conversion") }
+            }
+            if (runTotal > 1) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { BatchRunner.skipCurrent() },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Skip current") }
+                    OutlinedButton(
+                        onClick = { BatchRunner.cancelAll() },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Cancel all") }
+                }
+            } else {
+                OutlinedButton(
+                    onClick = { BatchRunner.cancelAll() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Cancel") }
+            }
+            Text(
+                "You can lock the screen or leave the app while this runs. A notification shows progress.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            }
+        }
+
+        if (penMode) {
+            Button(
+                onClick = { BatchRunner.addPenToRun(cardSettings) },
+                enabled = penReady,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (penCount == 1) "Add 1 video to running batch" else "Add $penCount videos to running batch") }
+
+            progressBlock()
+
+            Text("Running batch", style = MaterialTheme.typography.titleMedium)
+            queue.firstNotNullOfOrNull { if (!it.inPen) it.settings else null }?.let {
+                Text(settingsLine(it), style = MaterialTheme.typography.bodySmall)
+            }
+            QueueCards(pen = false, busy = busy, liveSettings = cardSettings)
+        } else {
         Button(
             onClick = {
                 val settings = Settings(
@@ -990,6 +1123,7 @@ fun App(onAbout: () -> Unit = {}) {
                     fastest = fastest,
                     targetFps = targetFps,
                     tuning = TuningStore.current,
+                    isCustom = isCustom,
                 )
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -1012,34 +1146,7 @@ fun App(onAbout: () -> Unit = {}) {
             modifier = Modifier.fillMaxWidth(),
         ) { Text(if (pending > 1) "Convert $pending videos" else "Convert") }
 
-        if (busy) {
-            if (progress < 0f) {
-                LinearProgressIndicator(progress = { pass1Sweep }, modifier = Modifier.fillMaxWidth())
-            } else {
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-            }
-            Text(status, style = MaterialTheme.typography.bodySmall)
-            if (runTotal > 1) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { BatchRunner.skipCurrent() },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Skip current") }
-                    OutlinedButton(
-                        onClick = { BatchRunner.cancelAll() },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Cancel all") }
-                }
-            } else {
-                OutlinedButton(
-                    onClick = { BatchRunner.cancelAll() },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Cancel") }
-            }
-            Text(
-                "You can lock the screen or leave the app while this runs. A notification shows progress.",
-                style = MaterialTheme.typography.bodySmall
-            )
+            if (busy) progressBlock()
         }
 
         val lines = logLines
