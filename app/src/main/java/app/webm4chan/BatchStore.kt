@@ -14,13 +14,15 @@ object BatchStore {
     private const val FILE = "batch_state.json"
     private const val VERSION = 1
 
-    data class State(val queue: List<QueueItem>, val finished: List<QueueItem>, val lastId: Long)
+    /** [runActive]: a batch was running (or paused) when this was saved, so it didn't finish cleanly. */
+    data class State(val queue: List<QueueItem>, val finished: List<QueueItem>, val lastId: Long, val runActive: Boolean)
 
-    fun save(ctx: Context, queue: List<QueueItem>, finished: List<QueueItem>, lastId: Long) {
+    fun save(ctx: Context, queue: List<QueueItem>, finished: List<QueueItem>, lastId: Long, runActive: Boolean) {
         try {
             val root = JSONObject()
             root.put("version", VERSION)
             root.put("lastId", lastId)
+            root.put("runActive", runActive)
             root.put("queue", JSONArray().apply { queue.forEach { put(toJson(it)) } })
             root.put("finished", JSONArray().apply { finished.forEach { put(toJson(it)) } })
 
@@ -47,6 +49,7 @@ object BatchStore {
                 queue = readItems(root.optJSONArray("queue")),
                 finished = readItems(root.optJSONArray("finished")),
                 lastId = root.optLong("lastId", 0L),
+                runActive = root.optBoolean("runActive", false),
             )
         } catch (_: Exception) {
             null
@@ -72,6 +75,7 @@ object BatchStore {
         put("partsTotal", i.partsTotal)
         put("extraParts", i.extraParts)
         put("hasThumb", i.hasThumb)
+        put("inPen", i.inPen)
         i.detail?.let { put("detail", it) }
         i.savedUri?.let { put("savedUri", it.toString()) }
         // The Advanced tuning is global, so it isn't saved here.
@@ -88,6 +92,7 @@ object BatchStore {
                     put("vp9", it.useVp9)
                     put("fastest", it.fastest)
                     put("fps", it.targetFps)
+                    put("custom", it.isCustom)
                 }
             )
         }
@@ -127,6 +132,8 @@ object BatchStore {
             // Absent in files saved by older versions: no extra splits.
             extraParts = o.optInt("extraParts", 0).coerceAtLeast(0),
             hasThumb = o.optBoolean("hasThumb", false),
+            // Absent in files saved by older versions: not in the Holding Pen.
+            inPen = o.optBoolean("inPen", false),
             // Absent when no run was active (and in files saved by older versions).
             settings = o.optJSONObject("settings")?.let {
                 runCatching {
@@ -140,6 +147,7 @@ object BatchStore {
                         useVp9 = it.optBoolean("vp9", false),
                         fastest = it.optBoolean("fastest", false),
                         targetFps = it.optInt("fps", Converter.DEFAULT_FPS),
+                        isCustom = it.optBoolean("custom", false),
                     )
                 }.getOrNull()
             },
