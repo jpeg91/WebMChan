@@ -74,6 +74,23 @@ object BatchStore {
         put("hasThumb", i.hasThumb)
         i.detail?.let { put("detail", it) }
         i.savedUri?.let { put("savedUri", it.toString()) }
+        // The Advanced tuning is global, so it isn't saved here.
+        i.settings?.let {
+            put(
+                "settings",
+                JSONObject().apply {
+                    put("lb", it.limitBytes)
+                    put("dur", it.maxDurationSec)
+                    put("audio", it.keepAudio)
+                    put("minW", it.minWidth)
+                    put("minH", it.minHeight)
+                    put("fast", it.fastEncode)
+                    put("vp9", it.useVp9)
+                    put("fastest", it.fastest)
+                    put("fps", it.targetFps)
+                }
+            )
+        }
         i.info?.let {
             put(
                 "info",
@@ -110,6 +127,22 @@ object BatchStore {
             // Absent in files saved by older versions: no extra splits.
             extraParts = o.optInt("extraParts", 0).coerceAtLeast(0),
             hasThumb = o.optBoolean("hasThumb", false),
+            // Absent when no run was active (and in files saved by older versions).
+            settings = o.optJSONObject("settings")?.let {
+                runCatching {
+                    Settings(
+                        limitBytes = it.getLong("lb"),
+                        maxDurationSec = it.getInt("dur"),
+                        keepAudio = it.getBoolean("audio"),
+                        minWidth = it.optInt("minW", 0),
+                        minHeight = it.optInt("minH", 0),
+                        fastEncode = it.optBoolean("fast", false),
+                        useVp9 = it.optBoolean("vp9", false),
+                        fastest = it.optBoolean("fastest", false),
+                        targetFps = it.optInt("fps", Converter.DEFAULT_FPS),
+                    )
+                }.getOrNull()
+            },
         )
     } catch (_: Exception) {
         null
