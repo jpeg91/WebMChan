@@ -404,6 +404,8 @@ object BatchRunner {
                     // The item may have been removed while probing.
                     val at = queue.indexOfFirst { it.id == item.id }
                     if (at >= 0) queue[at] = queue[at].copy(info = i, probeFailed = i == null)
+                    // Added during a run: count it in the run now, so "Video n of N" is right straight away.
+                    if (busy && at >= 0 && i != null && !cancelAllFlag.get()) pickUpNewVideos()
                     if (i != null) setThumb(appCtx, item.id, item.uri, null, i.durationSec, queue)
                 }
             } finally {
@@ -584,8 +586,11 @@ object BatchRunner {
                 val src = item.info ?: continue
 
                 skipFlag.set(false)
-                val pos = "Video ${processed + 1} of $runTotal"
                 processed++
+                val current = processed
+                // A function, not a fixed string: the total can grow while this video converts
+                // (a video added mid-run), and the label should follow it.
+                fun pos() = "Video $current of $runTotal"
 
                 // Videos longer than the target's limit are split into consecutive parts rather
                 // than cut off, each converted and saved on its own. The video is divided evenly
@@ -606,9 +611,9 @@ object BatchRunner {
                     item.partsDone + 1
                 } else 1
                 if (resumeFrom > 1) {
-                    logBuffer.add("=== $pos: ${item.name}: parts 1-${resumeFrom - 1} already saved, continuing from part $resumeFrom/$numParts ===") { logLines = it }
+                    logBuffer.add("=== ${pos()}: ${item.name}: parts 1-${resumeFrom - 1} already saved, continuing from part $resumeFrom/$numParts ===") { logLines = it }
                 } else if (item.partsDone > 0) {
-                    logBuffer.add("=== $pos: ${item.name}: split has changed since the earlier attempt, starting again from part 1 ===") { logLines = it }
+                    logBuffer.add("=== ${pos()}: ${item.name}: split has changed since the earlier attempt, starting again from part 1 ===") { logLines = it }
                 }
 
                 queue[idx] = item.copy(
@@ -636,9 +641,9 @@ object BatchRunner {
 
                         skipFlag.set(false)
                         progress = -1f
-                        status = "$pos$partLabel: Starting…"
-                        logBuffer.add("=== $pos$partTag: ${item.name} ===") { logLines = it }
-                        notifyProgress(ctx, "$pos$partLabel", item.name, "Starting…", force = true)
+                        status = "${pos()}$partLabel: Starting…"
+                        logBuffer.add("=== ${pos()}$partTag: ${item.name} ===") { logLines = it }
+                        notifyProgress(ctx, "${pos()}$partLabel", item.name, "Starting…", force = true)
 
                         if (staged == null) {
                             logBuffer.add("   copying video to app cache…") { logLines = it }
@@ -647,8 +652,8 @@ object BatchRunner {
                                 shouldStop = { skipFlag.get() || cancelAllFlag.get() },
                             ) { f ->
                                 progress = f
-                                status = "$pos: Preparing video…"
-                                notifyProgress(ctx, "$pos$partLabel", item.name, "Preparing video…", force = false)
+                                status = "${pos()}: Preparing video…"
+                                notifyProgress(ctx, "${pos()}$partLabel", item.name, "Preparing video…", force = false)
                             }
                             when (st) {
                                 is StageResult.Ok -> staged = st.file
@@ -666,11 +671,11 @@ object BatchRunner {
                             onLog = { line -> logBuffer.add(line) { logLines = it } },
                         ) { p, s ->
                             progress = p
-                            status = "$pos$partLabel: $s"
+                            status = "${pos()}$partLabel: $s"
                             // A Skip/Cancel pressed before ffmpeg was running (e.g. while the
                             // video was being copied) would otherwise be missed.
                             if (skipFlag.get() || cancelAllFlag.get()) Converter.cancel()
-                            notifyProgress(ctx, "$pos$partLabel", item.name, s, force = false)
+                            notifyProgress(ctx, "${pos()}$partLabel", item.name, s, force = false)
                         }
 
                         when (res) {
