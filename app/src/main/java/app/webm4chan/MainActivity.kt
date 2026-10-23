@@ -513,35 +513,48 @@ private fun settingsLine(s: Settings): String {
     return "Converting with: $mb MB limit, up to ${s.maxDurationSec} s, $sound, up to ${s.targetFps} fps, $effort, $codec"
 }
 
+private enum class CardSection { PEN, QUEUE, CONVERTING }
+
+/** A short grey line shown in a section that has nothing in it. */
+@Composable
+private fun EmptyNote(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
 /**
- * The cards of the Holding Pen ([pen] true) or of the batch/queue (false). A video in a running
- * batch shows the settings it is being converted with; anything else follows [liveSettings].
+ * The cards of one section, newest at the top. A video in a running batch shows the settings it is
+ * being converted with; anything else follows [liveSettings]. "Up" on a card moves it up the screen.
  */
 @Composable
-private fun QueueCards(pen: Boolean, busy: Boolean, liveSettings: Settings) {
+private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settings) {
     val queue = BatchRunner.queue
-    queue.forEachIndexed { idx, item ->
-        if (item.inPen == pen) {
-            key(item.id) {
-                val s = if (busy && !item.inPen) {
-                    item.settings?.copy(tuning = liveSettings.tuning) ?: liveSettings
-                } else liveSettings
-                QueueRow(
-                    item = item,
-                    busy = busy && !item.inPen,
-                    maxDuration = s.maxDurationSec,
-                    isCustom = s.isCustom,
-                    minW = s.minWidth,
-                    minH = s.minHeight,
-                    settings = s,
-                    canMoveUp = BatchRunner.canMove(idx, -1),
-                    canMoveDown = BatchRunner.canMove(idx, 1),
-                    onUp = { BatchRunner.move(idx, -1) },
-                    onDown = { BatchRunner.move(idx, 1) },
-                    onRemove = { BatchRunner.removeAt(idx) },
-                    onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
-                )
-            }
+    for (idx in queue.indices.reversed()) {
+        val item = queue[idx]
+        val show = when (section) {
+            CardSection.PEN -> item.inPen
+            CardSection.QUEUE -> !item.inPen && item.status != ItemStatus.CONVERTING
+            CardSection.CONVERTING -> !item.inPen && item.status == ItemStatus.CONVERTING
+        }
+        if (show) key(item.id) {
+            val s = if (busy && !item.inPen) {
+                item.settings?.copy(tuning = liveSettings.tuning) ?: liveSettings
+            } else liveSettings
+            QueueRow(
+                item = item,
+                busy = busy && !item.inPen,
+                maxDuration = s.maxDurationSec,
+                isCustom = s.isCustom,
+                minW = s.minWidth,
+                minH = s.minHeight,
+                settings = s,
+                // The list is shown newest first, so a later place in the list is higher on screen.
+                canMoveUp = BatchRunner.canMove(idx, 1),
+                canMoveDown = BatchRunner.canMove(idx, -1),
+                onUp = { BatchRunner.move(idx, 1) },
+                onDown = { BatchRunner.move(idx, -1) },
+                onRemove = { BatchRunner.removeAt(idx) },
+                onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
+            )
         }
     }
 }
@@ -760,12 +773,9 @@ fun App(onAbout: () -> Unit = {}) {
     val encodingSummaryText = if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality (default)"
     val codecSummaryText = if (useVp9) "VP9" else "VP8 (default)"
 
-    // The Holding Pen: videos added while a batch is running (or paused) wait there. While it has
-    // videos, the settings on screen are for them; the running batch keeps its own.
+    // The Holding Pen holds videos you've added until the button below sends them to the queue.
     val penAny = queue.any { it.inPen }
     val penCount = queue.count { it.inPen && it.info != null }
-    val penMode = busy && penAny
-    val settingsLocked = busy && !penMode
 
     Column(
         Modifier
@@ -783,19 +793,11 @@ fun App(onAbout: () -> Unit = {}) {
             TextButton(onClick = onAbout) { Text("About") }
         }
 
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = { picker.launch(arrayOf("video/*")) },
-                enabled = !cancelling, // allowed during a run: new videos join it
-                modifier = Modifier.weight(1f),
-            ) { Text(if (queue.isEmpty()) "Choose videos" else "Add videos") }
-            if (queue.isNotEmpty()) {
-                OutlinedButton(
-                    onClick = { if (penMode) BatchRunner.clearPen() else BatchRunner.clearQueue() },
-                    enabled = !busy || penMode,
-                ) { Text(if (penMode) "Clear pen" else "Clear") }
-            }
-        }
+        Button(
+            onClick = { picker.launch(arrayOf("video/*")) },
+            enabled = !cancelling, // allowed any time: new videos wait in the Holding Pen
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (queue.isEmpty()) "Choose videos" else "Add videos") }
 
         // Only while a shared video is being copied in; gone as soon as it's in the queue.
         if (copyingTotal > 0) {
@@ -810,21 +812,23 @@ fun App(onAbout: () -> Unit = {}) {
             }
         }
 
-        if (penMode) {
-            Text("Holding pen", style = MaterialTheme.typography.titleMedium)
+        // ---- Holding pen ----
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "Videos added during a run wait here. Change the settings below, then add them to the running batch.",
+                if (penAny) "Holding pen (${queue.count { it.inPen }})" else "Holding pen",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            if (penAny) OutlinedButton(onClick = { BatchRunner.clearPen() }) { Text("Clear pen") }
+        }
+        if (penAny) {
+            Text(
+                "Newest at the top. The settings below apply to these videos when you send them to the queue.",
                 style = MaterialTheme.typography.bodySmall
             )
-            QueueCards(pen = true, busy = busy, liveSettings = cardSettings)
+            QueueCards(section = CardSection.PEN, busy = busy, liveSettings = cardSettings)
         } else {
-            QueueCards(pen = false, busy = busy, liveSettings = cardSettings)
-            if (queue.size > 1) {
-                Text(
-                    "Videos are converted in this order, all with the settings below.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+            EmptyNote("Nothing waiting. Choose or share videos to add them here.")
         }
 
         CollapsibleSection(
@@ -837,7 +841,7 @@ fun App(onAbout: () -> Unit = {}) {
             TARGETS.forEachIndexed { idx, t ->
                 TargetRow(
                     selected = targetIdx == idx,
-                    enabled = !settingsLocked,
+                    enabled = true,
                     title = t.title,
                     subtitle = t.boardsLabel,
                 ) {
@@ -847,7 +851,7 @@ fun App(onAbout: () -> Unit = {}) {
             }
             TargetRow(
                 selected = isCustom,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "Custom",
                 subtitle = "Your own size limit, no minimum resolution",
             ) {
@@ -861,7 +865,7 @@ fun App(onAbout: () -> Unit = {}) {
                     label = { Text("Limit in MB") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
-                    enabled = !settingsLocked,
+                    enabled = true,
                 )
             }
         }
@@ -887,7 +891,7 @@ fun App(onAbout: () -> Unit = {}) {
                 Switch(
                     checked = !effectiveRemoveAudio,
                     onCheckedChange = { removeAudio = !it },
-                    enabled = !settingsLocked && audioAllowed,
+                    enabled = audioAllowed,
                 )
             }
         }
@@ -905,25 +909,25 @@ fun App(onAbout: () -> Unit = {}) {
             )
             TargetRow(
                 selected = fpsChoice == 0,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "24 fps",
                 subtitle = "Film standard. Fewer frames means more detail in each one on a tight limit. A 30 or 60 fps source loses frames unevenly, so motion can look slightly juddery.",
             ) { fpsChoice = 0 }
             TargetRow(
                 selected = fpsChoice == 1,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "30 fps (default)",
                 subtitle = "Recommended. A good balance of smooth motion and detail.",
             ) { fpsChoice = 1 }
             TargetRow(
                 selected = fpsChoice == 2,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "60 fps",
                 subtitle = "Smoother motion, but each second needs twice the bits for the same detail. On small size limits expect smaller frames and a rougher picture.",
             ) { fpsChoice = 2 }
             TargetRow(
                 selected = isCustomFps,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "Custom",
                 subtitle = "Your own limit, ${Converter.MIN_FPS} to ${Converter.MAX_FPS} fps.",
             ) { fpsChoice = FPS_PRESETS.size }
@@ -940,7 +944,7 @@ fun App(onAbout: () -> Unit = {}) {
                     },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
-                    enabled = !settingsLocked,
+                    enabled = true,
                 )
             }
         }
@@ -953,19 +957,19 @@ fun App(onAbout: () -> Unit = {}) {
         ) {
             TargetRow(
                 selected = !fastEncode && !fastest,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "Quality (default)",
                 subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
             ) { fastEncode = false; fastest = false }
             TargetRow(
                 selected = fastEncode && !fastest,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "Speed",
                 subtitle = "Faster than Quality mode, only slightly softer detail.",
             ) { fastEncode = true; fastest = false }
             TargetRow(
                 selected = fastest,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "Fastest",
                 subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
             ) { fastest = true }
@@ -979,13 +983,13 @@ fun App(onAbout: () -> Unit = {}) {
         ) {
             TargetRow(
                 selected = !useVp9,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "VP8 (default)",
                 subtitle = "Recommended default. Fastest. It just works.",
             ) { useVp9 = false }
             TargetRow(
                 selected = useVp9,
-                enabled = !settingsLocked,
+                enabled = true,
                 title = "VP9",
                 subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
             ) { useVp9 = true }
@@ -1025,7 +1029,8 @@ fun App(onAbout: () -> Unit = {}) {
             }
         }
 
-        val pending = queue.count { it.info != null }
+        val queueReady = queue.count { !it.inPen && it.info != null && it.status != ItemStatus.CONVERTING }
+        val pending = penCount + queueReady
         val canGo = pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && !busy
         val penReady = penCount > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && !cancelling
 
@@ -1099,20 +1104,22 @@ fun App(onAbout: () -> Unit = {}) {
             }
         }
 
-        if (penMode) {
+        // One button: with nothing running it sends the Holding Pen to the queue and starts converting;
+        // while a batch runs it sends the Holding Pen to that batch.
+        if (busy) {
             Button(
                 onClick = { BatchRunner.addPenToRun(cardSettings) },
                 enabled = penReady,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (penCount == 1) "Add 1 video to running batch" else "Add $penCount videos to running batch") }
-
-            progressBlock()
-
-            Text("Running batch", style = MaterialTheme.typography.titleMedium)
-            queue.firstNotNullOfOrNull { if (!it.inPen) it.settings else null }?.let {
-                Text(settingsLine(it), style = MaterialTheme.typography.bodySmall)
+            ) {
+                Text(
+                    when (penCount) {
+                        0 -> "Add to running batch"
+                        1 -> "Add 1 video to running batch"
+                        else -> "Add $penCount videos to running batch"
+                    }
+                )
             }
-            QueueCards(pen = false, busy = busy, liveSettings = cardSettings)
         } else {
         Button(
             onClick = {
@@ -1146,7 +1153,39 @@ fun App(onAbout: () -> Unit = {}) {
             modifier = Modifier.fillMaxWidth(),
         ) { Text(if (pending > 1) "Convert $pending videos" else "Convert") }
 
-            if (busy) progressBlock()
+        }
+
+        // ---- Queue ----
+        val queueCount = queue.count { !it.inPen && it.status != ItemStatus.CONVERTING }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (queueCount > 0) "Queue ($queueCount)" else "Queue",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            if (queueCount > 0 && !busy) OutlinedButton(onClick = { BatchRunner.clearQueue() }) { Text("Clear queue") }
+        }
+        if (queueCount > 0) {
+            Text(
+                "Converted from the bottom up. Videos sent from the holding pen join at the top.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            QueueCards(section = CardSection.QUEUE, busy = busy, liveSettings = cardSettings)
+        } else {
+            EmptyNote("Nothing queued. Videos you send from the holding pen wait here for their turn.")
+        }
+
+        // ---- Converting ----
+        Text("Converting", style = MaterialTheme.typography.titleMedium)
+        if (busy) {
+            queue.firstNotNullOfOrNull { if (!it.inPen) it.settings else null }?.let {
+                Text(settingsLine(it), style = MaterialTheme.typography.bodySmall)
+            }
+            QueueCards(section = CardSection.CONVERTING, busy = busy, liveSettings = cardSettings)
+            progressBlock()
+        } else {
+            EmptyNote("Nothing is converting.")
+            if (runTotal > 1) summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
         }
 
         val lines = logLines
@@ -1175,19 +1214,21 @@ fun App(onAbout: () -> Unit = {}) {
             ) { Text("Copy log") }
         }
 
-        if (runTotal > 1) summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
 
-        // Finished videos move here from the queue, so results are right where you're looking.
-        if (finished.isNotEmpty()) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Finished (${finished.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                OutlinedButton(onClick = { BatchRunner.clearFinished() }) { Text("Clear finished") }
-            }
-            finished.forEach { item ->
+        // ---- Finished ----
+        // Finished videos land here from the converting section, newest at the top.
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (finished.isNotEmpty()) "Finished (${finished.size})" else "Finished",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            if (finished.isNotEmpty()) OutlinedButton(onClick = { BatchRunner.clearFinished() }) { Text("Clear finished") }
+        }
+        if (finished.isEmpty()) {
+            EmptyNote("No finished videos yet.")
+        } else {
+            finished.asReversed().forEach { item ->
                 key(item.id) {
                     QueueRow(
                         item = item,
