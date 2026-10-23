@@ -26,6 +26,9 @@ import java.util.concurrent.atomic.AtomicLong
 
 enum class ItemStatus { WAITING, CONVERTING, DONE, FAILED, CANCELLED }
 
+/** A pause that has been asked for but hasn't happened yet. */
+enum class PauseRequest { NONE, AFTER, NOW }
+
 /** One video in the batch. Immutable: update by replacing the list entry with a copy. */
 data class QueueItem(
     val id: Long,
@@ -59,6 +62,11 @@ data class QueueItem(
      * Advanced tuning is not part of it (that stays global; the run supplies it).
      */
     val settings: Settings? = null,
+    /**
+     * Added while a batch was running: waits in the Holding Pen until it is added to that batch
+     * (or the batch ends, when the pen becomes an ordinary queue again).
+     */
+    val inPen: Boolean = false,
 )
 
 /**
@@ -140,6 +148,21 @@ object BatchRunner {
     var cancelling by mutableStateOf(false)
         private set
 
+    /** The batch exists (busy is true) but nothing is converting: paused by the user, or restored after the app stopped. */
+    var paused by mutableStateOf(false)
+        private set
+
+    /** A pause that has been asked for: Pause Now, or Pause After This Conversion. */
+    var pauseRequest by mutableStateOf(PauseRequest.NONE)
+        private set
+
+    /** A message for the user about the paused batch (for example after the app was stopped). */
+    var notice by mutableStateOf<String?>(null)
+        private set
+
+    /** True while [runBatch] is running in this process (false for a batch restored paused after a restart). */
+    private var loopAlive = false
+
     /**
      * The ids the current run works through, in order. Videos added while it runs are appended
      * (see [pickUpNewVideos]); one removed before its turn is dropped. Main thread only.
@@ -184,21 +207,47 @@ object BatchRunner {
 
         val state = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); return }
         ids.set(maxOf(ids.get(), state.lastId))
+        // A batch that was running when the app stopped comes back paused (see resume), as long as
+        // some of its videos still need converting.
+        val interrupted = state.runActive && state.queue.any {
+            !it.inPen && it.info != null && (it.status == ItemStatus.WAITING || it.status == ItemStatus.CONVERTING)
+        }
         queue.addAll(
             state.queue.map {
-                // Whatever was being converted when the app stopped has to start again from the top.
-                if (it.status == ItemStatus.CONVERTING) {
+                if (!interrupted) {
+                    // No batch to come back to: the Holding Pen is an ordinary queue again, and the
+                    // videos follow the settings on screen. Whatever was being converted when the
+                    // app stopped has to start again from the top.
+                    val plain = it.copy(inPen = false, settings = null)
+                    if (plain.status == ItemStatus.CONVERTING) {
+                        plain.copy(
+                            status = ItemStatus.CANCELLED,
+                            detail = if (plain.partsDone > 0 && plain.partsDone < plain.partsTotal) {
+                                "Interrupted when the app closed (${plain.partsDone} of ${plain.partsTotal} parts saved). " +
+                                    "Press Convert to continue from part ${plain.partsDone + 1}."
+                            } else "Interrupted when the app closed. Press Convert to try again.",
+                        )
+                    } else plain
+                } else if (it.status == ItemStatus.CONVERTING) {
+                    // Starts again when the batch is resumed.
                     it.copy(
-                        status = ItemStatus.CANCELLED,
+                        status = ItemStatus.WAITING,
                         detail = if (it.partsDone > 0 && it.partsDone < it.partsTotal) {
                             "Interrupted when the app closed (${it.partsDone} of ${it.partsTotal} parts saved). " +
-                                "Press Convert to continue from part ${it.partsDone + 1}."
-                        } else "Interrupted when the app closed. Press Convert to try again.",
+                                "Press Resume to continue from part ${it.partsDone + 1}."
+                        } else "Interrupted when the app closed. Press Resume to start it again from the beginning.",
                     )
                 } else it
             }
         )
         finished.addAll(state.finished)
+        if (interrupted) {
+            busy = true
+            paused = true
+            runTotal = queue.count { !it.inPen && it.info != null && it.status == ItemStatus.WAITING }
+            notice = "WebMChan was closed while converting, so your batch has been paused. Press Resume to carry on. " +
+                "The video that was converting starts again (from its first unsaved part, if it was split)."
+        }
         cleanOrphanCopies(appCtx)
         scope.launch { verifyRestored(appCtx) }
     }
@@ -209,7 +258,8 @@ object BatchRunner {
         val q = queue.toList()
         val f = finished.toList()
         val lastId = ids.get()
-        writer.execute { BatchStore.save(ctx, q, f, lastId) }
+        val running = busy
+        writer.execute { BatchStore.save(ctx, q, f, lastId, running) }
     }
 
     private fun canOpen(ctx: Context, uri: Uri): Boolean = try {
@@ -402,7 +452,9 @@ object BatchRunner {
         if (fresh.isEmpty()) return
         fresh.forEach { keepAccess(appCtx, it) }
         summary = null
-        val added = fresh.map { u -> QueueItem(ids.incrementAndGet(), u, Converter.displayName(appCtx, u)) }
+        // While a batch is running (or paused), new videos wait in the Holding Pen.
+        val toPen = busy
+        val added = fresh.map { u -> QueueItem(ids.incrementAndGet(), u, Converter.displayName(appCtx, u), inPen = toPen) }
         queue.addAll(added)
         persist()
         scope.launch {
@@ -413,8 +465,6 @@ object BatchRunner {
                     // The item may have been removed while probing.
                     val at = queue.indexOfFirst { it.id == item.id }
                     if (at >= 0) queue[at] = queue[at].copy(info = i, probeFailed = i == null)
-                    // Added during a run: count it in the run now, so "Video n of N" is right straight away.
-                    if (busy && at >= 0 && i != null && !cancelAllFlag.get()) pickUpNewVideos()
                     if (i != null) setThumb(appCtx, item.id, item.uri, null, i.durationSec, queue)
                 }
             } finally {
@@ -424,9 +474,22 @@ object BatchRunner {
         }
     }
 
+    /** The nearest video in [delta]'s direction that is in the same list (Holding Pen or batch), or null. */
+    private fun neighbour(index: Int, delta: Int): Int? {
+        if (index !in queue.indices) return null
+        val pen = queue[index].inPen
+        var i = index + delta
+        while (i in queue.indices) {
+            if (queue[i].inPen == pen) return i
+            i += delta
+        }
+        return null
+    }
+
+    fun canMove(index: Int, delta: Int): Boolean = neighbour(index, delta) != null
+
     fun move(index: Int, delta: Int) {
-        val to = index + delta
-        if (index !in queue.indices || to !in queue.indices) return
+        val to = neighbour(index, delta) ?: return
         val t = queue[index]
         queue[index] = queue[to]
         queue[to] = t
@@ -440,10 +503,10 @@ object BatchRunner {
      * [extra] within what the video allows; [Converter.partsFor] clamps it again when converting.
      */
     fun setExtraParts(id: Long, extra: Int) {
-        if (busy) return
         val at = queue.indexOfFirst { it.id == id }
         if (at < 0) return
         val item = queue[at]
+        if (busy && !item.inPen) return
         if (item.partsDone > 0) return
         val value = extra.coerceAtLeast(0)
         if (value == item.extraParts) return
@@ -506,6 +569,9 @@ object BatchRunner {
         runList.addAll(todo)
         runSettings = settings
         cancelling = false
+        paused = false
+        pauseRequest = PauseRequest.NONE
+        notice = null
         skipFlag.set(false)
         cancelAllFlag.set(false)
         busy = true
@@ -550,9 +616,139 @@ object BatchRunner {
 
     fun cancelAll() {
         if (!busy) return
+        // A batch restored paused after a restart has no running loop to stop: end it here.
+        if (paused && !loopAlive) {
+            appContext?.let { finishWithoutLoop(it, "Cancelled") }
+            return
+        }
         cancelling = true
         cancelAllFlag.set(true)
         Converter.cancel()
+    }
+
+
+    /** Ends a batch that has no running loop (one restored paused after the app stopped). */
+    private fun finishWithoutLoop(ctx: Context, text: String) {
+        for (i in queue.indices) {
+            val q = queue[i]
+            if (q.settings != null || q.inPen) queue[i] = q.copy(settings = null, inPen = false)
+        }
+        runSettings = null
+        runList.clear()
+        summary = text
+        paused = false
+        pauseRequest = PauseRequest.NONE
+        notice = null
+        cancelling = false
+        busy = false
+        ConvertService.clearPaused(ctx)
+        persist()
+    }
+
+    /** Adds the Holding Pen videos to the running batch, each converted with [settings] (the ones on screen). */
+    fun addPenToRun(settings: Settings) {
+        if (!busy) return
+        val ready = queue.filter { it.inPen && it.info != null }.map { it.id }
+        if (ready.isEmpty()) return
+        for (id in ready) {
+            val at = queue.indexOfFirst { it.id == id }
+            if (at >= 0) {
+                queue[at] = queue[at].copy(inPen = false, settings = settings, status = ItemStatus.WAITING, detail = null)
+            }
+        }
+        pickUpNewVideos()
+        persist()
+    }
+
+    /** Removes every video from the Holding Pen. */
+    fun clearPen() {
+        appContext?.let { ctx ->
+            queue.filter { it.inPen }.forEach {
+                releaseAccess(ctx, it.uri)
+                deleteOwnCopy(ctx, it.uri)
+                Thumbnails.delete(ctx, it.id)
+            }
+        }
+        queue.removeAll { it.inPen }
+        persist()
+    }
+
+    /**
+     * Pause Now: stops what is converting. That video goes back to waiting and starts again after
+     * Resume (from its first unsaved part, if it is split).
+     */
+    fun pauseNow() {
+        if (!busy || paused) return
+        pauseRequest = PauseRequest.NOW
+        skipFlag.set(true)
+        Converter.cancel()
+    }
+
+    /** Pause After This Conversion: the video being converted finishes, then the batch pauses. Press again to undo. */
+    fun pauseAfter() {
+        if (!busy || paused || pauseRequest == PauseRequest.NOW) return
+        pauseRequest = if (pauseRequest == PauseRequest.AFTER) PauseRequest.NONE else PauseRequest.AFTER
+    }
+
+    /**
+     * Carries on a paused batch. [fallback] only matters for a batch restored after the app
+     * stopped, for any video without settings of its own.
+     */
+    fun resume(ctx: Context, fallback: Settings) {
+        if (!busy || !paused) return
+        val appCtx = ctx.applicationContext
+        appContext = appCtx
+        notice = null
+        ConvertService.clearPaused(appCtx)
+        // The foreground service was stopped while paused; bring it back.
+        try {
+            ContextCompat.startForegroundService(appCtx, Intent(appCtx, ConvertService::class.java))
+        } catch (e: Exception) {
+            logBuffer.add("Couldn't start the background service: ${e.message}") { logLines = it }
+        }
+        if (loopAlive) {
+            // The loop is waiting in holdWhilePaused and carries on by itself.
+            paused = false
+            return
+        }
+        // Restored after the app stopped: nothing is running, so start the batch again.
+        val todo = queue.filter { !it.inPen && it.info != null && it.status == ItemStatus.WAITING }.map { it.id }
+        if (todo.isEmpty()) {
+            finishWithoutLoop(appCtx, "Nothing left to convert.")
+            return
+        }
+        runList.clear()
+        runList.addAll(todo)
+        runTotal = todo.size
+        val base = fallback.copy(tuning = TuningStore.current)
+        runSettings = base
+        pauseRequest = PauseRequest.NONE
+        skipFlag.set(false)
+        cancelAllFlag.set(false)
+        cancelling = false
+        paused = false
+        progress = -1f
+        status = "Starting…"
+        scope.launch { runBatch(appCtx, base) }
+    }
+
+    /** Waits (without converting) until resumed or cancelled. Called by [runBatch] between videos. */
+    private suspend fun holdWhilePaused(ctx: Context) {
+        pauseRequest = PauseRequest.NONE
+        skipFlag.set(false)
+        paused = true
+        logBuffer.add("=== Paused ===") { logLines = it }
+        // Nothing is converting, so the foreground service (and its wake lock) isn't needed. The
+        // state is saved, so if Android stops the app meanwhile the batch comes back paused.
+        try {
+            ctx.stopService(Intent(ctx, ConvertService::class.java))
+        } catch (_: Exception) {
+        }
+        ConvertService.clearProgress(ctx)
+        ConvertService.postPaused(ctx, "Open WebMChan and press Resume to carry on.")
+        persist()
+        while (paused && !cancelAllFlag.get()) delay(200)
+        if (!cancelAllFlag.get()) logBuffer.add("=== Resumed ===") { logLines = it }
     }
 
     /**
@@ -562,14 +758,14 @@ object BatchRunner {
      */
     private fun pickUpNewVideos() {
         val known = runList.toHashSet()
-        val joining = queue.filter { it.id !in known && it.info != null && it.status == ItemStatus.WAITING }.map { it.id }
-        for (id in joining) {
-            runList.add(id)
-            // It joins with the settings the run started with.
-            val at = queue.indexOfFirst { it.id == id }
-            if (at >= 0) queue[at] = queue[at].copy(settings = runSettings)
-        }
+        val joining = queue
+            .filter { !it.inPen && it.id !in known && it.info != null && it.status == ItemStatus.WAITING }
+            .map { it.id }
+        runList.addAll(joining)
         runTotal = runList.size
+        // The progress text is only rewritten when the encoder reports back, which can take a while
+        // in pass 1, so bring its "Video n of N" up to date now.
+        status = Regex("^Video (\\d+) of \\d+").replace(status) { "Video ${it.groupValues[1]} of $runTotal" }
         if (joining.isNotEmpty()) persist()
     }
 
@@ -579,21 +775,14 @@ object BatchRunner {
         var skipCount = 0
         var processed = 0 // videos actually started so far, for the "Video n of N" label
         var n = -1
+        loopAlive = true
         try {
             while (true) {
                 n++
-                if (n >= runList.size) {
-                    // Nothing left. Videos added during the run may still be copying or being read:
-                    // wait for them, then take whatever has arrived. Everything between the last
-                    // check and finishing runs without a pause, so a late video can't slip through.
-                    pickUpNewVideos()
-                    while (n >= runList.size && (copyingTotal > 0 || probing > 0) && !cancelAllFlag.get()) {
-                        status = "Waiting for added videos…"
-                        delay(100)
-                        pickUpNewVideos()
-                    }
-                    if (n >= runList.size) break
-                }
+                if (n >= runList.size) break
+                // A pause holds here: Pause Now right away, Pause After This Conversion once the
+                // video that was converting has finished.
+                if (pauseRequest != PauseRequest.NONE && !cancelAllFlag.get()) holdWhilePaused(ctx)
                 if (cancelAllFlag.get()) break
                 val id = runList[n]
                 val idx = queue.indexOfFirst { it.id == id }
@@ -644,6 +833,7 @@ object BatchRunner {
                 var itemFailMsg: String? = null
                 var itemCancelledAll = false
                 var itemSkipped = false
+                var itemPaused = false
 
                 // One private copy of the source serves every part (and every attempt) of this video,
                 // and is deleted as soon as the video is finished with, however that happens.
@@ -651,6 +841,7 @@ object BatchRunner {
                 try {
                     for (part in resumeFrom..numParts) {
                         if (cancelAllFlag.get()) { itemCancelledAll = true; break }
+                        if (pauseRequest == PauseRequest.NOW) { itemPaused = true; break }
 
                         val startSec = (part - 1) * partDur
                         val clipDur = if (numParts > 1) min(partDur, src.durationSec - startSec) else null
@@ -677,7 +868,7 @@ object BatchRunner {
                                 is StageResult.Ok -> staged = st.file
                                 is StageResult.Fail -> { itemFailMsg = st.message; break }
                                 StageResult.Cancelled -> {
-                                    if (cancelAllFlag.get()) itemCancelledAll = true else itemSkipped = true
+                                    if (cancelAllFlag.get()) itemCancelledAll = true else if (pauseRequest == PauseRequest.NOW) itemPaused = true else itemSkipped = true
                                     break
                                 }
                             }
@@ -780,7 +971,7 @@ object BatchRunner {
                                 break
                             }
                             ConvertResult.Cancelled -> {
-                                if (cancelAllFlag.get()) itemCancelledAll = true else itemSkipped = true
+                                if (cancelAllFlag.get()) itemCancelledAll = true else if (pauseRequest == PauseRequest.NOW) itemPaused = true else itemSkipped = true
                                 break
                             }
                         }
@@ -803,6 +994,10 @@ object BatchRunner {
                             } else "Cancelled."
                             queue[now] = queue[now].copy(status = ItemStatus.CANCELLED, detail = note)
                             skipCount++
+                        }
+                        itemPaused -> {
+                            // Pause Now: back to waiting; starts again after Resume.
+                            queue[now] = queue[now].copy(status = ItemStatus.WAITING, detail = null)
                         }
                         itemSkipped -> {
                             val note = if (partsSaved > 0) {
@@ -831,14 +1026,21 @@ object BatchRunner {
                 }
                 persist()
                 if (itemCancelledAll) break
+                if (itemPaused) {
+                    // Go round again for this same video; the pause check at the top holds first.
+                    n--
+                    processed--
+                    continue
+                }
             }
         } finally {
             // The run is over: what's left in the queue goes back to following the settings on screen.
+            // The Holding Pen, if there is one, becomes an ordinary queue again.
             for (i in queue.indices) {
-                if (queue[i].settings != null) queue[i] = queue[i].copy(settings = null)
+                val q = queue[i]
+                if (q.settings != null || q.inPen) queue[i] = q.copy(settings = null, inPen = false)
             }
             runSettings = null
-            persist()
             val text = buildString {
                 append("Finished: $okCount done")
                 if (failCount > 0) append(", $failCount failed")
@@ -848,13 +1050,19 @@ object BatchRunner {
             summary = text
             busy = false
             cancelling = false
+            paused = false
+            pauseRequest = PauseRequest.NONE
+            notice = null
+            loopAlive = false
             runList.clear()
+            persist() // after busy is false, so the saved copy says the batch finished cleanly
             // Remove the ongoing notification; tell the user the result if the app isn't on screen.
             try {
                 ctx.stopService(Intent(ctx, ConvertService::class.java))
             } catch (_: Exception) {
             }
             ConvertService.clearProgress(ctx)
+            ConvertService.clearPaused(ctx)
             if (!uiVisible) ConvertService.postFinished(ctx, text)
         }
     }
