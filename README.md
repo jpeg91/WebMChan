@@ -2,7 +2,7 @@
 
 No fuss 4chan WebM converter for Android with smart targeting and powerful controls.
 
-Pick a video (or a whole batch), choose a board, get `.webm` files that fit.
+Pick a video (or a whole batch), choose a board, get `.webm` files that fit. You can also share one or more videos to WebMChan from another app.
 
 Select from a list of boards and their requirement presets (or set your own).
 
@@ -34,11 +34,11 @@ Each video is converted in two passes (analysis then encode), aiming for about 9
 
 ### Batch mode
 
-Select one video or several, and convert them all in one go with the same settings.
+Select one video or several, and convert them all in one go with the same settings. New videos can be added to a holding pen while you adjust the settings, then sent to the queue together. During a batch, you can pause immediately or after the current video finishes, resume later, skip the current video or cancel the batch.
 
 ### Simple options
 
-Choose Quality, Speed or Fastest modes, VP8 (recommended) or VP9, and whether to keep the audio.
+Choose Quality, Speed or Fastest modes, VP8 (recommended) or VP9, whether to keep the audio, and a frame-rate cap of 24, 30, 60 fps or a custom value. The default is 30 fps; the cap never raises a source video’s frame rate.
 
 ### Your choice of save location
 
@@ -54,7 +54,7 @@ You can leave the app, use other apps, lock the screen and completely forget abo
 
 ### Progress and log
 
-See what's happening while it converts, and copy the log if you need to report a problem.
+See what's happening while it converts, and copy the log if you need to report a problem. The interface uses a black, white and red P5-inspired theme.
 
 ### Advanced settings (for testing)
 
@@ -74,9 +74,11 @@ The app is a front end for FFmpeg (the community `ffmpegkit-maintained` build). 
 
 ### Batch queue
 
-Use **Choose videos** to select one video or several, and **Add videos** to keep adding more (a video that's already in the list is ignored). They queue up in the order you picked them. Before you start, you can reorder them (▲ ▼) or remove them (✕), and each shows its details and any warnings, such as being split into parts for the board's length limit or scaled up to its minimum resolution. Each card also has the split controls described in step 2.
+Use **Choose videos** to select one video or several, and **Add videos** to keep adding more. You can also share videos to WebMChan from another app; shared videos are added to the holding pen. Videos in the holding pen wait while you adjust the settings, and are sent to the queue when you start or add them to the batch. A video that is already in the list is ignored.
 
-Every video in the queue is converted with the same settings, one after another. If a video fails, it's marked as failed and the rest carry on. **Skip current** drops the video being converted and moves to the next, and **Cancel all** stops the whole batch. Each finished video has its own **Share** button, and **Share all** appears once two or more finished files are saved.
+Before conversion, you can reorder queued videos (▲ ▼), remove them (✕), or return them to the holding pen. Each card shows its details and any warnings, such as being split into parts for the board's length limit or scaled up to its minimum resolution. Each card also has the split controls described in step 2.
+
+Every video in the queue is converted with the same settings, one after another. If a video fails, it's marked as failed and the rest carry on. **Pause now** pauses the batch, while **Pause after this conversion** lets the current video finish first; use **Resume** to carry on. **Skip current** drops the video being converted and moves to the next, and **Cancel all** stops the whole batch. Each finished video has its own **Share** button, and **Share all** appears once two or more finished files are saved.
 
 Finished videos stay in the list. Pressing Convert again only processes the ones that haven't finished, which also lets you retry failures. To convert a finished video again with different settings, remove it and add it again.
 
@@ -117,11 +119,11 @@ Removing audio improves quality: all of that bitrate goes to the picture.
 
 ### 4. Choosing the frame size
 
-More pixels need more bitrate to look good. The app measures this as **bits per pixel**: the video bitrate divided by the number of pixels per second (width × height × frame rate, with the frame rate capped at 30). It tries sizes from large to small, using the source's own height plus 1080, 720, 480, 360 and 240, and takes the first one that gets at least 0.06 bits per pixel (0.12 in Fastest mode, which is why Fastest ends up with smaller frames). It never goes above 1080p, never above the source's own size, and never below the board's minimum.
+More pixels need more bitrate to look good. The app measures this as **bits per pixel**: the video bitrate divided by the number of pixels per second (width × height × frame rate, using the selected frame-rate cap). It tries sizes from large to small, using the source's own height plus 1080, 720, 480, 360 and 240, and takes the first one that gets at least 0.06 bits per pixel (0.12 in Fastest mode, which is why Fastest ends up with smaller frames). It never goes above 1080p, never above the source's own size, and never below the board's minimum.
 
 For example, a 1080p 16:9 clip at 554 kbps comes out at 360p: 480p would need about 740 kbps to reach 0.06 bits per pixel, 360p needs about 415.
 
-If the source is below the board's minimum, it's scaled **up**. The scaling keeps the original aspect ratio and uses even width and height, as the encoder requires. Frame rates above about 30 fps are reduced to 30.
+If the source is below the board's minimum, it's scaled **up**. The scaling keeps the original aspect ratio and uses even width and height, as the encoder requires. Frame rates above the selected cap are reduced to that cap; lower frame rates are kept as they are. The default cap is 30 fps, with presets for 24 and 60 fps and a custom value from 1 to 120 fps.
 
 ### 5. Encoding in two passes
 
@@ -246,6 +248,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 ## Known limits
 
+- The frame-rate cap offers 24, 30 and 60 fps presets plus a custom value. It never increases a source video's frame rate.
 - Background conversion relies on Android's foreground-service and notification support. On Android 13 and newer, allow notifications so you can see conversion progress and use the notification controls.
 - Android 11 and newer won't let an app use the top level of an SD card, or the `Download` folder, as a custom save folder. Pick or create a subfolder instead (This is why the app always places the outputs in a subfolder named `WebMChan`. If any folder named `WebMChan` is selected as a custom save location, the output will be saved there. Recursive subfolders will not be created).
 - Finished videos stay in the batch list. To convert one again with different settings, remove it and add it again.
@@ -259,7 +262,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 
 ## Features still to add
 
--Note: not necessarily in order-
+*Not necessarily in order.*
 - Deeper Custom controls
 - Improved title
 - Android top bar notification icons
@@ -276,9 +279,8 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - 'About' page updates and improvements
 - 'Clear video cache' option with cache size readout for peace of mind
 - Tool tips
-- UI theming & mascot
+- Mascot
 - App icons etc
-- Deeper frame rate targets and controls
 - Custom resolution targets that maintain aspect ratio
 - Pre-conversion video editing (trim, crop etc)
 - Output renaming (before and after conversion)
