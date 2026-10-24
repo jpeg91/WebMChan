@@ -922,6 +922,7 @@ object BatchRunner {
                                         fps = 0.0,
                                         fpsReadable = false,
                                         hasAudio = res.audioIncluded,
+                                        fileBytes = res.bytes,
                                     )
                                 }
                                 // If the converted file's frame rate couldn't be read, don't guess it: the card
@@ -965,6 +966,8 @@ object BatchRunner {
                                         status = ItemStatus.DONE,
                                         detail = detail,
                                         savedUri = saved.uri,
+                                        // What this file was made for, shown on its Finished card.
+                                        settings = settings,
                                     )
                                 )
                                 partsSaved++
