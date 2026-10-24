@@ -669,6 +669,27 @@ object BatchRunner {
         persist()
     }
 
+    /**
+     * Sends a queued video back to the Holding Pen (where its settings can be changed). It goes to
+     * the top of the pen. Not for the video being converted, a split video that already has parts
+     * saved, or (while a batch runs) a video the batch has already tried.
+     */
+    fun returnToPen(id: Long) {
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val item = queue[at]
+        if (item.inPen || item.status == ItemStatus.CONVERTING || item.partsDone > 0) return
+        if (busy) {
+            if (item.status != ItemStatus.WAITING) return
+            // Still waiting for its turn: take it out of the running batch, as removing it would.
+            if (runList.remove(id)) runTotal = (runTotal - 1).coerceAtLeast(0)
+        }
+        // The end of the list is the top of the pen. It follows the settings on screen again.
+        queue.removeAt(at)
+        queue.add(item.copy(inPen = true, settings = null, status = ItemStatus.WAITING, detail = null))
+        persist()
+    }
+
     /** Removes every video from the Holding Pen. */
     fun clearPen() {
         appContext?.let { ctx ->
