@@ -266,6 +266,8 @@ private fun QueueRow(
 ) {
     val ctx = LocalContext.current
     val i = item.info
+    // Whether the card's extra detail is open (see "Details" at the bottom of the card).
+    var expanded by remember { mutableStateOf(false) }
 
     // Tapping the thumbnail plays the video: the converted file on a Finished card, the original
     // on a queue card. Nothing to play if the file is gone or the original couldn't be read.
@@ -332,6 +334,23 @@ private fun QueueRow(
             }
         }
 
+        // What this video is (or was) converted with. Once it's in a run it is fixed; before that
+        // it follows the settings on screen. A finished card shows what it was made for.
+        val shownSettings: Settings? = if (finishedCard) item.settings else (item.settings ?: settings)
+        if (shownSettings != null && !item.probeFailed) {
+            val prefix = when {
+                finishedCard -> "Made for"
+                item.status == ItemStatus.CONVERTING -> "Converting with"
+                item.settings != null -> "Will convert with"
+                else -> "Current settings"
+            }
+            Text(
+                "$prefix: ${settingsWithTarget(shownSettings)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         if (i != null && item.status != ItemStatus.DONE) {
             val t = settings.tuning
             val minParts = Converter.partCount(i.durationSec, maxDuration, t)
@@ -395,6 +414,57 @@ private fun QueueRow(
                         if (showControls && numParts < maxParts) " Increased splitting recommended." else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+        }
+
+        if ((i != null && !item.probeFailed) || shownSettings != null) {
+            Text(
+                if (expanded) "Hide details ▴" else "Details ▾",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clickable { expanded = !expanded }
+                    .padding(vertical = 4.dp),
+            )
+        }
+        if (expanded) {
+            if (i != null && !item.probeFailed) {
+                val len = String.format(Locale.US, "%.1f", i.durationSec)
+                val audio = if (i.hasAudio) {
+                    if (i.audioCodec.isNotBlank()) "audio ${prettyCodec(i.audioCodec)}" else "has audio"
+                } else "no audio"
+                Text(
+                    "${if (finishedCard) "Output" else "Source"}: ${i.width}×${i.height} · $len s · ${fpsLabel(i, finishedCard)} · $audio",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                val fileBits = listOfNotNull(
+                    i.container.takeIf { it.isNotBlank() }?.let { "Container $it" },
+                    i.videoCodec.takeIf { it.isNotBlank() }?.let { c ->
+                        "Video ${prettyCodec(c)}" + if (i.videoKbps > 0) " at ${formatKbps(i.videoKbps)}" else ""
+                    },
+                    i.fileBytes.takeIf { it > 0 }?.let { "Size ${formatBytes(it)}" },
+                )
+                Text(
+                    if (fileBits.isEmpty()) "No more file details were recorded for this video." else fileBits.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (shownSettings != null) {
+                if (shownSettings.targetLabel.isNotBlank()) {
+                    Text("Target: ${shownSettings.targetLabel}", style = MaterialTheme.typography.bodySmall)
+                }
+                val minRes = if (shownSettings.minWidth > 0 || shownSettings.minHeight > 0) {
+                    "${shownSettings.minWidth}×${shownSettings.minHeight}"
+                } else "none"
+                Text(
+                    "Size limit ${formatLimit(shownSettings.limitBytes)} · max length ${shownSettings.maxDurationSec} s · min resolution $minRes",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    "${if (shownSettings.keepAudio) "Sound on" else "Sound off"} · frame rate up to ${shownSettings.targetFps} fps · " +
+                        "${effortName(shownSettings)} · ${if (shownSettings.useVp9) "VP9" else "VP8"}",
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
         }
@@ -504,14 +574,49 @@ private fun boardsSummary(t: Target): String {
     else t.boards.take(shown).joinToString(" ") { "/$it/" } + " … (${t.boards.size} boards)"
 }
 
-/** One line saying what a running batch is being converted with. */
-private fun settingsLine(s: Settings): String {
-    val mb = String.format(Locale.US, "%.2f", s.limitBytes / 1048576.0).trimEnd('0').trimEnd('.')
-    val sound = if (s.keepAudio) "sound on" else "no sound"
-    val effort = if (s.fastest) "Fastest" else if (s.fastEncode) "Speed" else "Quality"
-    val codec = if (s.useVp9) "VP9" else "VP8"
-    return "Converting with: $mb MB limit, up to ${s.maxDurationSec} s, $sound, up to ${s.targetFps} fps, $effort, $codec"
+/** e.g. "6 MB". */
+private fun formatLimit(bytes: Long): String =
+    String.format(Locale.US, "%.2f", bytes / 1048576.0).trimEnd('0').trimEnd('.') + " MB"
+
+private fun formatBytes(b: Long): String = when {
+    b >= 1048576L -> String.format(Locale.US, "%.1f MB", b / 1048576.0)
+    else -> String.format(Locale.US, "%.0f KB", b / 1024.0)
 }
+
+private fun formatKbps(k: Int): String =
+    if (k >= 1000) String.format(Locale.US, "%.1f Mbps", k / 1000.0) else "$k kbps"
+
+/** ffprobe's codec name as people write it. */
+private fun prettyCodec(c: String): String = when (c.lowercase()) {
+    "h264" -> "H.264"
+    "hevc" -> "H.265 (HEVC)"
+    "vp8" -> "VP8"
+    "vp9" -> "VP9"
+    "av1" -> "AV1"
+    "mpeg4" -> "MPEG-4"
+    "mpeg2video" -> "MPEG-2"
+    "aac" -> "AAC"
+    "mp3" -> "MP3"
+    "opus" -> "Opus"
+    "vorbis" -> "Vorbis"
+    "ac3" -> "AC-3"
+    "eac3" -> "E-AC-3"
+    else -> c.uppercase()
+}
+
+private fun effortName(s: Settings) = if (s.fastest) "Fastest" else if (s.fastEncode) "Speed" else "Quality"
+
+/** The settings in one short line, e.g. "6 MB · up to 400 s · sound on · up to 30 fps · Quality · VP8". */
+private fun settingsBrief(s: Settings): String =
+    "${formatLimit(s.limitBytes)} · up to ${s.maxDurationSec} s · ${if (s.keepAudio) "sound on" else "no sound"} · " +
+        "up to ${s.targetFps} fps · ${effortName(s)} · ${if (s.useVp9) "VP9" else "VP8"}"
+
+/** The board name (if there is one) followed by [settingsBrief]. */
+private fun settingsWithTarget(s: Settings): String =
+    (if (s.targetLabel.isNotBlank()) "${s.targetLabel} · " else "") + settingsBrief(s)
+
+/** One line saying what a running batch is being converted with. */
+private fun settingsLine(s: Settings): String = "Converting with: " + settingsWithTarget(s)
 
 private enum class CardSection { PEN, QUEUE, CONVERTING }
 
@@ -739,6 +844,12 @@ fun App(onAbout: () -> Unit = {}) {
 
     // What the next conversion would use. The queue cards work their split estimates out from it,
     // so they follow the board, size limit, audio, effort, frame rate and Advanced settings as they change.
+    // Short enough to sit on every card: up to three boards, then a count.
+    val targetLabel = when {
+        target == null -> "Custom"
+        target.boards.size <= 3 -> target.boardsLabel
+        else -> target.boards.take(3).joinToString(" ") { "/$it/" } + " … (${target.boards.size} boards)"
+    }
     val cardSettings = Settings(
         limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
         fastEncode = fastEncode,
@@ -747,6 +858,7 @@ fun App(onAbout: () -> Unit = {}) {
         targetFps = targetFps,
         tuning = TuningStore.current,
         isCustom = isCustom,
+        targetLabel = targetLabel,
     )
 
     // What each closed settings group shows as its current choice.
@@ -1131,6 +1243,7 @@ fun App(onAbout: () -> Unit = {}) {
                     targetFps = targetFps,
                     tuning = TuningStore.current,
                     isCustom = isCustom,
+                    targetLabel = targetLabel,
                 )
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
