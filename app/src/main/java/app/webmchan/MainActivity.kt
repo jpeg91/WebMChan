@@ -712,6 +712,7 @@ fun App(onAbout: () -> Unit = {}) {
     val status = BatchRunner.status
     val summary = BatchRunner.summary
     val runTotal = BatchRunner.runTotal
+    val currentParts = BatchRunner.currentParts
     val logLines = BatchRunner.logLines
 
     // Index into TARGETS; TARGETS.size means "Custom".
@@ -1244,7 +1245,41 @@ fun App(onAbout: () -> Unit = {}) {
                     modifier = Modifier.weight(1f),
                 )
             }
-            if (runTotal > 1) {
+            if (currentParts > 1) {
+                // A split video: Skip part drops just the part being encoded and carries on with the
+                // next one. With other videos waiting there is also Skip video (the whole video).
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    P5Button(
+                        "Skip part",
+                        onClick = { BatchRunner.skipPart() },
+                        kind = P5Kind.Secondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (runTotal > 1) {
+                        P5Button(
+                            "Skip video",
+                            onClick = { BatchRunner.skipCurrent() },
+                            kind = P5Kind.Secondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else {
+                        P5Button(
+                            "Cancel",
+                            onClick = { BatchRunner.cancelAll() },
+                            kind = P5Kind.Secondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                if (runTotal > 1) {
+                    P5Button(
+                        "Cancel all",
+                        onClick = { BatchRunner.cancelAll() },
+                        kind = P5Kind.Secondary,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            } else if (runTotal > 1) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     P5Button(
                         "Skip current",
