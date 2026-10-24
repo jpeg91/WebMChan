@@ -1,5 +1,8 @@
 package app.webmchan
 
+import android.content.Context
+import android.os.Build
+import android.os.Process
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,10 +18,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -145,8 +153,71 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
+
+        DeviceReadout(ctx)
         Spacer(Modifier.height(16.dp))
     }
+}
+
+/** What this phone is, and whether WebMChan can run on it. Copyable, so testers can send it on. */
+@Composable
+private fun DeviceReadout(ctx: Context) {
+    val report = remember { deviceReport(ctx) }
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+
+    Heading("This device")
+    P5Card(Modifier.fillMaxWidth()) {
+        Text(
+            if (report.supported) "Supported" else "Not supported",
+            style = MaterialTheme.typography.titleSmall,
+            color = if (report.supported) P5.White else MaterialTheme.colorScheme.error,
+        )
+        report.problems.forEach {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Text(report.lines.joinToString("\n"), style = MaterialTheme.typography.bodySmall)
+    }
+    P5Button(
+        if (copied) "Copied ✓" else "Copy device details",
+        onClick = {
+            clipboard.setText(AnnotatedString(report.asText()))
+            copied = true
+        },
+        kind = P5Kind.Secondary,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+private class DeviceReport(val supported: Boolean, val problems: List<String>, val lines: List<String>) {
+    fun asText(): String =
+        (listOf(if (supported) "Supported" else "Not supported") + problems + lines).joinToString("\n")
+}
+
+private fun deviceReport(ctx: Context): DeviceReport {
+    val version = try {
+        ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
+    } catch (e: Exception) {
+        null
+    }
+    val abis = Build.SUPPORTED_ABIS.toList()
+    val is64 = Process.is64Bit()
+    val minSdk = ctx.applicationInfo.minSdkVersion // what the app was built to need
+    val sdk = Build.VERSION.SDK_INT
+
+    val problems = mutableListOf<String>()
+    if (sdk < minSdk) problems.add("This app needs Android API $minSdk or newer; this device has API $sdk.")
+    if ("arm64-v8a" !in abis) problems.add("This app needs a 64-bit ARM (arm64-v8a) phone; this device doesn't list it.")
+    if (!is64) problems.add("The app is running as a 32-bit process, but its video engine is 64-bit only.")
+
+    val lines = listOf(
+        "App: WebMChan ${version ?: "(version unknown)"}",
+        "Device: ${Build.MANUFACTURER} ${Build.MODEL}",
+        "Android: ${Build.VERSION.RELEASE} (API $sdk, app needs $minSdk or newer)",
+        "Supported architectures: ${abis.joinToString(", ")}",
+        "App process: ${if (is64) "64-bit" else "32-bit"}",
+    )
+    return DeviceReport(problems.isEmpty(), problems, lines)
 }
 
 @Composable
