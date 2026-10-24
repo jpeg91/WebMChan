@@ -454,8 +454,11 @@ private fun QueueRow(
                 val minRes = if (shownSettings.minWidth > 0 || shownSettings.minHeight > 0) {
                     "${shownSettings.minWidth}×${shownSettings.minHeight}"
                 } else "none"
+                val lengthPart = if (shownSettings.maxDurationSec > 0) "max length ${shownSettings.maxDurationSec} s" else "no length limit"
+                val resPart = customResLabel(shownSettings.customWidth, shownSettings.customHeight)
+                    ?.let { "output size: $it" } ?: "min resolution $minRes"
                 Text(
-                    "Size limit ${formatLimit(shownSettings.limitBytes)} · max length ${shownSettings.maxDurationSec} s · min resolution $minRes",
+                    "Size limit ${formatLimit(shownSettings.limitBytes)} · $lengthPart · $resPart",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
@@ -634,8 +637,19 @@ private fun effortName(s: Settings) = if (s.fastest) "Fastest" else if (s.fastEn
 
 /** The settings in one short line, e.g. "6 MB · up to 400 s · sound on · up to 30 fps · Quality · VP8". */
 private fun settingsBrief(s: Settings): String =
-    "${formatLimit(s.limitBytes)} · up to ${s.maxDurationSec} s · ${if (s.keepAudio) "sound on" else "no sound"} · " +
+    "${formatLimit(s.limitBytes)} · " +
+        (if (s.maxDurationSec > 0) "up to ${s.maxDurationSec} s · " else "") +
+        (customResLabel(s.customWidth, s.customHeight)?.let { "$it · " } ?: "") +
+        "${if (s.keepAudio) "sound on" else "no sound"} · " +
         "up to ${s.targetFps} fps · ${effortName(s)} · ${if (s.useVp9) "VP9" else "VP8"}"
+
+/** A Custom resolution in words (e.g. "scaled to fit 640×480"), or null when none is set. */
+private fun customResLabel(w: Int, h: Int): String? = when {
+    w > 0 && h > 0 -> "scaled to fit ${w}×${h}"
+    w > 0 -> "${w} px wide"
+    h > 0 -> "${h} px tall"
+    else -> null
+}
 
 /** The board name (if there is one) followed by [settingsBrief]. */
 private fun settingsWithTarget(s: Settings): String =
@@ -720,6 +734,9 @@ fun App(onAbout: () -> Unit = {}) {
     val prefs = remember { ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE) }
     var targetIdx by remember { mutableIntStateOf(prefs.getInt("ui_target_idx", 0).coerceIn(0, TARGETS.size)) }
     var customMb by remember { mutableStateOf(prefs.getString("ui_custom_mb", "4") ?: "4") }
+    // Custom resolution, in pixels. Empty = not set (automatic).
+    var customW by remember { mutableStateOf(prefs.getString("ui_custom_w", "") ?: "") }
+    var customH by remember { mutableStateOf(prefs.getString("ui_custom_h", "") ?: "") }
     var removeAudio by remember { mutableStateOf(prefs.getBoolean("ui_remove_audio", true)) }
     var fastEncode by remember { mutableStateOf(prefs.getBoolean("ui_fast_encode", false)) }
     var useVp9 by remember { mutableStateOf(prefs.getBoolean("ui_use_vp9", false)) }
@@ -729,10 +746,12 @@ fun App(onAbout: () -> Unit = {}) {
         mutableIntStateOf(prefs.getInt("ui_fps_choice", FPS_DEFAULT_INDEX).coerceIn(0, FPS_PRESETS.size))
     }
     var customFps by remember { mutableStateOf(prefs.getString("ui_custom_fps", "30") ?: "30") }
-    LaunchedEffect(targetIdx, customMb, removeAudio, fastEncode, useVp9, fastest, fpsChoice, customFps) {
+    LaunchedEffect(targetIdx, customMb, customW, customH, removeAudio, fastEncode, useVp9, fastest, fpsChoice, customFps) {
         prefs.edit()
             .putInt("ui_target_idx", targetIdx)
             .putString("ui_custom_mb", customMb)
+            .putString("ui_custom_w", customW)
+            .putString("ui_custom_h", customH)
             .putBoolean("ui_remove_audio", removeAudio)
             .putBoolean("ui_fast_encode", fastEncode)
             .putBoolean("ui_use_vp9", useVp9)
@@ -865,7 +884,7 @@ fun App(onAbout: () -> Unit = {}) {
     val target: Target? = TARGETS.getOrNull(targetIdx)
     val isCustom = target == null
     val limitKb: Int = target?.limitKb ?: ((customMb.toDoubleOrNull() ?: 0.0) * 1024).toInt()
-    val maxDuration: Int = target?.maxDurationSec ?: Converter.DEFAULT_MAX_DURATION_SEC
+    val maxDuration: Int = target?.maxDurationSec ?: Converter.NO_LENGTH_LIMIT
     val minW: Int = target?.minWidth ?: 0
     val minH: Int = target?.minHeight ?: 0
     val audioAllowed: Boolean = target?.audioAllowed ?: true
@@ -876,6 +895,16 @@ fun App(onAbout: () -> Unit = {}) {
     val isCustomFps = fpsChoice >= FPS_PRESETS.size
     val customFpsValue: Int? = customFps.trim().toIntOrNull()?.takeIf { it in Converter.MIN_FPS..Converter.MAX_FPS }
     val fpsOk = !isCustomFps || customFpsValue != null
+
+    // The Custom resolution. Each side may be left empty; one that is filled in has to be a whole
+    // number in range, or Convert stays disabled until it is fixed.
+    val customWValue: Int? = customW.trim().toIntOrNull()?.takeIf { it in Converter.MIN_CUSTOM_PX..Converter.MAX_CUSTOM_PX }
+    val customHValue: Int? = customH.trim().toIntOrNull()?.takeIf { it in Converter.MIN_CUSTOM_PX..Converter.MAX_CUSTOM_PX }
+    val widthOk = !isCustom || customW.isBlank() || customWValue != null
+    val heightOk = !isCustom || customH.isBlank() || customHValue != null
+    val resOk = widthOk && heightOk
+    val customWidth: Int = if (isCustom) customWValue ?: 0 else 0
+    val customHeight: Int = if (isCustom) customHValue ?: 0 else 0
     val targetFps: Int = if (!isCustomFps) FPS_PRESETS[fpsChoice] else (customFpsValue ?: Converter.DEFAULT_FPS)
 
     // What the next conversion would use. The queue cards work their split estimates out from it,
@@ -895,16 +924,21 @@ fun App(onAbout: () -> Unit = {}) {
         tuning = TuningStore.current,
         isCustom = isCustom,
         targetLabel = targetLabel,
+        customWidth = customWidth,
+        customHeight = customHeight,
     )
 
     // What each closed settings group shows as its current choice.
     val limitOk = limitKb >= 256
     val boardsSummaryText = if (target != null) {
         "${target.title}\n${boardsSummary(target)}"
-    } else if (limitOk) {
-        "Custom · $customMb MB limit, no minimum resolution"
-    } else {
+    } else if (!limitOk) {
         "Custom · enter a limit of at least 0.25 MB"
+    } else if (!resOk) {
+        "Custom · enter a resolution from ${Converter.MIN_CUSTOM_PX} to ${Converter.MAX_CUSTOM_PX} px, or leave it empty"
+    } else {
+        "Custom · $customMb MB limit · no length limit · " +
+            (customResLabel(customWidth, customHeight) ?: "resolution picked automatically")
     }
     val audioSummaryText = when {
         !audioAllowed -> "Off · this target doesn't allow sound"
@@ -987,7 +1021,7 @@ fun App(onAbout: () -> Unit = {}) {
             summary = boardsSummaryText,
             expanded = boardsOpen,
             onToggle = { boardsOpen = !boardsOpen },
-            summaryIsError = isCustom && !limitOk,
+            summaryIsError = isCustom && (!limitOk || !resOk),
         ) {
             TARGETS.forEachIndexed { idx, t ->
                 TargetRow(
@@ -1004,7 +1038,7 @@ fun App(onAbout: () -> Unit = {}) {
                 selected = isCustom,
                 enabled = true,
                 title = "Custom",
-                subtitle = "Your own size limit, no minimum resolution",
+                subtitle = "Your own size limit and resolution, with no length limit",
             ) {
                 targetIdx = TARGETS.size
                 removeAudio = false
@@ -1019,6 +1053,43 @@ fun App(onAbout: () -> Unit = {}) {
                     enabled = true,
                     shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
                 )
+                Text(
+                    "Resolution (optional). Fill in one side and the other follows the video's shape. " +
+                        "Fill in both and the picture is scaled to fit inside that size. Either way " +
+                        "the aspect ratio is kept, so nothing is stretched. Leave both empty to let the " +
+                        "app pick a size that suits the limit.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = customW,
+                        onValueChange = { customW = it },
+                        label = { Text("Width (px)") },
+                        isError = !widthOk,
+                        supportingText = {
+                            if (!widthOk) Text("${Converter.MIN_CUSTOM_PX} to ${Converter.MAX_CUSTOM_PX}")
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        enabled = true,
+                        shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = customH,
+                        onValueChange = { customH = it },
+                        label = { Text("Height (px)") },
+                        isError = !heightOk,
+                        supportingText = {
+                            if (!heightOk) Text("${Converter.MIN_CUSTOM_PX} to ${Converter.MAX_CUSTOM_PX}")
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        enabled = true,
+                        shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
 
@@ -1189,8 +1260,8 @@ fun App(onAbout: () -> Unit = {}) {
 
         val queueReady = queue.count { !it.inPen && it.info != null && it.status != ItemStatus.CONVERTING }
         val pending = penCount + queueReady
-        val canGo = pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && !busy
-        val penReady = penCount > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && !cancelling
+        val canGo = pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && resOk && !busy
+        val penReady = penCount > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && resOk && !cancelling
 
         // The running batch's progress and controls (or, when it is paused, the Resume controls).
         val progressBlock: @Composable () -> Unit = {
@@ -1335,6 +1406,8 @@ fun App(onAbout: () -> Unit = {}) {
                     tuning = TuningStore.current,
                     isCustom = isCustom,
                     targetLabel = targetLabel,
+                    customWidth = customWidth,
+                    customHeight = customHeight,
                 )
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
