@@ -10,12 +10,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
+import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /** One editable number: how it's labelled, explained and read back. */
 private data class FieldSpec(
@@ -160,8 +159,8 @@ fun AdvancedScreen(onBack: () -> Unit) {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        TextButton(onClick = onBack) { Text("← Back") }
-        Text("Advanced settings", style = MaterialTheme.typography.headlineMedium)
+        P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
+        P5Title("Advanced settings", size = 30.sp)
         Text(
             "For testing. These numbers steer how videos are fitted into a size limit; the defaults " +
                 "are the recommended values. Changes apply from the next conversion, and anything " +
@@ -179,14 +178,16 @@ fun AdvancedScreen(onBack: () -> Unit) {
                     keyboardType = if (spec.integer) KeyboardType.Number else KeyboardType.Decimal
                 ),
                 singleLine = true,
+                shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
                 modifier = Modifier.fillMaxWidth(),
             )
         }
 
-        message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = P5.RedBright) }
 
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            P5Button(
+                "Save",
                 onClick = {
                     var unreadable = false
                     val asked = fields.toTuning(TuningStore.current) { unreadable = true }
@@ -200,15 +201,17 @@ fun AdvancedScreen(onBack: () -> Unit) {
                     }
                 },
                 modifier = Modifier.weight(1f),
-            ) { Text("Save") }
-            OutlinedButton(
+            )
+            P5Button(
+                "Reset to defaults",
                 onClick = {
                     TuningStore.reset(ctx)
                     fields.putAll(TuningStore.current.asText())
                     message = "Back to the default values."
                 },
+                kind = P5Kind.Secondary,
                 modifier = Modifier.weight(1f),
-            ) { Text("Reset to defaults") }
+            )
         }
     }
 }
