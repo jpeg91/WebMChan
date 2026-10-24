@@ -22,7 +22,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,25 +32,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -102,30 +90,23 @@ class MainActivity : ComponentActivity() {
         // so videos the user already removed don't come back.
         if (savedInstanceState == null) handleShare(intent)
         setContent {
-            val ctx = LocalContext.current
-            val dark = isSystemInDarkTheme()
-            // Dynamic colors need Android 12+; minSdk is 29.
-            val scheme = when {
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-                    if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
-                dark -> darkColorScheme()
-                else -> lightColorScheme()
-            }
-            MaterialTheme(colorScheme = scheme) {
+            // The look (black, white and red) lives in Theme.kt. It is the same whatever the
+            // phone's own light/dark or wallpaper colours are.
+            P5Theme {
                 var showAbout by remember { mutableStateOf(false) }
                 var showAdvanced by remember { mutableStateOf(false) }
-                Surface(Modifier.fillMaxSize()) {
+                P5Background {
                     Box {
                         // App stays composed underneath, so opening About doesn't lose the scroll
                         // position or the settings.
                         App(onAbout = { showAbout = true })
                         if (showAbout) {
-                            Surface(Modifier.fillMaxSize()) {
+                            P5Background {
                                 AboutScreen(onBack = { showAbout = false }, onAdvanced = { showAdvanced = true })
                             }
                         }
                         if (showAdvanced) {
-                            Surface(Modifier.fillMaxSize()) { AdvancedScreen(onBack = { showAdvanced = false }) }
+                            P5Background { AdvancedScreen(onBack = { showAdvanced = false }) }
                         }
                     }
                 }
@@ -204,8 +185,9 @@ private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
     Box(
         Modifier
             .size(width = 112.dp, height = 72.dp)
-            .clip(RoundedCornerShape(6.dp))
+            .clip(CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp))
             .background(Color.Black)
+            .border(1.5.dp, P5.Grey, CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp))
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
@@ -235,12 +217,8 @@ private fun fpsLabel(i: SourceInfo, finished: Boolean): String = when {
 
 @Composable
 private fun QueueButton(label: String, enabled: Boolean, onClick: () -> Unit) {
-    TextButton(
-        onClick = onClick,
-        enabled = enabled,
-        contentPadding = PaddingValues(0.dp),
-        modifier = Modifier.size(40.dp),
-    ) { Text(label) }
+    // The remove button (✕) gets the red accent.
+    P5SquareButton(label, onClick, enabled, accent = label == "✕")
 }
 
 @Composable
@@ -281,13 +259,15 @@ private fun QueueRow(
         else -> item.uri
     }
 
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
+    // The stripe down the card's edge says where the video is: red while converting, white once done.
+    val accent = when (item.status) {
+        ItemStatus.CONVERTING -> P5.Red
+        ItemStatus.DONE -> P5.White
+        ItemStatus.FAILED -> P5.Amber
+        ItemStatus.CANCELLED -> P5.GreyDim
+        ItemStatus.WAITING -> P5.RedDeep
+    }
+    P5Card(Modifier.fillMaxWidth(), accent = accent) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (!item.probeFailed) {
                 Thumb(
@@ -433,15 +413,15 @@ private fun QueueRow(
                     Text(
                         if (expanded) "Hide details ▴" else "Details ▾",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = P5.RedBright,
                         modifier = Modifier
                             .clickable { expanded = !expanded }
-                            .padding(vertical = 4.dp),
+                            .padding(vertical = 8.dp),
                     )
                 }
                 Spacer(Modifier.weight(1f))
                 if (showReturn) {
-                    TextButton(onClick = onReturn, enabled = canReturn) { Text("Return to holding pen") }
+                    P5Button("Return to holding pen", onClick = onReturn, enabled = canReturn, kind = P5Kind.Ghost)
                 }
             }
         }
@@ -495,7 +475,8 @@ private fun QueueRow(
         }
 
         item.savedUri?.let { saved ->
-            TextButton(
+            P5Button(
+                "Share",
                 onClick = {
                     val send = Intent(Intent.ACTION_SEND).apply {
                         type = "video/webm"
@@ -507,7 +488,9 @@ private fun QueueRow(
                     }
                     ctx.startActivity(Intent.createChooser(send, "Share webm"))
                 },
-            ) { Text("Share") }
+                kind = P5Kind.Secondary,
+                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+            )
         }
     }
 }
@@ -520,16 +503,29 @@ private fun TargetRow(
     subtitle: String,
     onClick: () -> Unit,
 ) {
+    // The picked choice is a white slanted bar with black text, like a highlighted menu entry.
+    val shape = remember { SlantShape(8.dp) }
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick),
+            .clip(shape)
+            .background(if (selected) P5.White else Color.Transparent)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        RadioButton(selected = selected, onClick = null, enabled = enabled)
-        Column(Modifier.padding(start = 8.dp, top = 2.dp, bottom = 6.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall)
+        P5Diamond(selected)
+        Column(Modifier.padding(start = 8.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                color = if (selected) P5.Black else P5.White,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (selected) Color(0xFF2B2B2B) else P5.Grey,
+            )
         }
     }
 }
@@ -550,20 +546,29 @@ private fun CollapsibleSection(
     summaryIsError: Boolean = false,
     content: @Composable () -> Unit,
 ) {
+    val shape = remember { CutCornerShape(topEnd = 16.dp, bottomStart = 16.dp) }
     Column(
         Modifier
             .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp)),
+            .clip(shape)
+            .background(P5.Ink)
+            .border(1.5.dp, if (expanded) P5.Red else P5.Line, shape),
     ) {
+        // An open group's header turns solid red, like the picked entry in a menu.
         Row(
             Modifier
                 .fillMaxWidth()
+                .background(if (expanded) P5.Red else Color.Transparent)
                 .clickable(onClick = onToggle)
-                .padding(12.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    title.uppercase(),
+                    style = MaterialTheme.typography.labelLarge.copy(fontSize = 16.sp),
+                    color = P5.White,
+                )
                 if (!expanded) {
                     Text(
                         summary,
@@ -573,11 +578,15 @@ private fun CollapsibleSection(
                     )
                 }
             }
-            Text(if (expanded) "▲" else "▼", style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (expanded) "▲" else "▼",
+                style = MaterialTheme.typography.titleSmall,
+                color = if (expanded) P5.White else P5.RedBright,
+            )
         }
         if (expanded) {
             Column(
-                Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) { content() }
         }
@@ -809,7 +818,11 @@ fun App(onAbout: () -> Unit = {}) {
         }
         AlertDialog(
             onDismissRequest = skip,
-            title = { Text("Notification permission") },
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Notification permission".uppercase(), style = MaterialTheme.typography.titleMedium) },
             text = {
                 Text(
                     "Notification permission is required for background conversion. " +
@@ -821,27 +834,30 @@ fun App(onAbout: () -> Unit = {}) {
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    showNotificationExplainer = false
-                    if (explainerBlocked) {
-                        try {
-                            ctx.startActivity(
-                                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
-                            )
-                        } catch (_: Exception) {
+                P5Button(
+                    if (explainerBlocked) "Grant Notification Permission" else "Continue",
+                    onClick = {
+                        showNotificationExplainer = false
+                        if (explainerBlocked) {
+                            try {
+                                ctx.startActivity(
+                                    Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                                )
+                            } catch (_: Exception) {
+                            }
+                            // Don't lose the tap: start converting now.
+                            pendingSettings?.let { BatchRunner.start(ctx, it) }
+                            pendingSettings = null
+                        } else {
+                            ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE)
+                                .edit().putBoolean("asked_notifications", true).apply()
+                            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }
-                        // Don't lose the tap: start converting now.
-                        pendingSettings?.let { BatchRunner.start(ctx, it) }
-                        pendingSettings = null
-                    } else {
-                        ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE)
-                            .edit().putBoolean("asked_notifications", true).apply()
-                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                }) { Text(if (explainerBlocked) "Grant Notification Permission" else "Continue") }
+                    },
+                )
             },
-            dismissButton = { TextButton(onClick = skip) { Text("Skip") } },
+            dismissButton = { P5Button("Skip", onClick = skip, kind = P5Kind.Ghost) },
         )
     }
 
@@ -916,19 +932,24 @@ fun App(onAbout: () -> Unit = {}) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            Text(
-                "WebMChan - 4chan WebM converter",
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.weight(1f),
-            )
-            TextButton(onClick = onAbout) { Text("About") }
+            Column(Modifier.weight(1f)) {
+                P5Title("WebMChan")
+                Text(
+                    "4chan WebM converter".uppercase(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = P5.RedBright,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            P5Button("About", onClick = onAbout, kind = P5Kind.Secondary)
         }
 
-        Button(
+        P5Button(
+            if (queue.isEmpty()) "Choose videos" else "Add videos",
             onClick = { picker.launch(arrayOf("video/*")) },
             enabled = !cancelling, // allowed any time: new videos wait in the Holding Pen
             modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (queue.isEmpty()) "Choose videos" else "Add videos") }
+        )
 
         // Only while a shared video is being copied in; gone as soon as it's in the queue.
         if (copyingTotal > 0) {
@@ -939,23 +960,21 @@ fun App(onAbout: () -> Unit = {}) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 // Hand-driven (pass1Sweep), not Compose's own indeterminate animation: see pass1Sweep.
-                LinearProgressIndicator(progress = { pass1Sweep }, modifier = Modifier.fillMaxWidth())
+                P5Progress(progress = { pass1Sweep })
             }
         }
 
         // ---- Holding pen ----
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (penAny) "Holding pen (${queue.count { it.inPen }})" else "Holding pen",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f),
-            )
-            if (penAny) OutlinedButton(onClick = { BatchRunner.clearPen() }) { Text("Clear pen") }
+            P5SectionTitle(if (penAny) "Holding pen (${queue.count { it.inPen }})" else "Holding pen")
+            Spacer(Modifier.weight(1f))
+            if (penAny) P5Button("Clear pen", onClick = { BatchRunner.clearPen() }, kind = P5Kind.Secondary)
         }
         if (penAny) {
             Text(
                 "Newest at the top. The settings below apply to these videos when you send them to the queue.",
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             QueueCards(section = CardSection.PEN, busy = busy, liveSettings = cardSettings)
         } else {
@@ -997,6 +1016,7 @@ fun App(onAbout: () -> Unit = {}) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
                     enabled = true,
+                    shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
                 )
             }
         }
@@ -1023,6 +1043,7 @@ fun App(onAbout: () -> Unit = {}) {
                     checked = !effectiveRemoveAudio,
                     onCheckedChange = { removeAudio = !it },
                     enabled = audioAllowed,
+                    colors = p5SwitchColors(),
                 )
             }
         }
@@ -1076,6 +1097,7 @@ fun App(onAbout: () -> Unit = {}) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     enabled = true,
+                    shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
                 )
             }
         }
@@ -1139,14 +1161,17 @@ fun App(onAbout: () -> Unit = {}) {
                 style = MaterialTheme.typography.bodySmall
             )
             folderError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                P5Button(
+                    "Choose folder",
                     onClick = { folderPicker.launch(null) },
                     enabled = !busy,
+                    kind = P5Kind.Secondary,
                     modifier = Modifier.weight(1f),
-                ) { Text("Choose folder") }
+                )
                 if (hasCustomDir) {
-                    OutlinedButton(
+                    P5Button(
+                        "Use default",
                         onClick = {
                             OutputStorage.clearDir(ctx)
                             outputLabel = OutputStorage.displayName(ctx)
@@ -1154,8 +1179,9 @@ fun App(onAbout: () -> Unit = {}) {
                             folderError = null
                         },
                         enabled = !busy,
+                        kind = P5Kind.Secondary,
                         modifier = Modifier.weight(1f),
-                    ) { Text("Use default") }
+                    )
                 }
             }
         }
@@ -1173,22 +1199,25 @@ fun App(onAbout: () -> Unit = {}) {
                     notice ?: "Nothing is converting. Press Resume to carry on.",
                     style = MaterialTheme.typography.bodySmall
                 )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    P5Button(
+                        "Resume",
                         onClick = { BatchRunner.resume(ctx, cardSettings) },
                         enabled = probing == 0 && !cancelling,
                         modifier = Modifier.weight(1f),
-                    ) { Text("Resume") }
-                    OutlinedButton(
+                    )
+                    P5Button(
+                        "Cancel all",
                         onClick = { BatchRunner.cancelAll() },
+                        kind = P5Kind.Secondary,
                         modifier = Modifier.weight(1f),
-                    ) { Text("Cancel all") }
+                    )
                 }
             } else {
             if (progress < 0f) {
-                LinearProgressIndicator(progress = { pass1Sweep }, modifier = Modifier.fillMaxWidth())
+                P5Progress(progress = { pass1Sweep })
             } else {
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                P5Progress(progress = { progress })
             }
             Text(status, style = MaterialTheme.typography.bodySmall)
             when (pauseRequest) {
@@ -1199,34 +1228,44 @@ fun App(onAbout: () -> Unit = {}) {
                 )
                 PauseRequest.NONE -> {}
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                P5Button(
+                    "Pause now",
                     onClick = { BatchRunner.pauseNow() },
                     enabled = pauseRequest != PauseRequest.NOW,
+                    kind = P5Kind.Secondary,
                     modifier = Modifier.weight(1f),
-                ) { Text("Pause now") }
-                OutlinedButton(
+                )
+                P5Button(
+                    if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after this conversion",
                     onClick = { BatchRunner.pauseAfter() },
                     enabled = pauseRequest != PauseRequest.NOW,
+                    kind = P5Kind.Secondary,
                     modifier = Modifier.weight(1f),
-                ) { Text(if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after this conversion") }
+                )
             }
             if (runTotal > 1) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    P5Button(
+                        "Skip current",
                         onClick = { BatchRunner.skipCurrent() },
+                        kind = P5Kind.Secondary,
                         modifier = Modifier.weight(1f),
-                    ) { Text("Skip current") }
-                    OutlinedButton(
+                    )
+                    P5Button(
+                        "Cancel all",
                         onClick = { BatchRunner.cancelAll() },
+                        kind = P5Kind.Secondary,
                         modifier = Modifier.weight(1f),
-                    ) { Text("Cancel all") }
+                    )
                 }
             } else {
-                OutlinedButton(
+                P5Button(
+                    "Cancel",
                     onClick = { BatchRunner.cancelAll() },
+                    kind = P5Kind.Secondary,
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("Cancel") }
+                )
             }
             Text(
                 "You can lock the screen or leave the app while this runs. A notification shows progress.",
@@ -1238,21 +1277,19 @@ fun App(onAbout: () -> Unit = {}) {
         // One button: with nothing running it sends the Holding Pen to the queue and starts converting;
         // while a batch runs it sends the Holding Pen to that batch.
         if (busy) {
-            Button(
+            P5Button(
+                when (penCount) {
+                    0 -> "Add to running batch"
+                    1 -> "Add 1 video to running batch"
+                    else -> "Add $penCount videos to running batch"
+                },
                 onClick = { BatchRunner.addPenToRun(cardSettings) },
                 enabled = penReady,
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    when (penCount) {
-                        0 -> "Add to running batch"
-                        1 -> "Add 1 video to running batch"
-                        else -> "Add $penCount videos to running batch"
-                    }
-                )
-            }
+            )
         } else {
-        Button(
+        P5Button(
+            if (pending > 1) "Convert $pending videos" else "Convert",
             onClick = {
                 val settings = Settings(
                     limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
@@ -1283,24 +1320,24 @@ fun App(onAbout: () -> Unit = {}) {
             },
             enabled = canGo,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (pending > 1) "Convert $pending videos" else "Convert") }
+        )
 
         }
 
         // ---- Queue ----
         val queueCount = queue.count { !it.inPen && it.status != ItemStatus.CONVERTING }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (queueCount > 0) "Queue ($queueCount)" else "Queue",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f),
-            )
-            if (queueCount > 0 && !busy) OutlinedButton(onClick = { BatchRunner.clearQueue() }) { Text("Clear queue") }
+            P5SectionTitle(if (queueCount > 0) "Queue ($queueCount)" else "Queue")
+            Spacer(Modifier.weight(1f))
+            if (queueCount > 0 && !busy) {
+                P5Button("Clear queue", onClick = { BatchRunner.clearQueue() }, kind = P5Kind.Secondary)
+            }
         }
         if (queueCount > 0) {
             Text(
                 "Converted from the bottom up. Videos sent from the holding pen join at the top.",
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             QueueCards(section = CardSection.QUEUE, busy = busy, liveSettings = cardSettings)
         } else {
@@ -1308,10 +1345,14 @@ fun App(onAbout: () -> Unit = {}) {
         }
 
         // ---- Converting ----
-        Text("Converting", style = MaterialTheme.typography.titleMedium)
+        Row(Modifier.fillMaxWidth()) { P5SectionTitle("Converting") }
         if (busy) {
             queue.firstNotNullOfOrNull { if (!it.inPen) it.settings else null }?.let {
-                Text(settingsLine(it), style = MaterialTheme.typography.bodySmall)
+                Text(
+                    settingsLine(it),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             QueueCards(section = CardSection.CONVERTING, busy = busy, liveSettings = cardSettings)
             progressBlock()
@@ -1322,14 +1363,16 @@ fun App(onAbout: () -> Unit = {}) {
 
         val lines = logLines
         if (lines.isNotEmpty()) {
-            Text("Log", style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth()) { P5SectionTitle("Log") }
             LazyColumn(
                 state = logListState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(220.dp)
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
-                    .padding(8.dp),
+                    .clip(CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
+                    .background(Color.Black)
+                    .border(1.5.dp, P5.Line, CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
+                    .padding(10.dp),
             ) {
                 items(lines.size) { idx ->
                     Text(
@@ -1340,22 +1383,23 @@ fun App(onAbout: () -> Unit = {}) {
                     )
                 }
             }
-            OutlinedButton(
+            P5Button(
+                "Copy log",
                 onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) },
+                kind = P5Kind.Secondary,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Copy log") }
+            )
         }
 
 
         // ---- Finished ----
         // Finished videos land here from the converting section, newest at the top.
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (finished.isNotEmpty()) "Finished (${finished.size})" else "Finished",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f),
-            )
-            if (finished.isNotEmpty()) OutlinedButton(onClick = { BatchRunner.clearFinished() }) { Text("Clear finished") }
+            P5SectionTitle(if (finished.isNotEmpty()) "Finished (${finished.size})" else "Finished")
+            Spacer(Modifier.weight(1f))
+            if (finished.isNotEmpty()) {
+                P5Button("Clear finished", onClick = { BatchRunner.clearFinished() }, kind = P5Kind.Secondary)
+            }
         }
         if (finished.isEmpty()) {
             EmptyNote("No finished videos yet.")
@@ -1376,7 +1420,9 @@ fun App(onAbout: () -> Unit = {}) {
             }
             val savedUris = finished.mapNotNull { it.savedUri }
             if (savedUris.size > 1) {
-                OutlinedButton(
+                P5Button(
+                    "Share all (${savedUris.size})",
+                    kind = P5Kind.Secondary,
                     onClick = {
                         val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
                             type = "video/webm"
@@ -1389,7 +1435,7 @@ fun App(onAbout: () -> Unit = {}) {
                         ctx.startActivity(Intent.createChooser(send, "Share webm files"))
                     },
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("Share all (${savedUris.size})") }
+                )
             }
         }
         Spacer(Modifier.height(8.dp))
