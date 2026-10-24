@@ -50,6 +50,7 @@ data class SourceInfo(
 
 data class Settings(
     val limitBytes: Long,
+    /** The target's length limit in seconds. 0 = no length limit (the Custom target). */
     val maxDurationSec: Int,
     val keepAudio: Boolean,
     val minWidth: Int = 0,
@@ -71,7 +72,18 @@ data class Settings(
     val isCustom: Boolean = false,
     /** The boards this was set up for, for cards to show (e.g. "/wsg/"), or "Custom". Only a label. */
     val targetLabel: String = "",
-)
+    /**
+     * Custom target only: the output size in pixels. 0 = not set. With both set, the picture is
+     * scaled to fit inside that box; with one set, the other side follows. The aspect ratio is
+     * always kept, so the picture is never stretched. With neither set the size is picked
+     * automatically to suit the size limit. See [Converter.customScaleFilter].
+     */
+    val customWidth: Int = 0,
+    val customHeight: Int = 0,
+) {
+    /** True when the Custom target has a resolution of its own (so the automatic pick is bypassed). */
+    val hasCustomSize: Boolean get() = customWidth > 0 || customHeight > 0
+}
 
 /**
  * What a queue card shows about how a video would come out with a given number of parts:
@@ -173,8 +185,15 @@ object Converter {
     fun partName(part: Int, numParts: Int): String =
         "Part" + part.toString().padStart(numParts.toString().length, '0')
 
-    /** Max duration used for the Custom option only; board targets carry their own. */
-    const val DEFAULT_MAX_DURATION_SEC = 300
+    /** A [Settings.maxDurationSec] of this means no length limit. The Custom option uses it; board targets carry their own limit. */
+    const val NO_LENGTH_LIMIT = 0
+
+    /** Stands in for "no limit" in sums: far longer than any video (about 31 years). */
+    private const val UNLIMITED_SEC = 1.0e9
+
+    /** The range a Custom resolution side is kept within, in pixels. */
+    const val MIN_CUSTOM_PX = 16
+    const val MAX_CUSTOM_PX = 7680
 
     /** Extra splits are never allowed to make a part shorter than this. */
     const val MIN_PART_SEC = 10.0
@@ -216,7 +235,44 @@ object Converter {
 
     /** What the app actually aims for: the target's limit minus the length grace (e.g. 300 -> 299). */
     fun effectiveMaxSec(maxDurationSec: Int, tuning: Tuning): Double =
-        (maxDurationSec - tuning.lengthGraceSec).coerceAtLeast(1.0)
+        if (maxDurationSec <= NO_LENGTH_LIMIT) UNLIMITED_SEC
+        else (maxDurationSec - tuning.lengthGraceSec).coerceAtLeast(1.0)
+
+    // ---- Custom resolution ----
+
+    /** [v] rounded down to an even number (video frames want even sides); 0 stays 0 (= not set). */
+    private fun evenDown(v: Int): Int = if (v <= 0) 0 else max(2, v / 2 * 2)
+
+    /**
+     * The ffmpeg scale filter for a Custom resolution. Both sides set: the picture is scaled to fit
+     * inside that box (up or down) and keeps its aspect ratio, so there is no stretching and no
+     * cropping or bars; the sides come out even and never beyond the box. One side set: the other
+     * follows from the aspect ratio. ffmpeg works from the frame as it will be shown (rotation
+     * applied), so portrait phone videos come out right.
+     */
+    fun customScaleFilter(width: Int, height: Int): String {
+        val w = evenDown(width)
+        val h = evenDown(height)
+        return when {
+            w > 0 && h > 0 -> "scale=w=$w:h=$h:force_original_aspect_ratio=decrease:force_divisible_by=2"
+            w > 0 -> "scale=w=$w:h=-2"
+            else -> "scale=w=-2:h=$h"
+        }
+    }
+
+    /** The height [customScaleFilter] gives for [src], for the cards' estimates and the log. */
+    fun customOutputHeight(src: SourceInfo, width: Int, height: Int): Int {
+        val w = evenDown(width)
+        val h = evenDown(height)
+        val sw = src.width.toDouble()
+        val sh = src.height.toDouble()
+        val out = when {
+            w > 0 && h > 0 -> min(h.toDouble(), w * sh / sw)
+            w > 0 -> w * sh / sw
+            else -> h.toDouble()
+        }
+        return max(2, (out / 2 + 0.5).toInt() * 2)
+    }
 
     /**
      * The fewest files a video of [durationSec] can become for a target with this [maxDurationSec]
@@ -264,11 +320,15 @@ object Converter {
             else -> t.minAudioKbps
         }
         val vKbps = (totalKbps - audioKbps).toInt()
-        val height = chooseHeight(
-            vKbps, src, minHeightFor(src, settings.minWidth, settings.minHeight),
-            if (settings.fastest) t.fastestBpp else t.normalBpp,
-            settings.targetFps,
-        )
+        val height = if (settings.hasCustomSize) {
+            customOutputHeight(src, settings.customWidth, settings.customHeight)
+        } else {
+            chooseHeight(
+                vKbps, src, minHeightFor(src, settings.minWidth, settings.minHeight),
+                if (settings.fastest) t.fastestBpp else t.normalBpp,
+                settings.targetFps,
+            )
+        }
         return PartEstimate(parts, partSec, vKbps, height)
     }
 
@@ -668,16 +728,24 @@ object Converter {
                 if (audioOn && audioKbps < t.audioKbps) {
                     onLog("   audio bitrate reduced to ${audioKbps} kbps to fit the limit")
                 }
-                val height = chooseHeight(
-                    vKbps, src, minHeight, if (settings.fastest) t.fastestBpp else t.normalBpp,
-                    settings.targetFps,
-                )
+                // A Custom resolution is used exactly as asked (the automatic pick is bypassed); the
+                // size limit then only steers the bitrate.
+                val height = if (settings.hasCustomSize) {
+                    customOutputHeight(src, settings.customWidth, settings.customHeight)
+                } else {
+                    chooseHeight(
+                        vKbps, src, minHeight, if (settings.fastest) t.fastestBpp else t.normalBpp,
+                        settings.targetFps,
+                    )
+                }
                 lastHeight = height
                 lastKbps = vKbps
 
                 val filters = buildList {
                     if (reduceFps) add("fps=$fpsCap")
-                    if (hasMin) {
+                    if (settings.hasCustomSize) {
+                        add(customScaleFilter(settings.customWidth, settings.customHeight))
+                    } else if (hasMin) {
                         // Evaluated by ffmpeg on the (auto-rotated) frame: aspect kept, even
                         // sizes, and never below the board's minimum width/height.
                         add(
