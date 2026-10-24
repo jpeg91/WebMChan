@@ -263,6 +263,9 @@ private fun QueueRow(
     onExtraParts: (Int) -> Unit = {},
     /** false for cards in the Finished list. */
     showControls: Boolean = true,
+    /** Queue cards offer "Return to holding pen". */
+    showReturn: Boolean = false,
+    onReturn: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val i = item.info
@@ -387,8 +390,9 @@ private fun QueueRow(
             // Splits: live estimate of what each part would get, and (for queued videos) the
             // buttons to add splits or take them away again, down to the minimum the board needs.
             val estimateText = buildString {
-                if (numParts > 1) append("Each part about ${String.format(Locale.US, "%.0f", est.partSec)}s · ")
-                append("about ${est.height}p at ${est.videoKbps} kbps video")
+                append("Expected conversion output: ")
+                if (numParts > 1) append("Each part ${String.format(Locale.US, "%.1f", est.partSec)}s - ")
+                append("${est.height}p at ${est.videoKbps}kbps")
             }
             if (showControls) {
                 val locked = busy || item.partsDone > 0
@@ -418,15 +422,28 @@ private fun QueueRow(
             }
         }
 
-        if ((i != null && !item.probeFailed) || shownSettings != null) {
-            Text(
-                if (expanded) "Hide details ▴" else "Details ▾",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clickable { expanded = !expanded }
-                    .padding(vertical = 4.dp),
-            )
+        // Not the video being converted, a split video with parts already saved, or (during a run)
+        // one the batch has already tried.
+        val canReturn = showReturn && item.status != ItemStatus.CONVERTING && item.partsDone == 0 &&
+            (!busy || item.status == ItemStatus.WAITING)
+        val canExpand = (i != null && !item.probeFailed) || shownSettings != null
+        if (canExpand || showReturn) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (canExpand) {
+                    Text(
+                        if (expanded) "Hide details ▴" else "Details ▾",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clickable { expanded = !expanded }
+                            .padding(vertical = 4.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                if (showReturn) {
+                    TextButton(onClick = onReturn, enabled = canReturn) { Text("Return to holding pen") }
+                }
+            }
         }
         if (expanded) {
             if (i != null && !item.probeFailed) {
@@ -659,6 +676,8 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
                 onDown = { BatchRunner.move(idx, -1) },
                 onRemove = { BatchRunner.removeAt(idx) },
                 onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
+                showReturn = section == CardSection.QUEUE,
+                onReturn = { BatchRunner.returnToPen(item.id) },
             )
         }
     }
