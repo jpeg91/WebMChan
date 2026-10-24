@@ -308,16 +308,57 @@ object Converter {
         }
     }
 
-    private fun describeProbeFailure(t: Throwable): String {
-        val engineFailed = t is UnsatisfiedLinkError || t is NoClassDefFoundError || t is ExceptionInInitializerError
-        val technical = "${t.javaClass.simpleName}: ${t.message ?: "no message"}".take(400)
-        return if (engineFailed) {
-            "The video engine (FFmpeg) couldn't start on this device. " +
-                "WebMChan needs a 64-bit ARM phone. The About page shows this device's details.\n" +
-                "Technical details: $technical"
-        } else {
-            "Technical details: $technical"
+    /**
+     * The technical details of the first time the FFmpeg library failed to load. Once it has
+     * failed, Android refuses every later attempt with a bare "NoClassDefFoundError" that no
+     * longer says why, so later failures reuse these.
+     */
+    @Volatile
+    private var firstEngineDetail: String? = null
+
+    private fun isEngineFailure(t: Throwable): Boolean =
+        t is Error && t !is OutOfMemoryError
+
+    /** [t] and everything that caused it, one per line, e.g. "Error: ...\n  caused by UnsatisfiedLinkError: ...". */
+    private fun describeThrowable(t: Throwable): String {
+        val lines = ArrayList<String>()
+        var current: Throwable? = t
+        while (current != null && lines.size < 5) {
+            lines.add("${current.javaClass.simpleName}: ${current.message ?: "no message"}")
+            val next = current.cause
+            current = if (next === current) null else next
         }
+        return lines.joinToString("\n  caused by ").take(1200)
+    }
+
+    private fun describeProbeFailure(t: Throwable): String {
+        if (!isEngineFailure(t)) return "Technical details: ${describeThrowable(t)}"
+        val needs64 = "arm64-v8a" !in android.os.Build.SUPPORTED_ABIS
+        return "The video engine (FFmpeg) couldn't start on this device." +
+            (if (needs64) " WebMChan needs a 64-bit ARM phone." else "") +
+            " The About page shows this device's details.\n" +
+            "Technical details: ${engineDetail(t)}"
+    }
+
+    /** What went wrong with the FFmpeg library, remembering the first (most useful) answer. */
+    private fun engineDetail(t: Throwable): String {
+        // A bare NoClassDefFoundError (the library already failed once) carries no reason of its own.
+        val earlier = firstEngineDetail
+        if (t is NoClassDefFoundError && t.cause == null && earlier != null) return earlier
+        val detail = describeThrowable(t)
+        if (earlier == null) firstEngineDetail = detail
+        return detail
+    }
+
+    /**
+     * null when the FFmpeg library loads on this device (it is loaded now if it hasn't been yet);
+     * otherwise the technical details of why it can't. For the About page.
+     */
+    fun engineProblem(): String? = try {
+        FFmpegKitConfig.getVersion()
+        null
+    } catch (t: Throwable) {
+        engineDetail(t)
     }
 
     /** The size of the video at [uri] in bytes, or 0 if it can't be told. */
