@@ -35,6 +35,16 @@ data class SourceInfo(
      * or 0 when that isn't known either (the source's rate was kept and it wasn't readable).
      */
     val targetedFps: Double = 0.0,
+    /** Size of the file in bytes; 0 when not known. */
+    val fileBytes: Long = 0L,
+    /** e.g. "MP4"; empty when not known. */
+    val container: String = "",
+    /** The ffprobe codec name of the video stream, e.g. "h264"; empty when not known. */
+    val videoCodec: String = "",
+    /** Video bitrate in kbps (the whole file's if the stream's isn't given); 0 when not known. */
+    val videoKbps: Int = 0,
+    /** The ffprobe codec name of the first audio stream, e.g. "aac"; empty when none or not known. */
+    val audioCodec: String = "",
 )
 
 data class Settings(
@@ -58,6 +68,8 @@ data class Settings(
     val tuning: Tuning = Tuning(),
     /** True when the Custom target was selected (its length cap isn't a board's rule). Only affects card wording. */
     val isCustom: Boolean = false,
+    /** The boards this was set up for, for cards to show (e.g. "/wsg/"), or "Custom". Only a label. */
+    val targetLabel: String = "",
 )
 
 /**
@@ -271,11 +283,27 @@ object Converter {
         return "video"
     }
 
-    suspend fun probe(ctx: Context, uri: Uri): SourceInfo? =
-        probePath(FFmpegKitConfig.getSafParameterForRead(ctx, uri))
+    suspend fun probe(ctx: Context, uri: Uri): SourceInfo? {
+        val info = probePath(FFmpegKitConfig.getSafParameterForRead(ctx, uri)) ?: return null
+        val bytes = withContext(Dispatchers.IO) { sourceBytes(ctx, uri) }
+        return info.copy(fileBytes = bytes)
+    }
+
+    /** The size of the video at [uri] in bytes, or 0 if it can't be told. */
+    private fun sourceBytes(ctx: Context, uri: Uri): Long = try {
+        if (uri.scheme == "file") {
+            File(uri.path ?: "").length()
+        } else {
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+            } ?: 0L
+        }
+    } catch (_: Exception) {
+        0L
+    }
 
     /** Same as [probe] but for a plain file, e.g. a finished conversion in the cache. */
-    suspend fun probeFile(file: File): SourceInfo? = probePath(file.absolutePath)
+    suspend fun probeFile(file: File): SourceInfo? = probePath(file.absolutePath)?.copy(fileBytes = file.length())
 
     private suspend fun probePath(path: String): SourceInfo? = withContext(Dispatchers.IO) {
         val info = FFprobeKit.getMediaInformation(path).mediaInformation ?: return@withContext null
@@ -286,6 +314,9 @@ object Converter {
         var fps = 30.0
         var fpsReadable = false
         var audio = false
+        var vCodec = ""
+        var vKbps = 0
+        var aCodec = ""
         for (s in info.streams) {
             when (s.type) {
                 "video" -> if (w == 0) {
@@ -294,12 +325,41 @@ object Converter {
                     val parsed = parseRate(s.averageFrameRate)
                     fpsReadable = parsed != null
                     fps = parsed ?: 30.0
+                    vCodec = s.codec ?: ""
+                    vKbps = ((s.bitrate?.toLongOrNull() ?: 0L) / 1000).toInt()
                 }
-                "audio" -> audio = true
+                "audio" -> {
+                    audio = true
+                    if (aCodec.isEmpty()) aCodec = s.codec ?: ""
+                }
             }
         }
         if (w == 0 || h == 0) return@withContext null
-        SourceInfo(dur, w, h, fps, audio, fpsReadable)
+        // Many files don't give the video stream's own bitrate; the whole file's is the next best thing.
+        if (vKbps <= 0) vKbps = ((info.bitrate?.toLongOrNull() ?: 0L) / 1000).toInt()
+        SourceInfo(
+            dur, w, h, fps, audio, fpsReadable,
+            container = containerName(info.format ?: ""),
+            videoCodec = vCodec,
+            videoKbps = vKbps,
+            audioCodec = aCodec,
+        )
+    }
+
+    /** ffprobe's format list (e.g. "mov,mp4,m4a,3gp,3g2,mj2") as one readable name. */
+    private fun containerName(format: String): String {
+        val f = format.lowercase()
+        return when {
+            f.isBlank() -> ""
+            "mp4" in f -> "MP4"
+            "matroska" in f || "webm" in f -> "Matroska/WebM"
+            "avi" in f -> "AVI"
+            "flv" in f -> "FLV"
+            "mpegts" in f -> "MPEG-TS"
+            "gif" in f -> "GIF"
+            "mov" in f -> "MOV"
+            else -> f.substringBefore(',').uppercase()
+        }
     }
 
     private fun parseRate(r: String?): Double? {
