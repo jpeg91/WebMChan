@@ -93,6 +93,7 @@ object BatchStore {
                     put("fastest", it.fastest)
                     put("fps", it.targetFps)
                     put("custom", it.isCustom)
+                    put("label", it.targetLabel)
                 }
             )
         }
@@ -105,6 +106,11 @@ object BatchStore {
                     put("h", it.height)
                     put("fps", it.fps)
                     put("audio", it.hasAudio)
+                    put("bytes", it.fileBytes)
+                    put("fmt", it.container)
+                    put("vc", it.videoCodec)
+                    put("vk", it.videoKbps)
+                    put("ac", it.audioCodec)
                 }
             )
         }
@@ -116,7 +122,15 @@ object BatchStore {
             uri = Uri.parse(o.getString("uri")),
             name = o.getString("name"),
             info = o.optJSONObject("info")?.let {
-                SourceInfo(it.getDouble("d"), it.getInt("w"), it.getInt("h"), it.getDouble("fps"), it.getBoolean("audio"))
+                SourceInfo(
+                    it.getDouble("d"), it.getInt("w"), it.getInt("h"), it.getDouble("fps"), it.getBoolean("audio"),
+                    // Absent in files saved by older versions.
+                    fileBytes = it.optLong("bytes", 0L),
+                    container = it.optString("fmt", ""),
+                    videoCodec = it.optString("vc", ""),
+                    videoKbps = it.optInt("vk", 0),
+                    audioCodec = it.optString("ac", ""),
+                )
             },
             probeFailed = o.optBoolean("probeFailed", false),
             status = try {
@@ -148,6 +162,7 @@ object BatchStore {
                         fastest = it.optBoolean("fastest", false),
                         targetFps = it.optInt("fps", Converter.DEFAULT_FPS),
                         isCustom = it.optBoolean("custom", false),
+                        targetLabel = it.optString("label", ""),
                     )
                 }.getOrNull()
             },
