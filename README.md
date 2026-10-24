@@ -63,7 +63,10 @@ See what's happening while it converts, and copy the log if you need to report a
 <details>
   <summary><b>Screenshot</b></summary>
 
-<img width="1080" height="7560" alt="29713" src="https://github.com/user-attachments/assets/8b7de56e-2864-4c70-b064-8f99b7391850" />
+<img alt="29962" src="https://github.com/user-attachments/assets/3aa4d794-3456-41cc-a0b1-151bdba11cbb" />
+
+<img alt="29963" src="https://github.com/user-attachments/assets/e5d84473-9d55-4733-adaf-0ca250913601" />
+
 
 </details>
 
