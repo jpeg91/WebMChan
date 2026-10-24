@@ -10,6 +10,7 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -283,10 +284,40 @@ object Converter {
         return "video"
     }
 
+    /**
+     * Why the last [probe] failed, when it failed because something threw (including serious
+     * errors such as the FFmpeg library not loading on this device). null when the last probe
+     * worked, or simply found no usable video. Read it straight after [probe] returns null.
+     */
+    @Volatile
+    var lastProbeError: String? = null
+        private set
+
     suspend fun probe(ctx: Context, uri: Uri): SourceInfo? {
-        val info = probePath(FFmpegKitConfig.getSafParameterForRead(ctx, uri)) ?: return null
-        val bytes = withContext(Dispatchers.IO) { sourceBytes(ctx, uri) }
-        return info.copy(fileBytes = bytes)
+        lastProbeError = null
+        return try {
+            val info = probePath(FFmpegKitConfig.getSafParameterForRead(ctx, uri)) ?: return null
+            val bytes = withContext(Dispatchers.IO) { sourceBytes(ctx, uri) }
+            info.copy(fileBytes = bytes)
+        } catch (e: CancellationException) {
+            throw e // keep coroutine cancellation working
+        } catch (t: Throwable) {
+            // Throwable, not Exception: a library that can't load is an Error, and would otherwise close the app.
+            lastProbeError = describeProbeFailure(t)
+            null
+        }
+    }
+
+    private fun describeProbeFailure(t: Throwable): String {
+        val engineFailed = t is UnsatisfiedLinkError || t is NoClassDefFoundError || t is ExceptionInInitializerError
+        val technical = "${t.javaClass.simpleName}: ${t.message ?: "no message"}".take(400)
+        return if (engineFailed) {
+            "The video engine (FFmpeg) couldn't start on this device. " +
+                "WebMChan needs a 64-bit ARM phone. The About page shows this device's details.\n" +
+                "Technical details: $technical"
+        } else {
+            "Technical details: $technical"
+        }
     }
 
     /** The size of the video at [uri] in bytes, or 0 if it can't be told. */
