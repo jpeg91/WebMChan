@@ -446,13 +446,25 @@ object BatchRunner {
         }
     }
 
+    /**
+     * Lets go of a source video (its lasting read grant and, for a shared video, its app-storage
+     * copy) once no card in the queue uses it any more. The same video can be queued several
+     * times, so call this after the card has been taken out of [queue].
+     */
+    private fun releaseSource(ctx: Context, uri: Uri) {
+        if (queue.any { it.uri == uri }) return
+        releaseAccess(ctx, uri)
+        deleteOwnCopy(ctx, uri)
+    }
+
     // ---- Editing the queue (the UI disables these while a batch is running) ----
 
     fun addVideos(ctx: Context, picked: List<Uri>) {
         val appCtx = ctx.applicationContext
         appContext = appCtx
-        // Skip anything already in the queue.
-        val fresh = picked.filter { u -> queue.none { it.uri == u } }
+        // The same video may be added any number of times (e.g. to convert it again with different
+        // settings): every pick becomes its own card, and cards are told apart by id, not by uri.
+        val fresh = picked
         if (fresh.isEmpty()) return
         fresh.forEach { keepAccess(appCtx, it) }
         summary = null
@@ -531,26 +543,25 @@ object BatchRunner {
         if (busy && item.status == ItemStatus.WAITING && runList.remove(item.id)) {
             runTotal = (runTotal - 1).coerceAtLeast(0)
         }
-        appContext?.let {
-            releaseAccess(it, queue[index].uri)
-            deleteOwnCopy(it, queue[index].uri)
-            Thumbnails.delete(it, queue[index].id)
-        }
         queue.removeAt(index)
+        appContext?.let {
+            releaseSource(it, item.uri)
+            Thumbnails.delete(it, item.id)
+        }
         persist()
     }
 
     /** Empties the queue (not the Holding Pen). */
     fun clearQueue() {
         if (busy) return
+        val removed = queue.filter { !it.inPen }
+        queue.removeAll { !it.inPen }
         appContext?.let { ctx ->
-            queue.filter { !it.inPen }.forEach {
-                releaseAccess(ctx, it.uri)
-                deleteOwnCopy(ctx, it.uri)
+            removed.forEach {
+                releaseSource(ctx, it.uri)
                 Thumbnails.delete(ctx, it.id)
             }
         }
-        queue.removeAll { !it.inPen }
         summary = null
         persist()
     }
@@ -700,14 +711,14 @@ object BatchRunner {
 
     /** Removes every video from the Holding Pen. */
     fun clearPen() {
+        val removed = queue.filter { it.inPen }
+        queue.removeAll { it.inPen }
         appContext?.let { ctx ->
-            queue.filter { it.inPen }.forEach {
-                releaseAccess(ctx, it.uri)
-                deleteOwnCopy(ctx, it.uri)
+            removed.forEach {
+                releaseSource(ctx, it.uri)
                 Thumbnails.delete(ctx, it.id)
             }
         }
-        queue.removeAll { it.inPen }
         persist()
     }
 
@@ -1058,8 +1069,7 @@ object BatchRunner {
                             // above are what shows up in Finished).
                             queue.removeAt(now)
                             // The source video isn't needed any more, nor its thumbnail.
-                            releaseAccess(ctx, item.uri)
-                            deleteOwnCopy(ctx, item.uri)
+                            releaseSource(ctx, item.uri)
                             Thumbnails.delete(ctx, item.id)
                             okCount++
                         }
