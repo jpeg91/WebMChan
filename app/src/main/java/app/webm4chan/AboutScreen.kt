@@ -210,12 +210,17 @@ private fun deviceReport(ctx: Context): DeviceReport {
     if ("arm64-v8a" !in abis) problems.add("This app needs a 64-bit ARM (arm64-v8a) phone; this device doesn't list it.")
     if (!is64) problems.add("The app is running as a 32-bit process, but its video engine is 64-bit only.")
 
+    // Actually try the video engine: a phone can look fine on paper and still be unable to load it.
+    val engineProblem = Converter.engineProblem()
+    if (engineProblem != null) problems.add("The video engine (FFmpeg) can't start on this device:\n$engineProblem")
+
     val lines = listOf(
         "App: WebMChan ${version ?: "(version unknown)"}",
         "Device: ${Build.MANUFACTURER} ${Build.MODEL}",
         "Android: ${Build.VERSION.RELEASE} (API $sdk, app needs $minSdk or newer)",
         "Supported architectures: ${abis.joinToString(", ")}",
         "App process: ${if (is64) "64-bit" else "32-bit"}",
+        "Video engine: ${if (engineProblem == null) "starts fine" else "failed to start"}",
     )
     return DeviceReport(problems.isEmpty(), problems, lines)
 }
