@@ -132,7 +132,7 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         )
 
         Text(
-            "Created by jpeg91\nWith great thanks to my wife, Lauren",
+            "Created by jpeg91\nWith great thanks to:\nEveryone who's tested or reported issues\nMy darling wife, Lauren",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
