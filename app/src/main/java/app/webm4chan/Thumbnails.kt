@@ -57,7 +57,13 @@ object Thumbnails {
             val dest = file(ctx, id)
             dest.parentFile?.mkdirs()
             val timeSec = (durationSec * 0.1).coerceIn(0.0, 5.0)
-            fromRetriever(ctx, uri, file, timeSec, dest) || fromFfmpeg(ctx, uri, file, timeSec, dest)
+            try {
+                fromRetriever(ctx, uri, file, timeSec, dest) || fromFfmpeg(ctx, uri, file, timeSec, dest)
+            } catch (_: Throwable) {
+                // A missing thumbnail is fine; a serious error (e.g. the FFmpeg library not loading) must not close the app.
+                dest.delete()
+                false
+            }
         }
 
     private fun fromRetriever(ctx: Context, uri: Uri?, file: File?, timeSec: Double, dest: File): Boolean {
@@ -103,7 +109,7 @@ object Thumbnails {
             )
             if (ReturnCode.isSuccess(session.returnCode) && dest.length() > 0) true
             else { dest.delete(); false }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             dest.delete()
             false
         }

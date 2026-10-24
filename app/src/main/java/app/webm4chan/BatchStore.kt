@@ -14,13 +14,15 @@ object BatchStore {
     private const val FILE = "batch_state.json"
     private const val VERSION = 1
 
-    data class State(val queue: List<QueueItem>, val finished: List<QueueItem>, val lastId: Long)
+    /** [runActive]: a batch was running (or paused) when this was saved, so it didn't finish cleanly. */
+    data class State(val queue: List<QueueItem>, val finished: List<QueueItem>, val lastId: Long, val runActive: Boolean)
 
-    fun save(ctx: Context, queue: List<QueueItem>, finished: List<QueueItem>, lastId: Long) {
+    fun save(ctx: Context, queue: List<QueueItem>, finished: List<QueueItem>, lastId: Long, runActive: Boolean) {
         try {
             val root = JSONObject()
             root.put("version", VERSION)
             root.put("lastId", lastId)
+            root.put("runActive", runActive)
             root.put("queue", JSONArray().apply { queue.forEach { put(toJson(it)) } })
             root.put("finished", JSONArray().apply { finished.forEach { put(toJson(it)) } })
 
@@ -47,6 +49,7 @@ object BatchStore {
                 queue = readItems(root.optJSONArray("queue")),
                 finished = readItems(root.optJSONArray("finished")),
                 lastId = root.optLong("lastId", 0L),
+                runActive = root.optBoolean("runActive", false),
             )
         } catch (_: Exception) {
             null
@@ -72,8 +75,28 @@ object BatchStore {
         put("partsTotal", i.partsTotal)
         put("extraParts", i.extraParts)
         put("hasThumb", i.hasThumb)
+        put("inPen", i.inPen)
         i.detail?.let { put("detail", it) }
         i.savedUri?.let { put("savedUri", it.toString()) }
+        // The Advanced tuning is global, so it isn't saved here.
+        i.settings?.let {
+            put(
+                "settings",
+                JSONObject().apply {
+                    put("lb", it.limitBytes)
+                    put("dur", it.maxDurationSec)
+                    put("audio", it.keepAudio)
+                    put("minW", it.minWidth)
+                    put("minH", it.minHeight)
+                    put("fast", it.fastEncode)
+                    put("vp9", it.useVp9)
+                    put("fastest", it.fastest)
+                    put("fps", it.targetFps)
+                    put("custom", it.isCustom)
+                    put("label", it.targetLabel)
+                }
+            )
+        }
         i.info?.let {
             put(
                 "info",
@@ -83,6 +106,11 @@ object BatchStore {
                     put("h", it.height)
                     put("fps", it.fps)
                     put("audio", it.hasAudio)
+                    put("bytes", it.fileBytes)
+                    put("fmt", it.container)
+                    put("vc", it.videoCodec)
+                    put("vk", it.videoKbps)
+                    put("ac", it.audioCodec)
                 }
             )
         }
@@ -94,7 +122,15 @@ object BatchStore {
             uri = Uri.parse(o.getString("uri")),
             name = o.getString("name"),
             info = o.optJSONObject("info")?.let {
-                SourceInfo(it.getDouble("d"), it.getInt("w"), it.getInt("h"), it.getDouble("fps"), it.getBoolean("audio"))
+                SourceInfo(
+                    it.getDouble("d"), it.getInt("w"), it.getInt("h"), it.getDouble("fps"), it.getBoolean("audio"),
+                    // Absent in files saved by older versions.
+                    fileBytes = it.optLong("bytes", 0L),
+                    container = it.optString("fmt", ""),
+                    videoCodec = it.optString("vc", ""),
+                    videoKbps = it.optInt("vk", 0),
+                    audioCodec = it.optString("ac", ""),
+                )
             },
             probeFailed = o.optBoolean("probeFailed", false),
             status = try {
@@ -110,6 +146,26 @@ object BatchStore {
             // Absent in files saved by older versions: no extra splits.
             extraParts = o.optInt("extraParts", 0).coerceAtLeast(0),
             hasThumb = o.optBoolean("hasThumb", false),
+            // Absent in files saved by older versions: not in the Holding Pen.
+            inPen = o.optBoolean("inPen", false),
+            // Absent when no run was active (and in files saved by older versions).
+            settings = o.optJSONObject("settings")?.let {
+                runCatching {
+                    Settings(
+                        limitBytes = it.getLong("lb"),
+                        maxDurationSec = it.getInt("dur"),
+                        keepAudio = it.getBoolean("audio"),
+                        minWidth = it.optInt("minW", 0),
+                        minHeight = it.optInt("minH", 0),
+                        fastEncode = it.optBoolean("fast", false),
+                        useVp9 = it.optBoolean("vp9", false),
+                        fastest = it.optBoolean("fastest", false),
+                        targetFps = it.optInt("fps", Converter.DEFAULT_FPS),
+                        isCustom = it.optBoolean("custom", false),
+                        targetLabel = it.optString("label", ""),
+                    )
+                }.getOrNull()
+            },
         )
     } catch (_: Exception) {
         null

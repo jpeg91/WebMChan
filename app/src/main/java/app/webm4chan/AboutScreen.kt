@@ -1,9 +1,13 @@
 package app.webmchan
 
+import android.content.Context
+import android.os.Build
+import android.os.Process
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,12 +17,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -48,11 +56,22 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        TextButton(onClick = onBack) { Text("← Back") }
+        P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
 
-        Text("About WebMChan", style = MaterialTheme.typography.headlineMedium)
-        if (version != null) Text("Version $version", style = MaterialTheme.typography.bodyMedium)
-        TextButton(onClick = onAdvanced) { Text("Advanced settings (for testing) →") }
+        P5Title("About WebMChan", size = 30.sp)
+        if (version != null) {
+            Text(
+                "Version $version".uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = P5.RedBright,
+            )
+        }
+        P5Button(
+            "Advanced settings (for testing) →",
+            onClick = onAdvanced,
+            kind = P5Kind.Secondary,
+            modifier = Modifier.fillMaxWidth(),
+        )
 
         Text(
             "WebMChan, the no fuss 4chan WebM converter for Android.\n\n" +
@@ -121,7 +140,7 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         )
 
         Text(
-            "Created by jpeg91\nWith great thanks to my wife, Lauren",
+            "Created by jpeg91\nWith great thanks to:\nEveryone who's tested or reported issues\nMy darling wife, Lauren",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
@@ -134,31 +153,93 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
+
+        DeviceReadout(ctx)
         Spacer(Modifier.height(16.dp))
     }
 }
 
+/** What this phone is, and whether WebMChan can run on it. Copyable, so testers can send it on. */
+@Composable
+private fun DeviceReadout(ctx: Context) {
+    val report = remember { deviceReport(ctx) }
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+
+    Heading("This device")
+    P5Card(Modifier.fillMaxWidth()) {
+        Text(
+            if (report.supported) "Supported" else "Not supported",
+            style = MaterialTheme.typography.titleSmall,
+            color = if (report.supported) P5.White else MaterialTheme.colorScheme.error,
+        )
+        report.problems.forEach {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Text(report.lines.joinToString("\n"), style = MaterialTheme.typography.bodySmall)
+    }
+    P5Button(
+        if (copied) "Copied ✓" else "Copy device details",
+        onClick = {
+            clipboard.setText(AnnotatedString(report.asText()))
+            copied = true
+        },
+        kind = P5Kind.Secondary,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+private class DeviceReport(val supported: Boolean, val problems: List<String>, val lines: List<String>) {
+    fun asText(): String =
+        (listOf(if (supported) "Supported" else "Not supported") + problems + lines).joinToString("\n")
+}
+
+private fun deviceReport(ctx: Context): DeviceReport {
+    val version = try {
+        ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
+    } catch (e: Exception) {
+        null
+    }
+    val abis = Build.SUPPORTED_ABIS.toList()
+    val is64 = Process.is64Bit()
+    val minSdk = ctx.applicationInfo.minSdkVersion // what the app was built to need
+    val sdk = Build.VERSION.SDK_INT
+
+    val problems = mutableListOf<String>()
+    if (sdk < minSdk) problems.add("This app needs Android API $minSdk or newer; this device has API $sdk.")
+    if ("arm64-v8a" !in abis) problems.add("This app needs a 64-bit ARM (arm64-v8a) phone; this device doesn't list it.")
+    if (!is64) problems.add("The app is running as a 32-bit process, but its video engine is 64-bit only.")
+
+    val lines = listOf(
+        "App: WebMChan ${version ?: "(version unknown)"}",
+        "Device: ${Build.MANUFACTURER} ${Build.MODEL}",
+        "Android: ${Build.VERSION.RELEASE} (API $sdk, app needs $minSdk or newer)",
+        "Supported architectures: ${abis.joinToString(", ")}",
+        "App process: ${if (is64) "64-bit" else "32-bit"}",
+    )
+    return DeviceReport(problems.isEmpty(), problems, lines)
+}
+
 @Composable
 private fun Heading(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium)
+    Row(Modifier.fillMaxWidth()) { P5SectionTitle(text) }
 }
 
 @Composable
 private fun LinkItem(title: String, description: String, url: String) {
     val handler = LocalUriHandler.current
-    Column(
+    P5Card(
         Modifier
             .fillMaxWidth()
             .clickable {
                 // No browser installed: do nothing rather than crash.
                 try { handler.openUri(url) } catch (_: Exception) { }
-            }
-            .padding(vertical = 6.dp),
+            },
     ) {
         Text(
             title,
             style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
+            color = P5.RedBright,
             textDecoration = TextDecoration.Underline,
         )
         Text(description, style = MaterialTheme.typography.bodySmall)

@@ -69,6 +69,7 @@ class ConvertService : Service() {
         private const val CHANNEL_DONE = "convert_done"
         private const val NOTIF_PROGRESS = 1
         private const val NOTIF_DONE = 2
+        private const val NOTIF_PAUSED = 3
         private const val WAKE_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000L
 
         private fun ensureChannels(ctx: Context) {
@@ -120,6 +121,23 @@ class ConvertService : Service() {
         fun postProgress(ctx: Context, title: String, text: String, percent: Int?) {
             val nm = ctx.getSystemService(NotificationManager::class.java)
             nm.notify(NOTIF_PROGRESS, buildProgress(ctx, title, text, percent))
+        }
+
+        /** A quiet, ordinary (not ongoing) notification while a batch is paused. */
+        fun postPaused(ctx: Context, text: String) {
+            ensureChannels(ctx)
+            val n = NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
+                .setSmallIcon(android.R.drawable.ic_media_pause)
+                .setContentTitle("WebMChan: paused")
+                .setContentText(text)
+                .setContentIntent(openAppIntent(ctx))
+                .setOnlyAlertOnce(true)
+                .build()
+            ctx.getSystemService(NotificationManager::class.java).notify(NOTIF_PAUSED, n)
+        }
+
+        fun clearPaused(ctx: Context) {
+            ctx.getSystemService(NotificationManager::class.java).cancel(NOTIF_PAUSED)
         }
 
         fun clearProgress(ctx: Context) {

@@ -10,6 +10,7 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -25,6 +26,26 @@ data class SourceInfo(
     val height: Int,
     val fps: Double,
     val hasAudio: Boolean,
+    /**
+     * false when the frame rate couldn't be read. [fps] is then only a placeholder (30) used for
+     * planning, and must never be shown as if it were the real rate.
+     */
+    val fpsReadable: Boolean = true,
+    /**
+     * Finished clips whose frame rate couldn't be read only: the rate the encoder aimed for,
+     * or 0 when that isn't known either (the source's rate was kept and it wasn't readable).
+     */
+    val targetedFps: Double = 0.0,
+    /** Size of the file in bytes; 0 when not known. */
+    val fileBytes: Long = 0L,
+    /** e.g. "MP4"; empty when not known. */
+    val container: String = "",
+    /** The ffprobe codec name of the video stream, e.g. "h264"; empty when not known. */
+    val videoCodec: String = "",
+    /** Video bitrate in kbps (the whole file's if the stream's isn't given); 0 when not known. */
+    val videoKbps: Int = 0,
+    /** The ffprobe codec name of the first audio stream, e.g. "aac"; empty when none or not known. */
+    val audioCodec: String = "",
 )
 
 data class Settings(
@@ -39,8 +60,17 @@ data class Settings(
     val useVp9: Boolean = false,
     /** Fastest: still two-pass, but the highest effort setting, short look-ahead and smaller frames. Overrides [fastEncode]. */
     val fastest: Boolean = false,
+    /**
+     * The highest frame rate the output may have. A source at or below this keeps its own rate;
+     * a faster source is reduced to it. Never raises a source's rate. See [Converter.effectiveFps].
+     */
+    val targetFps: Int = Converter.DEFAULT_FPS,
     /** The fitting numbers (targets, attempts, audio bitrate...). See [Tuning]. */
     val tuning: Tuning = Tuning(),
+    /** True when the Custom target was selected (its length cap isn't a board's rule). Only affects card wording. */
+    val isCustom: Boolean = false,
+    /** The boards this was set up for, for cards to show (e.g. "/wsg/"), or "Custom". Only a label. */
+    val targetLabel: String = "",
 )
 
 /**
@@ -149,6 +179,39 @@ object Converter {
     /** Extra splits are never allowed to make a part shorter than this. */
     const val MIN_PART_SEC = 10.0
 
+    // ---- Frame rate ----
+
+    /** The frame rate cap used unless another is chosen. */
+    const val DEFAULT_FPS = 30
+
+    /** The range a Custom frame rate cap is kept within. */
+    const val MIN_FPS = 1
+    const val MAX_FPS = 120
+
+    /** [fps] forced into the allowed range. */
+    fun clampFps(fps: Int): Int = fps.coerceIn(MIN_FPS, MAX_FPS)
+
+    /**
+     * The frame rate the output is planned around: the source's own rate, or [targetFps] if the
+     * source is faster. Never higher than the source.
+     */
+    fun effectiveFps(src: SourceInfo, targetFps: Int): Double =
+        min(src.fps, clampFps(targetFps).toDouble())
+
+    /**
+     * The frame rate the encoder aimed for, for a clip whose own frame rate couldn't be read
+     * afterwards. Known when the source's rate was readable (see [effectiveFps]) or when the
+     * rate cap was applied by the fps filter. 0 = the source's own, unreadable, rate was kept.
+     */
+    fun targetedFps(src: SourceInfo, targetFps: Int): Double {
+        val cap = clampFps(targetFps)
+        return when {
+            src.fpsReadable -> effectiveFps(src, targetFps)
+            src.fps > cap + 0.5 -> cap.toDouble()
+            else -> 0.0
+        }
+    }
+
     // ---- Length limits (back end only: the UI always shows the board's real limit) ----
 
     /** What the app actually aims for: the target's limit minus the length grace (e.g. 300 -> 299). */
@@ -157,14 +220,10 @@ object Converter {
 
     /**
      * The fewest files a video of [durationSec] can become for a target with this [maxDurationSec]
-     * (1 = no split). A video that is within the board's real limit always stays one file: if it
-     * is longer than the effective limit (the real limit minus the length grace) the end is
-     * trimmed, by no more than the grace. Beyond the real limit, a video that only just overshoots
-     * (by the trim tolerance or less, per part) is trimmed to fit instead of getting an extra,
-     * almost-empty part.
+     * (1 = no split). A video that only just overshoots (by the trim tolerance or less, per
+     * part) is trimmed to fit instead of getting an extra, almost-empty part.
      */
     fun partCount(durationSec: Double, maxDurationSec: Int, tuning: Tuning): Int {
-        if (durationSec <= maxDurationSec) return 1
         val eff = effectiveMaxSec(maxDurationSec, tuning)
         return max(1, ceil((durationSec - tuning.trimToleranceSec) / eff).toInt())
     }
@@ -208,6 +267,7 @@ object Converter {
         val height = chooseHeight(
             vKbps, src, minHeightFor(src, settings.minWidth, settings.minHeight),
             if (settings.fastest) t.fastestBpp else t.normalBpp,
+            settings.targetFps,
         )
         return PartEstimate(parts, partSec, vKbps, height)
     }
@@ -217,16 +277,64 @@ object Converter {
     }
 
     fun displayName(ctx: Context, uri: Uri): String {
+        // A copy in app storage (see BatchRunner.addShared) has no content provider to ask.
+        if (uri.scheme == "file") uri.path?.let { return File(it).name }
         ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
             ?.use { c -> if (c.moveToFirst()) return c.getString(0) }
         return "video"
     }
 
-    suspend fun probe(ctx: Context, uri: Uri): SourceInfo? =
-        probePath(FFmpegKitConfig.getSafParameterForRead(ctx, uri))
+    /**
+     * Why the last [probe] failed, when it failed because something threw (including serious
+     * errors such as the FFmpeg library not loading on this device). null when the last probe
+     * worked, or simply found no usable video. Read it straight after [probe] returns null.
+     */
+    @Volatile
+    var lastProbeError: String? = null
+        private set
+
+    suspend fun probe(ctx: Context, uri: Uri): SourceInfo? {
+        lastProbeError = null
+        return try {
+            val info = probePath(FFmpegKitConfig.getSafParameterForRead(ctx, uri)) ?: return null
+            val bytes = withContext(Dispatchers.IO) { sourceBytes(ctx, uri) }
+            info.copy(fileBytes = bytes)
+        } catch (e: CancellationException) {
+            throw e // keep coroutine cancellation working
+        } catch (t: Throwable) {
+            // Throwable, not Exception: a library that can't load is an Error, and would otherwise close the app.
+            lastProbeError = describeProbeFailure(t)
+            null
+        }
+    }
+
+    private fun describeProbeFailure(t: Throwable): String {
+        val engineFailed = t is UnsatisfiedLinkError || t is NoClassDefFoundError || t is ExceptionInInitializerError
+        val technical = "${t.javaClass.simpleName}: ${t.message ?: "no message"}".take(400)
+        return if (engineFailed) {
+            "The video engine (FFmpeg) couldn't start on this device. " +
+                "WebMChan needs a 64-bit ARM phone. The About page shows this device's details.\n" +
+                "Technical details: $technical"
+        } else {
+            "Technical details: $technical"
+        }
+    }
+
+    /** The size of the video at [uri] in bytes, or 0 if it can't be told. */
+    private fun sourceBytes(ctx: Context, uri: Uri): Long = try {
+        if (uri.scheme == "file") {
+            File(uri.path ?: "").length()
+        } else {
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+            } ?: 0L
+        }
+    } catch (_: Exception) {
+        0L
+    }
 
     /** Same as [probe] but for a plain file, e.g. a finished conversion in the cache. */
-    suspend fun probeFile(file: File): SourceInfo? = probePath(file.absolutePath)
+    suspend fun probeFile(file: File): SourceInfo? = probePath(file.absolutePath)?.copy(fileBytes = file.length())
 
     private suspend fun probePath(path: String): SourceInfo? = withContext(Dispatchers.IO) {
         val info = FFprobeKit.getMediaInformation(path).mediaInformation ?: return@withContext null
@@ -235,19 +343,54 @@ object Converter {
         var w = 0
         var h = 0
         var fps = 30.0
+        var fpsReadable = false
         var audio = false
+        var vCodec = ""
+        var vKbps = 0
+        var aCodec = ""
         for (s in info.streams) {
             when (s.type) {
                 "video" -> if (w == 0) {
                     w = s.width?.toInt() ?: 0
                     h = s.height?.toInt() ?: 0
-                    fps = parseRate(s.averageFrameRate) ?: 30.0
+                    val parsed = parseRate(s.averageFrameRate)
+                    fpsReadable = parsed != null
+                    fps = parsed ?: 30.0
+                    vCodec = s.codec ?: ""
+                    vKbps = ((s.bitrate?.toLongOrNull() ?: 0L) / 1000).toInt()
                 }
-                "audio" -> audio = true
+                "audio" -> {
+                    audio = true
+                    if (aCodec.isEmpty()) aCodec = s.codec ?: ""
+                }
             }
         }
         if (w == 0 || h == 0) return@withContext null
-        SourceInfo(dur, w, h, fps, audio)
+        // Many files don't give the video stream's own bitrate; the whole file's is the next best thing.
+        if (vKbps <= 0) vKbps = ((info.bitrate?.toLongOrNull() ?: 0L) / 1000).toInt()
+        SourceInfo(
+            dur, w, h, fps, audio, fpsReadable,
+            container = containerName(info.format ?: ""),
+            videoCodec = vCodec,
+            videoKbps = vKbps,
+            audioCodec = aCodec,
+        )
+    }
+
+    /** ffprobe's format list (e.g. "mov,mp4,m4a,3gp,3g2,mj2") as one readable name. */
+    private fun containerName(format: String): String {
+        val f = format.lowercase()
+        return when {
+            f.isBlank() -> ""
+            "mp4" in f -> "MP4"
+            "matroska" in f || "webm" in f -> "Matroska/WebM"
+            "avi" in f -> "AVI"
+            "flv" in f -> "FLV"
+            "mpegts" in f -> "MPEG-TS"
+            "gif" in f -> "GIF"
+            "mov" in f -> "MOV"
+            else -> f.substringBefore(',').uppercase()
+        }
     }
 
     private fun parseRate(r: String?): Double? {
@@ -274,10 +417,11 @@ object Converter {
 
     /**
      * Biggest height (<=1080, <= source) that still gets a decent bits-per-pixel for VP8,
-     * never below [minHeight]. A source smaller than the minimum is scaled up to it.
+     * never below [minHeight]. A source smaller than the minimum is scaled up to it. The frame
+     * rate used for the bits-per-pixel sum is the output's: the source's, capped at [targetFps].
      */
-    private fun chooseHeight(vKbps: Int, src: SourceInfo, minHeight: Int, minBpp: Double): Int {
-        val fps = min(src.fps, 30.0)
+    private fun chooseHeight(vKbps: Int, src: SourceInfo, minHeight: Int, minBpp: Double, targetFps: Int): Int {
+        val fps = effectiveFps(src, targetFps)
         val aspect = src.width.toDouble() / src.height
         val ladder = listOf(1080, 720, 480, 360, 240)
         val base = if (src.height <= 1080) {
@@ -396,6 +540,12 @@ object Converter {
             val trimmed = clipDurationSec == null && src.durationSec > effMax
             val audioOn = settings.keepAudio && src.hasAudio
 
+            // The frame rate cap. The fps filter is only added when the source is faster than it
+            // (with half a frame of leeway, so 29.97 and 59.94 sources aren't touched by a 30 or
+            // 60 cap). A slower source is never sped up.
+            val fpsCap = clampFps(settings.targetFps)
+            val reduceFps = src.fps > fpsCap + 0.5
+
             val out = File(ctx.cacheDir, "out.webm")
             val passLog = File(ctx.cacheDir, "ffpass").absolutePath
             var budgetBytes = settings.limitBytes * (t.firstTargetPct / 100.0)
@@ -477,12 +627,15 @@ object Converter {
                 if (audioOn && audioKbps < t.audioKbps) {
                     onLog("   audio bitrate reduced to ${audioKbps} kbps to fit the limit")
                 }
-                val height = chooseHeight(vKbps, src, minHeight, if (settings.fastest) t.fastestBpp else t.normalBpp)
+                val height = chooseHeight(
+                    vKbps, src, minHeight, if (settings.fastest) t.fastestBpp else t.normalBpp,
+                    settings.targetFps,
+                )
                 lastHeight = height
                 lastKbps = vKbps
 
                 val filters = buildList {
-                    if (src.fps > 30.5) add("fps=30")
+                    if (reduceFps) add("fps=$fpsCap")
                     if (hasMin) {
                         // Evaluated by ffmpeg on the (auto-rotated) frame: aspect kept, even
                         // sizes, and never below the board's minimum width/height.
@@ -537,6 +690,11 @@ object Converter {
                         (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
                 onLog("   filters: $filters")
+                onLog(
+                    (if (src.fpsReadable) "   frame rate: source %.2f fps, cap $fpsCap fps, ".format(java.util.Locale.US, src.fps)
+                    else "   frame rate: source fps unreadable (treated as ${src.fps.toInt()} fps for planning), cap $fpsCap fps, ") +
+                        if (reduceFps) "reduced to $fpsCap fps" else "kept at the source rate"
+                )
                 onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
                 onLog("   encoder effort: $effortName (cpu-used $cpuUsed)")
                 onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
