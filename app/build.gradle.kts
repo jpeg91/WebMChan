@@ -13,7 +13,7 @@ android {
         minSdk = 29
         targetSdk = 35
         versionCode = 8
-        versionName = "0.8.0"
+        versionName = "0.8.1"
         // The maintained FFmpegKit fork only publishes arm64-v8a prebuilts.
         ndk { abiFilters += "arm64-v8a" }
     }
