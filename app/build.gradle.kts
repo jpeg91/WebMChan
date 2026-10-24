@@ -44,5 +44,5 @@ dependencies {
     // Community-maintained continuation of FFmpegKit (Free tier: libvpx VP8/VP9, libvorbis, libopus).
     // Same com.arthenica.ffmpegkit package as the original. Verify the latest coordinate at
     // https://github.com/ffmpegkit-maintained/ffmpeg if Gradle can't resolve this one.
-    implementation("dev.ffmpegkit-maintained:ffmpeg:7.1.6")
+    implementation("dev.ffmpegkit-maintained:ffmpeg:7.1.7")
 }
