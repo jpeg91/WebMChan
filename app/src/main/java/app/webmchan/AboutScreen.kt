@@ -76,7 +76,7 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         Text(
             "WebMChan, the no fuss 4chan WebM converter for Android.\n\n" +
                 "Pick a video (or a whole batch), choose a board, get .webm files that fit.\n\n" +
-                "Select from a list of boards and their requirement presets (or set your own).\n\n" +
+                "Select from a list of boards and their requirement presets, or set your own: a custom size limit and resolution, with no length limit. The picture is always scaled, never stretched.\n\n" +
                 "Converted videos target the highest possible quality within the board's constraints.\n\n" +
                 "Everything runs locally. The app has no network permission, nothing is uploaded.",
             style = MaterialTheme.typography.bodyMedium
@@ -140,7 +140,7 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         )
 
         Text(
-            "Created by jpeg91\nWith great thanks to:\nEveryone who's tested or reported issues\nMy darling wife, Lauren",
+            "Created by jpeg91\nWith great thanks to:\nEveryone who's tested or reported issues\nMy darling wife, Lauren\n\nMade in England",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
