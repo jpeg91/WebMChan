@@ -77,13 +77,13 @@ The app is a front end for FFmpeg (the community `ffmpegkit-maintained` build). 
 
 ### Batch queue
 
-Use **Choose videos** to select one video or several, and **Add videos** to keep adding more. You can also share videos to WebMChan from another app; shared videos are added to the holding pen. Videos in the holding pen wait while you adjust the settings, and are sent to the queue when you start or add them to the batch. A video that is already in the list is ignored.
+Use **Choose videos** to select one video or several, and **Add videos** to keep adding more. You can also share videos to WebMChan from another app; shared videos are added to the holding pen. Videos in the holding pen wait while you adjust the settings, and are sent to the queue when you start or add them to the batch. The same video can be added as many times as you like, for example to convert it again with different settings; each one gets its own card.
 
 Before conversion, you can reorder queued videos (▲ ▼), remove them (✕), or return them to the holding pen. Each card shows its details and any warnings, such as being split into parts for the board's length limit or scaled up to its minimum resolution. Each card also has the split controls described in step 2.
 
 Every video in the queue is converted with the same settings, one after another. If a video fails, it's marked as failed and the rest carry on. **Pause now** pauses the batch, while **Pause after this conversion** lets the current video finish first; use **Resume** to carry on. **Skip current** drops the video being converted and moves to the next, and **Cancel all** stops the whole batch. Each finished video has its own **Share** button, and **Share all** appears once two or more finished files are saved.
 
-Finished videos stay in the list. Pressing Convert again only processes the ones that haven't finished, which also lets you retry failures. To convert a finished video again with different settings, remove it and add it again.
+Finished videos stay in the list. Pressing Convert again only processes the ones that haven't finished, which also lets you retry failures. To convert a finished video again with different settings, change the settings and add the video again; the finished card stays where it is.
 
 ### 1. Reading the video
 
@@ -254,7 +254,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - The frame-rate cap offers 24, 30 and 60 fps presets plus a custom value. It never increases a source video's frame rate.
 - Background conversion relies on Android's foreground-service and notification support. On Android 13 and newer, allow notifications so you can see conversion progress and use the notification controls.
 - Android 11 and newer won't let an app use the top level of an SD card, or the `Download` folder, as a custom save folder. Pick or create a subfolder instead (This is why the app always places the outputs in a subfolder named `WebMChan`. If any folder named `WebMChan` is selected as a custom save location, the output will be saved there. Recursive subfolders will not be created).
-- Finished videos stay in the batch list. To convert one again with different settings, remove it and add it again.
+- Finished videos stay in the Finished list. To convert one again with different settings, change the settings and add the video again.
 - Extra splits can't be changed while a batch is running, or once a video has some of its parts saved.
 - Encoding on a phone can be slow. VP9 is slower still. Speed and Fastest modes help but Fastest should be used very sparingly.
 - VP9 isn't accepted everywhere, and some older devices can't play it. VP8 is the safe choice.
@@ -266,17 +266,14 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 ## Features still to add
 
 *Not necessarily in order.*
-- Deeper Custom controls
+- Deeper Custom controls (Remove the arbitrary limits)
 - Improved title
 - Android top bar notification icons
 - Clean up text and warnings
 - Background usage permission nag
-- Split videos in queue show multiple sub-cards
 - Video preview during conversion
-- Individual queue item settings
 - Music mode (High bitrate audio, low bitrate video)
 - Image+audio WebM creator (.gif support?)
-- Fix 'skip' button not always showing
 - UI improvements (split into pages? Wizard style work flow?)
 - Conversion history page with options for individual videos (Delete, Share, Info, Rename etc)
 - 'About' page updates and improvements
