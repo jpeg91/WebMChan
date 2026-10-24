@@ -296,8 +296,12 @@ object BatchRunner {
             for (id in toProbe) {
                 val item = queue.firstOrNull { it.id == id } ?: continue
                 val i = Converter.probe(ctx, item.uri)
+                val err = if (i == null) Converter.lastProbeError else null
                 val at = queue.indexOfFirst { it.id == id }
-                if (at >= 0) queue[at] = queue[at].copy(info = i, probeFailed = i == null)
+                if (at >= 0) {
+                    queue[at] = queue[at].copy(info = i, probeFailed = i == null)
+                    if (err != null) queue[at] = queue[at].copy(status = ItemStatus.FAILED, detail = err)
+                }
             }
 
             // Thumbnails for queued videos that don't have one (or lost the file).
@@ -461,9 +465,13 @@ object BatchRunner {
             try {
                 for (item in added) {
                     val i = Converter.probe(appCtx, item.uri)
+                    val err = if (i == null) Converter.lastProbeError else null
                     // The item may have been removed while probing.
                     val at = queue.indexOfFirst { it.id == item.id }
-                    if (at >= 0) queue[at] = queue[at].copy(info = i, probeFailed = i == null)
+                    if (at >= 0) {
+                        queue[at] = queue[at].copy(info = i, probeFailed = i == null)
+                        if (err != null) queue[at] = queue[at].copy(status = ItemStatus.FAILED, detail = err)
+                    }
                     if (i != null) setThumb(appCtx, item.id, item.uri, null, i.durationSec, queue)
                 }
             } finally {
