@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,7 +14,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -48,11 +48,22 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        TextButton(onClick = onBack) { Text("← Back") }
+        P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
 
-        Text("About WebMChan", style = MaterialTheme.typography.headlineMedium)
-        if (version != null) Text("Version $version", style = MaterialTheme.typography.bodyMedium)
-        TextButton(onClick = onAdvanced) { Text("Advanced settings (for testing) →") }
+        P5Title("About WebMChan", size = 30.sp)
+        if (version != null) {
+            Text(
+                "Version $version".uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = P5.RedBright,
+            )
+        }
+        P5Button(
+            "Advanced settings (for testing) →",
+            onClick = onAdvanced,
+            kind = P5Kind.Secondary,
+            modifier = Modifier.fillMaxWidth(),
+        )
 
         Text(
             "WebMChan, the no fuss 4chan WebM converter for Android.\n\n" +
@@ -140,25 +151,24 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
 
 @Composable
 private fun Heading(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium)
+    Row(Modifier.fillMaxWidth()) { P5SectionTitle(text) }
 }
 
 @Composable
 private fun LinkItem(title: String, description: String, url: String) {
     val handler = LocalUriHandler.current
-    Column(
+    P5Card(
         Modifier
             .fillMaxWidth()
             .clickable {
                 // No browser installed: do nothing rather than crash.
                 try { handler.openUri(url) } catch (_: Exception) { }
-            }
-            .padding(vertical = 6.dp),
+            },
     ) {
         Text(
             title,
             style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
+            color = P5.RedBright,
             textDecoration = TextDecoration.Underline,
         )
         Text(description, style = MaterialTheme.typography.bodySmall)
