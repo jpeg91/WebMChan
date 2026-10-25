@@ -1,3 +1,4 @@
+// #converter
 package app.webmchan
 
 import android.content.ContentValues
@@ -740,6 +741,12 @@ object Converter {
             // yet, 0 = tried and couldn't.
             var audioBytes = -1L
             var audioAnalysed = false
+            // The sample rate each audio bitrate needs (see findAudioRate), looked up once per clip.
+            // The default bitrate and above are known to work at the source's rate.
+            val audioRates = HashMap<Int, Int>()
+            fun audioRateFor(kbps: Int): Int =
+                if (kbps >= DEFAULT_AUDIO_KBPS) 0
+                else audioRates.getOrPut(kbps) { findAudioRate(input, startSec, kbps, onLog) }
 
             for (attempt in 1..t.maxAttempts) {
                 val totalKbps = budgetBytes * 8.0 / duration / 1000.0
@@ -762,7 +769,10 @@ object Converter {
                     if (audioBytes < 0) {
                         onLog("   still over the limit after ${attempt - 1} attempts: measuring the audio on its own for a closer fit")
                         onProgress(-1f, "Attempt $attempt/${t.maxAttempts}: still too big, analysing the audio for a closer fit…")
-                        audioBytes = measureAudioBytes(input, startSec, duration, normalAudioKbps, File(ctx.cacheDir, "audioprobe.webm"))
+                        val analysisHz = audioRateFor(normalAudioKbps)
+                        if (analysisHz == AUDIO_RATE_CANCELLED) return@withContext ConvertResult.Cancelled
+                        audioBytes = if (analysisHz < 0) 0L else
+                            measureAudioBytes(input, startSec, duration, normalAudioKbps, analysisHz, File(ctx.cacheDir, "audioprobe.webm"))
                         if (audioBytes == MEASURE_CANCELLED) return@withContext ConvertResult.Cancelled
                         if (audioBytes > 0) {
                             onLog("   audio at $normalAudioKbps kbps comes out at %.1f kbps for this clip".format(java.util.Locale.US, audioBytes * 8.0 / duration / 1000.0))
@@ -794,6 +804,15 @@ object Converter {
                 }
                 if (audioOn && audioKbps < normalAudioKbps) {
                     onLog("   audio bitrate reduced to ${audioKbps} kbps to fit the limit")
+                }
+                // Checked before pass 1, so a bitrate the audio encoder won't take doesn't cost a pass.
+                val audioHz = if (audioOn) audioRateFor(audioKbps) else 0
+                if (audioHz == AUDIO_RATE_CANCELLED) return@withContext ConvertResult.Cancelled
+                if (audioHz == AUDIO_RATE_NONE) {
+                    return@withContext ConvertResult.Fail(
+                        "The audio encoder won't accept ${audioLabel(audioKbps)} for this video. " +
+                            "Choose a higher sound quality, or remove the audio."
+                    )
                 }
                 // A Custom resolution is used exactly as asked (the automatic pick is bypassed); the
                 // size limit then only steers the bitrate.
@@ -888,7 +907,8 @@ object Converter {
                 onProgress(0f, "Attempt $attempt/${t.maxAttempts}, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
                 pass2Stats()
                 val audioArgs = if (audioOn) {
-                    listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString())
+                    listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString()) +
+                        (if (audioHz > 0) listOf("-ar", audioHz.toString()) else emptyList())
                 } else listOf("-an")
                 val p2 = FFmpegKit.executeWithArguments(
                     (common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)).toTypedArray()
@@ -935,14 +955,51 @@ object Converter {
      * learn what the audio really costs (Vorbis often comes out under its nominal bitrate).
      * 0 = couldn't be measured; [MEASURE_CANCELLED] = the user cancelled. Deletes the file.
      */
-    private fun measureAudioBytes(input: File, startSec: Double, duration: Double, kbps: Int, probeOut: File): Long {
+    /**
+     * libvorbis refuses some combinations of bitrate, channels and sample rate ("encoder setup
+     * failed"). Low bitrates hit that at a typical source's 44.1 or 48 kHz, where the encoder has
+     * no setting low enough. Lowering the sample rate makes lower bitrates possible. This tries a
+     * short audio-only encode at the source's own rate first, then at lower and lower rates, and
+     * returns the first that works: 0 = the source's rate, otherwise the rate in Hz, or
+     * [AUDIO_RATE_NONE] / [AUDIO_RATE_CANCELLED]. Only worth asking for bitrates under the default.
+     */
+    private fun findAudioRate(input: File, startSec: Double, kbps: Int, onLog: (String) -> Unit): Int {
+        onLog("   checking that the audio encoder accepts ${audioLabel(kbps)}")
+        for (hz in AUDIO_RATE_CANDIDATES) {
+            val r = FFmpegKit.executeWithArguments(
+                (listOf("-y") + seekArgs(startSec) + listOf(
+                    "-i", input.absolutePath, "-t", "0.5",
+                    "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
+                    "-c:a", "libvorbis", "-b:a", "${kbps}k", "-ac", audioChannels(kbps).toString(),
+                ) + (if (hz > 0) listOf("-ar", hz.toString()) else emptyList()) +
+                    listOf("-f", "null", "/dev/null")).toTypedArray()
+            )
+            if (ReturnCode.isCancel(r.returnCode)) return AUDIO_RATE_CANCELLED
+            if (ReturnCode.isSuccess(r.returnCode)) {
+                onLog(
+                    if (hz == 0) "   audio: ${audioLabel(kbps)} works at the source's sample rate"
+                    else "   audio: ${audioLabel(kbps)} needs a lower sample rate; using $hz Hz"
+                )
+                return hz
+            }
+        }
+        return AUDIO_RATE_NONE
+    }
+
+    private const val AUDIO_RATE_NONE = -1
+    private const val AUDIO_RATE_CANCELLED = -2
+
+    /** Sample rates [findAudioRate] tries, in order (0 = leave as the source has it). */
+    private val AUDIO_RATE_CANDIDATES = listOf(0, 32000, 24000, 22050, 16000, 12000, 11025, 8000)
+
+    private fun measureAudioBytes(input: File, startSec: Double, duration: Double, kbps: Int, hz: Int, probeOut: File): Long {
         val r = FFmpegKit.executeWithArguments(
             (listOf("-y") + seekArgs(startSec) + listOf(
                 "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, duration),
                 "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
                 "-c:a", "libvorbis", "-b:a", "${kbps}k", "-ac", audioChannels(kbps).toString(),
-                "-f", "webm", probeOut.absolutePath,
-            )).toTypedArray()
+            ) + (if (hz > 0) listOf("-ar", hz.toString()) else emptyList()) +
+                listOf("-f", "webm", probeOut.absolutePath)).toTypedArray()
         )
         val bytes = when {
             ReturnCode.isCancel(r.returnCode) -> MEASURE_CANCELLED
