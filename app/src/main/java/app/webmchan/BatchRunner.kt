@@ -79,9 +79,39 @@ private class LogBuffer(private val maxLines: Int = 400) {
     private val lock = Any()
     private var lines: List<String> = emptyList()
 
+    // The complete log of the video being converted, kept for the Log page. The readout above is
+    // capped at the last few hundred lines; this holds far more. Over [CAPTURE_MAX] lines the
+    // oldest of the middle are dropped (the first [CAPTURE_HEAD] lines, which say what the video
+    // and settings were, are always kept).
+    private var capture: ArrayList<String>? = null
+    private var captureDropped = 0
+
     fun clear(publish: (List<String>) -> Unit) = synchronized(lock) {
         lines = emptyList()
         publish(lines)
+    }
+
+    /** Starts keeping everything logged from now on (see [endCapture]). */
+    fun beginCapture() = synchronized(lock) {
+        capture = ArrayList()
+        captureDropped = 0
+    }
+
+    /** Stops keeping and returns what was logged since [beginCapture]. */
+    fun endCapture(): List<String> = synchronized(lock) {
+        val kept = capture
+        capture = null
+        if (kept == null) {
+            emptyList()
+        } else {
+            if (captureDropped > 0) {
+                kept.add(
+                    CAPTURE_HEAD.coerceAtMost(kept.size),
+                    "… $captureDropped lines left out here to keep this log to a size that can be saved …"
+                )
+            }
+            kept
+        }
     }
 
     fun add(raw: String, publish: (List<String>) -> Unit) = synchronized(lock) {
@@ -89,14 +119,32 @@ private class LogBuffer(private val maxLines: Int = 400) {
         for (piece in raw.split('\n', '\r')) {
             val line = piece.trim()
             if (line.isEmpty()) continue
-            next = if (line.startsWith("frame=") && next.lastOrNull()?.startsWith("frame=") == true) {
+            val inPlace = line.startsWith("frame=")
+            next = if (inPlace && next.lastOrNull()?.startsWith("frame=") == true) {
                 next.dropLast(1) + line
             } else {
                 next + line
             }
+            capture?.let { kept ->
+                if (inPlace && kept.lastOrNull()?.startsWith("frame=") == true) {
+                    kept[kept.size - 1] = line
+                } else {
+                    kept.add(line)
+                }
+                if (kept.size > CAPTURE_MAX) {
+                    kept.subList(CAPTURE_HEAD, CAPTURE_HEAD + CAPTURE_CHUNK).clear()
+                    captureDropped += CAPTURE_CHUNK
+                }
+            }
         }
         lines = if (next.size > maxLines) next.takeLast(maxLines) else next
         publish(lines)
+    }
+
+    private companion object {
+        const val CAPTURE_MAX = 4000
+        const val CAPTURE_HEAD = 300
+        const val CAPTURE_CHUNK = 500
     }
 }
 
@@ -151,6 +199,12 @@ object BatchRunner {
     var currentParts by mutableIntStateOf(0)
         private set
     var logLines by mutableStateOf<List<String>>(emptyList())
+
+    /**
+     * The last few conversions with their complete logs, oldest first, for the Log page
+     * (see [ConversionLogStore]). Unlike [logLines] these survive a new batch starting.
+     */
+    val conversionLogs = mutableStateListOf<ConversionLog>()
         private set
 
     /** True from Cancel all until the run has stopped (the UI stops accepting new videos then). */
@@ -216,6 +270,9 @@ object BatchRunner {
         // A fresh process means nothing is converting: clear working files (staged source copies,
         // encoder output) that a run the system killed part-way left in the cache.
         Converter.clearWorkFiles(appCtx)
+
+        // The Log page's saved conversions (read off the main thread: they can be big).
+        scope.launch(Dispatchers.IO) { conversionLogs.addAll(ConversionLogStore.load(appCtx)) }
 
         val loaded = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); return }
         ids.set(maxOf(ids.get(), loaded.lastId))
@@ -886,6 +943,8 @@ object BatchRunner {
                 // A function, not a fixed string: the total can grow while this video converts
                 // (a video added mid-run), and the label should follow it.
                 fun pos() = "Video $current of $runTotal"
+                // From here to the end of this video, everything logged is kept for the Log page.
+                logBuffer.beginCapture()
 
                 // Videos longer than the target's limit are split into consecutive parts rather
                 // than cut off, each converted and saved on its own. The video is divided evenly
@@ -927,6 +986,8 @@ object BatchRunner {
                 var itemCancelledAll = false
                 var itemSkipped = false
                 var itemPaused = false
+                // The card text of the part saved last, for this video's entry on the Log page.
+                var lastDoneDetail: String? = null
 
                 // "Skip part": this part is dropped (nothing saved for it) and the video carries on
                 // with the next one.
@@ -1057,6 +1118,7 @@ object BatchRunner {
                                         append(if (res.audioAnalysed) "; the audio was analysed on its own for a closer fit." else ".")
                                     }
                                 }
+                                lastDoneDetail = detail
                                 // Each part gets its own card in Finished (a single-part conversion
                                 // is unchanged: one card, same as before).
                                 finished.add(
@@ -1157,6 +1219,25 @@ object BatchRunner {
                         }
                     }
                 }
+                // Keep this video's complete log for the Log page. A pause isn't an ending (the video
+                // goes round again and starts a fresh log), so nothing is kept for it.
+                val capturedLog = logBuffer.endCapture()
+                if (!itemPaused) {
+                    val outcome = when {
+                        itemCancelledAll || itemSkipped -> ItemStatus.CANCELLED
+                        itemFailMsg != null -> ItemStatus.FAILED
+                        partsSkipped > 0 && partsSaved == 0 -> ItemStatus.CANCELLED
+                        else -> ItemStatus.DONE
+                    }
+                    val detailText = if (outcome == ItemStatus.DONE) {
+                        if (numParts > 1) {
+                            "Done: $partsSaved of $numParts parts saved." + (lastDoneDetail?.let { "\nLast part: $it" } ?: "")
+                        } else lastDoneDetail ?: "Done."
+                    } else {
+                        queue.firstOrNull { it.id == id }?.detail ?: itemFailMsg.orEmpty()
+                    }
+                    recordConversionLog(ctx, item, src, settings, outcome, detailText, capturedLog)
+                }
                 persist()
                 if (itemCancelledAll) break
                 if (itemPaused) {
@@ -1195,6 +1276,34 @@ object BatchRunner {
             ConvertService.clearPaused(ctx)
             if (!uiVisible) ConvertService.postFinished(ctx, text)
         }
+    }
+
+    /** Adds a finished conversion to the Log page's list (the newest [ConversionLogStore.MAX_ENTRIES] are kept) and saves it. */
+    private fun recordConversionLog(
+        ctx: Context, item: QueueItem, src: SourceInfo, settings: Settings,
+        outcome: ItemStatus, detail: String, lines: List<String>,
+    ) {
+        val fpsText = if (src.fpsReadable) {
+            String.format(Locale.US, "%.2f", src.fps).trimEnd('0').trimEnd('.') + " fps"
+        } else "fps unreadable"
+        val sourceLine = "${src.width}×${src.height}, ${String.format(Locale.US, "%.1f", src.durationSec)}s, " +
+            "$fpsText, ${if (src.hasAudio) "has audio" else "no audio"}"
+        conversionLogs.add(
+            ConversionLog(
+                id = item.id,
+                name = item.name,
+                outcome = outcome,
+                whenMillis = System.currentTimeMillis(),
+                sourceLine = sourceLine,
+                settingsLine = settingsWithTarget(settings),
+                detail = detail,
+                log = lines.joinToString("\n"),
+            )
+        )
+        while (conversionLogs.size > ConversionLogStore.MAX_ENTRIES) conversionLogs.removeAt(0)
+        val snapshot = conversionLogs.toList()
+        val appCtx = ctx.applicationContext
+        scope.launch(Dispatchers.IO) { ConversionLogStore.save(appCtx, snapshot) }
     }
 
     /** Updates the ongoing notification, at most about once a second. */
