@@ -409,7 +409,8 @@ private fun QueueRow(
                     }.take(2)
                 } else emptyList()
                 Text(
-                    bracket.suits + if (tips.isNotEmpty()) " To improve it: ${tips.joinToString(" or ")}." else "",
+                    "Quality Bracket: ${bracket.label}. ${bracket.suits}" +
+                        if (tips.isNotEmpty()) "\nTo improve it: ${tips.joinToString(" or ")}." else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (bracket.poor) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1155,23 +1156,11 @@ fun App(onAbout: () -> Unit = {}) {
                     style = MaterialTheme.typography.bodySmall
                 )
                 TargetRow(
-                    selected = audioKbps == 256,
+                    selected = audioKbps == 16,
                     enabled = true,
-                    title = "256 kbps",
-                    subtitle = "Highest quality. Takes a big share of the size limit.",
-                ) { audioKbps = 256 }
-                TargetRow(
-                    selected = audioKbps == 128,
-                    enabled = true,
-                    title = "128 kbps",
-                    subtitle = "High quality. Worth it when the size limit is generous.",
-                ) { audioKbps = 128 }
-                TargetRow(
-                    selected = audioKbps == 64,
-                    enabled = true,
-                    title = "64 kbps (default)",
-                    subtitle = "Recommended. Good sound for the space it takes.",
-                ) { audioKbps = 64 }
+                    title = "16 kbps (mono)",
+                    subtitle = "Poor quality, mono. Frees the most space for the picture.",
+                ) { audioKbps = 16 }
                 TargetRow(
                     selected = audioKbps == 32,
                     enabled = true,
@@ -1179,11 +1168,23 @@ fun App(onAbout: () -> Unit = {}) {
                     subtitle = "Noticeably thinner sound. Frees space for the picture.",
                 ) { audioKbps = 32 }
                 TargetRow(
-                    selected = audioKbps == 16,
+                    selected = audioKbps == 64,
                     enabled = true,
-                    title = "16 kbps (mono)",
-                    subtitle = "Poor quality, mono. Frees the most space for the picture.",
-                ) { audioKbps = 16 }
+                    title = "64 kbps (default)",
+                    subtitle = "Recommended. Good sound for the space it takes.",
+                ) { audioKbps = 64 }
+                TargetRow(
+                    selected = audioKbps == 128,
+                    enabled = true,
+                    title = "128 kbps",
+                    subtitle = "High quality. Worth it when the size limit is generous.",
+                ) { audioKbps = 128 }
+                TargetRow(
+                    selected = audioKbps == 256,
+                    enabled = true,
+                    title = "256 kbps",
+                    subtitle = "Highest quality. Takes a big share of the size limit.",
+                ) { audioKbps = 256 }
             }
         }
 
