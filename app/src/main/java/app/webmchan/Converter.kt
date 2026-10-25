@@ -19,6 +19,7 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 /** What we learned about the picked video. */
 data class SourceInfo(
@@ -105,8 +106,10 @@ data class PartEstimate(
     val height: Int,
     /** The audio bitrate it would get on the first attempt; 0 when there is no audio. */
     val audioKbps: Int,
-    /** Video bits per pixel: the bitrate over the pixels per second the output has. See [QualityBracket]. */
+    /** Video bits per pixel: the bitrate over the pixels per second the output has. */
     val bitsPerPixel: Double,
+    /** [bitsPerPixel] adjusted for frame size (see [Tuning.bracketSizeExponent]): what [QualityBracket] is judged on. */
+    val qualityBpp: Double,
 )
 
 /**
@@ -251,7 +254,10 @@ object Converter {
         }
     }
 
-    /** Which [QualityBracket] a video of [bitsPerPixel] falls in. */
+    /** The pixels in a 16:9 240p frame: what the quality bracket starts are set for. */
+    private const val REFERENCE_FRAME_PIXELS = 102_400.0
+
+    /** Which [QualityBracket] a video of [bitsPerPixel] (frame size adjusted: [PartEstimate.qualityBpp]) falls in. */
     fun qualityBracket(bitsPerPixel: Double, t: Tuning): QualityBracket = when {
         bitsPerPixel < t.bracketWebAnimation -> QualityBracket.STILL_IMAGE
         bitsPerPixel < t.bracketProAnimation -> QualityBracket.WEB_ANIMATION
@@ -397,9 +403,13 @@ object Converter {
         }
         // Bits per pixel of the output: the width follows from the height at the source's shape.
         val aspect = src.width.toDouble() / src.height
-        val pixelsPerSec = height * (height * aspect) * effectiveFps(src, settings.targetFps)
+        val framePixels = height * (height * aspect)
+        val pixelsPerSec = framePixels * effectiveFps(src, settings.targetFps)
         val bpp = if (vKbps > 0 && pixelsPerSec > 0) vKbps * 1000.0 / pixelsPerSec else 0.0
-        return PartEstimate(parts, partSec, vKbps, height, audioKbps, bpp)
+        // Larger frames get more out of each bit, so what the brackets judge is scaled up with frame
+        // size; a 240p frame is unchanged, which is where the bracket starts were set.
+        val qualityBpp = bpp * (framePixels / REFERENCE_FRAME_PIXELS).pow(t.bracketSizeExponent)
+        return PartEstimate(parts, partSec, vKbps, height, audioKbps, bpp, qualityBpp)
     }
 
     fun cancel() {
