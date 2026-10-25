@@ -1,3 +1,4 @@
+// #batchrunner
 package app.webmchan
 
 import android.content.Context
@@ -57,9 +58,10 @@ data class QueueItem(
     /** Whether a thumbnail file exists for this card (see [Thumbnails]). */
     val hasThumb: Boolean = false,
     /**
-     * The settings this video is converted with, fixed when it joins a run and cleared when the run
-     * ends. null whenever no run is active: the cards then follow the settings on screen. The
-     * Advanced tuning is not part of it (that stays global; the run supplies it).
+     * The settings this video is converted with, fixed when it is sent from the Holding Pen to the
+     * queue and kept (through failures, cancels and restarts of the app) until it goes back to the
+     * pen, where it follows the settings on screen again. null in the pen. The Advanced tuning is
+     * not part of it (that stays global; the run supplies it).
      */
     val settings: Settings? = null,
     /**
@@ -215,8 +217,20 @@ object BatchRunner {
         // encoder output) that a run the system killed part-way left in the cache.
         Converter.clearWorkFiles(appCtx)
 
-        val state = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); return }
-        ids.set(maxOf(ids.get(), state.lastId))
+        val loaded = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); return }
+        ids.set(maxOf(ids.get(), loaded.lastId))
+        // Every queued video has to carry its own settings. One saved by an older version has none,
+        // so it goes back to the Holding Pen, where it follows the settings on screen until it is
+        // sent to the queue again.
+        var sentBackToPen = 0
+        val state = loaded.copy(
+            queue = loaded.queue.map {
+                if (!it.inPen && it.settings == null) {
+                    sentBackToPen++
+                    it.copy(inPen = true, status = ItemStatus.WAITING, detail = null)
+                } else it
+            }
+        )
         // A batch that was running when the app stopped comes back paused (see resume), as long as
         // some of its videos still need converting.
         val interrupted = state.runActive && state.queue.any {
@@ -225,10 +239,9 @@ object BatchRunner {
         queue.addAll(
             state.queue.map {
                 if (!interrupted) {
-                    // No batch to come back to: the videos follow the settings on screen (the Holding
-                    // Pen stays as it was). Whatever was being converted when the app stopped has to
-                    // start again from the top.
-                    val plain = it.copy(settings = null)
+                    // No batch to come back to. Each queued video keeps its own settings. Whatever was
+                    // being converted when the app stopped has to start again from the top.
+                    val plain = it
                     if (plain.status == ItemStatus.CONVERTING) {
                         plain.copy(
                             status = ItemStatus.CANCELLED,
@@ -257,6 +270,11 @@ object BatchRunner {
             runTotal = queue.count { !it.inPen && it.info != null && it.status == ItemStatus.WAITING }
             notice = "WebMChan was closed while converting, so your batch has been paused. Press Resume to carry on. " +
                 "The video that was converting starts again (from its first unsaved part, if it was split)."
+        }
+        if (sentBackToPen > 0) {
+            val note = "$sentBackToPen queued video(s) saved by an older version had no settings of their own, " +
+                "so they went back to the Holding Pen. Send them to the queue again with the settings you want."
+            notice = notice?.let { "$it\n\n$note" } ?: note
         }
         cleanOrphanCopies(appCtx)
         scope.launch { verifyRestored(appCtx) }
@@ -612,11 +630,11 @@ object BatchRunner {
         // Every video about to be tried again goes back to "Waiting", so a leftover "Cancelled",
         // "Skipped" or "Failed" message from an earlier run doesn't sit on cards the batch hasn't
         // reached yet. (Parts already saved are remembered separately in partsDone / partsTotal.)
-        // Each of them also takes the settings it will be converted with, for as long as the run lasts.
+        // Each keeps the settings it was sent to the queue with (the ones on screen only if it somehow has none).
         for (id in todo) {
             val at = queue.indexOfFirst { it.id == id }
             if (at >= 0) {
-                queue[at] = queue[at].copy(status = ItemStatus.WAITING, detail = null, settings = settings)
+                queue[at] = queue[at].copy(status = ItemStatus.WAITING, detail = null, settings = queue[at].settings ?: settings)
             }
         }
         persist()
@@ -673,10 +691,6 @@ object BatchRunner {
 
     /** Ends a batch that has no running loop (one restored paused after the app stopped). */
     private fun finishWithoutLoop(ctx: Context, text: String) {
-        for (i in queue.indices) {
-            val q = queue[i]
-            if (q.settings != null) queue[i] = q.copy(settings = null)
-        }
         runSettings = null
         runList.clear()
         summary = text
@@ -1153,12 +1167,7 @@ object BatchRunner {
                 }
             }
         } finally {
-            // The run is over: what's left in the queue goes back to following the settings on screen.
-            // Whatever is left in the queue goes back to following the settings on screen.
-            for (i in queue.indices) {
-                val q = queue[i]
-                if (q.settings != null) queue[i] = q.copy(settings = null)
-            }
+            // The run is over. Whatever is left in the queue keeps the settings it was sent with.
             runSettings = null
             val text = buildString {
                 append("Finished: $okCount done")
