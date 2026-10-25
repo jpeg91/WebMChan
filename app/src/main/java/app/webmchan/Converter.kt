@@ -892,6 +892,7 @@ object Converter {
                 )
                 onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
                 onLog("   encoder effort: $effortName (cpu-used $cpuUsed)")
+                onLog("   rate control: 2-pass, average target $vKbps kbps for the video, no minimum or maximum rate and no quantiser limits set (libvpx defaults)")
                 onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
                 FFmpegKitConfig.enableStatisticsCallback { }
                 onProgress(-1f, "Attempt $attempt/${t.maxAttempts}, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
@@ -923,6 +924,24 @@ object Converter {
                 lastVideoKbps = vKbps
                 lastAudioKbps = audioKbps
                 onLog("== Attempt $attempt result: $size bytes (limit ${settings.limitBytes})")
+                // Asked for against delivered, to show whether the encoder is undershooting its target
+                // (and, if so, whether it has run out of room to spend bits: see the q value).
+                run {
+                    val askedKbps = vKbps + audioKbps
+                    val gotKbps = size * 8.0 / duration / 1000.0
+                    val qEnd = Regex("""\bq=(-?\d+(?:\.\d+)?)""").findAll(p2.allLogsAsString.orEmpty())
+                        .lastOrNull()?.groupValues?.get(1)
+                    onLog(
+                        "   asked for $vKbps kbps video + $audioKbps kbps audio ($askedKbps kbps in all); the file came out at " +
+                            "%.0f kbps in all, %.0f%% of what was asked and %.0f%% of the size limit".format(
+                                java.util.Locale.US, gotKbps, gotKbps / askedKbps * 100.0,
+                                size * 100.0 / settings.limitBytes
+                            ) + (qEnd?.let { "; encoder q at the end: $it" } ?: "")
+                    )
+                    if (gotKbps < askedKbps * 0.85 && (qEnd?.toDoubleOrNull() ?: 99.0) <= 4.5) {
+                        onLog("   note: well under the target with q at 4 (libvpx's default lowest), so the encoder likely couldn't spend more bits on this clip")
+                    }
+                }
                 if (size in 1..settings.limitBytes) {
                     onProgress(1f, "Done")
                     cleanupLogs(ctx)
