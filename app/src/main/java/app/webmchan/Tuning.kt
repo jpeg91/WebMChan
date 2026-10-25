@@ -49,7 +49,8 @@ data class Tuning(
     val audioAnalysisAttempt: Int = 3,
     /**
      * Where each quality bracket on a queue card starts, in bits per pixel (video bitrate divided
-     * by pixels per second, so frame size and frame rate are both accounted for). Below
+     * by pixels per second, so frame size and frame rate are both accounted for, then adjusted for
+     * frame size by [bracketSizeExponent]; the starts are set for a 240p frame). Below
      * [bracketWebAnimation] is "still image". At 240p and 30 fps, 0.026 is about 80 kbps.
      */
     val bracketWebAnimation: Double = 0.026,
@@ -63,6 +64,13 @@ data class Tuning(
     val bracketHighQuality: Double = 0.28,
     /** Start of "ultra high quality" (about 1900 kbps at 240p and 30 fps). */
     val bracketUltraQuality: Double = 0.62,
+    /**
+     * Larger frames get more out of each bit, so before it is compared with the bracket starts the
+     * bits per pixel is multiplied by (frame pixels / a 240p frame's pixels) raised to this. 240p
+     * is unchanged, which is where the bracket starts were set. At 0.5 that is about the frame
+     * height / 240 (720p counts three times over). 0 turns the correction off.
+     */
+    val bracketSizeExponent: Double = 0.5,
 ) {
     /** The same values, forced into their allowed ranges. */
     fun sanitized(): Tuning {
@@ -73,6 +81,7 @@ data class Tuning(
         val quality = bracketQuality.coerceIn(old, 5.0)
         val high = bracketHighQuality.coerceIn(quality, 5.0)
         val ultra = bracketUltraQuality.coerceIn(high, 5.0)
+        val sizeExp = bracketSizeExponent.coerceIn(0.0, 1.0)
         return Tuning(
             firstTargetPct = firstTargetPct.coerceIn(80.0, 110.0),
             retryMarginPct = retryMarginPct.coerceIn(80.0, 110.0),
@@ -90,6 +99,7 @@ data class Tuning(
             bracketQuality = quality,
             bracketHighQuality = high,
             bracketUltraQuality = ultra,
+            bracketSizeExponent = sizeExp,
         )
     }
 
@@ -113,6 +123,7 @@ data class Tuning(
             if (bracketQuality != d.bracketQuality) add("quality from $bracketQuality bpp")
             if (bracketHighQuality != d.bracketHighQuality) add("high quality from $bracketHighQuality bpp")
             if (bracketUltraQuality != d.bracketUltraQuality) add("ultra high quality from $bracketUltraQuality bpp")
+            if (bracketSizeExponent != d.bracketSizeExponent) add("bracket frame size correction = $bracketSizeExponent")
         }
     }
 }
@@ -147,6 +158,7 @@ object TuningStore {
             bracketQuality = dbl("bracketQualityFrom", d.bracketQuality),
             bracketHighQuality = dbl("bracketHighQualityFrom", d.bracketHighQuality),
             bracketUltraQuality = dbl("bracketUltraQuality", d.bracketUltraQuality),
+            bracketSizeExponent = dbl("bracketSizeExponent", d.bracketSizeExponent),
         ).sanitized()
     }
 
@@ -170,6 +182,7 @@ object TuningStore {
             .putString("bracketQualityFrom", s.bracketQuality.toString())
             .putString("bracketHighQualityFrom", s.bracketHighQuality.toString())
             .putString("bracketUltraQuality", s.bracketUltraQuality.toString())
+            .putString("bracketSizeExponent", s.bracketSizeExponent.toString())
             .apply()
         current = s
         return s
