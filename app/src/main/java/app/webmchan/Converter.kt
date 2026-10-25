@@ -80,6 +80,12 @@ data class Settings(
      */
     val customWidth: Int = 0,
     val customHeight: Int = 0,
+    /**
+     * The audio bitrate in kbps (one of [Converter.AUDIO_KBPS_OPTIONS]). On a tight budget the
+     * audio may be lowered below it, down to [Tuning.minAudioKbps] (or this value if that is
+     * lower). At [Converter.MONO_AUDIO_MAX_KBPS] and below the audio is mono.
+     */
+    val audioKbps: Int = Converter.DEFAULT_AUDIO_KBPS,
 ) {
     /** True when the Custom target has a resolution of its own (so the automatic pick is bypassed). */
     val hasCustomSize: Boolean get() = customWidth > 0 || customHeight > 0
@@ -96,7 +102,26 @@ data class PartEstimate(
     val partSec: Double,
     val videoKbps: Int,
     val height: Int,
+    /** The audio bitrate it would get on the first attempt; 0 when there is no audio. */
+    val audioKbps: Int,
+    /** Video bits per pixel: the bitrate over the pixels per second the output has. See [QualityBracket]. */
+    val bitsPerPixel: Double,
 )
+
+/**
+ * How good a video's picture is expected to be at its estimated bitrate, going by bits per pixel
+ * (which already includes the frame size and the frame rate). Where each bracket starts is set in
+ * [Tuning]. [poor] brackets get improvement tips on the card.
+ */
+enum class QualityBracket(val suits: String, val poor: Boolean) {
+    STILL_IMAGE("Suits still images and slideshows. Anything with real motion will look rough.", true),
+    WEB_ANIMATION("Suits simple, flat-colour animation and memes. Live action will look poor.", true),
+    PRO_ANIMATION("Suits clean animation with smooth motion. Live action will look soft and blocky.", true),
+    OLD_WEB_VIDEO("Suits live action that looks like an old web clip. Fine for talking heads and moderate motion.", false),
+    QUALITY("Suits clean-looking live action. Fast motion may show some blockiness.", false),
+    HIGH_QUALITY("Suits live action with clean detail, including fast motion.", false),
+    ULTRA_HIGH_QUALITY("Suits detailed, grainy or fast-moving footage with room to spare.", false),
+}
 
 /**
  * One 4chan upload rule-set. Boards whose WebM rules are identical are merged into one target.
@@ -190,6 +215,51 @@ object Converter {
 
     /** Stands in for "no limit" in sums: far longer than any video (about 31 years). */
     private const val UNLIMITED_SEC = 1.0e9
+
+    // ---- Audio ----
+
+    /** The audio bitrates offered in the Sound settings, highest first. */
+    val AUDIO_KBPS_OPTIONS: List<Int> = listOf(256, 128, 64, 32, 16)
+
+    const val DEFAULT_AUDIO_KBPS = 64
+
+    /** Audio at or below this bitrate is encoded in mono: stereo at such a low rate isn't workable. */
+    const val MONO_AUDIO_MAX_KBPS = 16
+
+    /** The share of the budget audio must take before "decrease sound quality" is suggested. */
+    const val AUDIO_TIP_SHARE = 0.10
+
+    /** 1 for mono, else 2. */
+    fun audioChannels(kbps: Int): Int = if (kbps <= MONO_AUDIO_MAX_KBPS) 1 else 2
+
+    /** e.g. "64 kbps", or "16 kbps (mono)". */
+    fun audioLabel(kbps: Int): String = if (kbps <= MONO_AUDIO_MAX_KBPS) "$kbps kbps (mono)" else "$kbps kbps"
+
+    /**
+     * The audio bitrate for a budget of [totalKbps]: the chosen [wanted] when the video still gets
+     * at least [Tuning.minVideoKbps], otherwise as low as the budget needs, but never below
+     * [Tuning.minAudioKbps] (or [wanted], if that is lower). 0 when there is no audio.
+     */
+    private fun audioKbpsFor(totalKbps: Double, wanted: Int, audioOn: Boolean, t: Tuning): Int {
+        if (!audioOn) return 0
+        val floor = min(wanted, t.minAudioKbps)
+        return when {
+            totalKbps - wanted >= t.minVideoKbps -> wanted
+            totalKbps - floor >= t.minVideoKbps -> (totalKbps - t.minVideoKbps).toInt()
+            else -> floor
+        }
+    }
+
+    /** Which [QualityBracket] a video of [bitsPerPixel] falls in. */
+    fun qualityBracket(bitsPerPixel: Double, t: Tuning): QualityBracket = when {
+        bitsPerPixel < t.bracketWebAnimation -> QualityBracket.STILL_IMAGE
+        bitsPerPixel < t.bracketProAnimation -> QualityBracket.WEB_ANIMATION
+        bitsPerPixel < t.bracketOldWebVideo -> QualityBracket.PRO_ANIMATION
+        bitsPerPixel < t.bracketQuality -> QualityBracket.OLD_WEB_VIDEO
+        bitsPerPixel < t.bracketHighQuality -> QualityBracket.QUALITY
+        bitsPerPixel < t.bracketUltraQuality -> QualityBracket.HIGH_QUALITY
+        else -> QualityBracket.ULTRA_HIGH_QUALITY
+    }
 
     /** The range a Custom resolution side is kept within, in pixels. */
     const val MIN_CUSTOM_PX = 16
@@ -313,12 +383,7 @@ object Converter {
         val partSec = min(src.durationSec / parts, effectiveMaxSec(settings.maxDurationSec, t)).coerceAtLeast(0.1)
         val totalKbps = settings.limitBytes * (t.firstTargetPct / 100.0) * 8.0 / partSec / 1000.0
         val audioOn = settings.keepAudio && src.hasAudio
-        val audioKbps = when {
-            !audioOn -> 0
-            totalKbps - t.audioKbps >= t.minVideoKbps -> t.audioKbps
-            totalKbps - t.minAudioKbps >= t.minVideoKbps -> (totalKbps - t.minVideoKbps).toInt()
-            else -> t.minAudioKbps
-        }
+        val audioKbps = audioKbpsFor(totalKbps, settings.audioKbps, audioOn, t)
         val vKbps = (totalKbps - audioKbps).toInt()
         val height = if (settings.hasCustomSize) {
             customOutputHeight(src, settings.customWidth, settings.customHeight)
@@ -329,7 +394,11 @@ object Converter {
                 settings.targetFps,
             )
         }
-        return PartEstimate(parts, partSec, vKbps, height)
+        // Bits per pixel of the output: the width follows from the height at the source's shape.
+        val aspect = src.width.toDouble() / src.height
+        val pixelsPerSec = height * (height * aspect) * effectiveFps(src, settings.targetFps)
+        val bpp = if (vKbps > 0 && pixelsPerSec > 0) vKbps * 1000.0 / pixelsPerSec else 0.0
+        return PartEstimate(parts, partSec, vKbps, height, audioKbps, bpp)
     }
 
     fun cancel() {
@@ -660,6 +729,9 @@ object Converter {
             val lagFrames = if (settings.fastest) "8" else "25"
             val effortName = if (settings.fastest) "Fastest" else if (settings.fastEncode) "Speed" else "Quality"
 
+            // The audio bitrate chosen in the Sound settings. See [audioKbpsFor] for how far it may drop.
+            val normalAudioKbps = settings.audioKbps
+
             // Carried from one attempt to the next, for the audio analysis (see below).
             var lastSize = 0L
             var lastVideoKbps = 0
@@ -674,12 +746,7 @@ object Converter {
                 // Audio normally gets its full bitrate, but on a tight budget that alone can push
                 // video under the minimum and fail a clip that would otherwise fit fine. Let audio
                 // flex down (as low as the minimum audio bitrate) before giving up on the attempt.
-                var audioKbps = when {
-                    !audioOn -> 0
-                    totalKbps - t.audioKbps >= t.minVideoKbps -> t.audioKbps
-                    totalKbps - t.minAudioKbps >= t.minVideoKbps -> (totalKbps - t.minVideoKbps).toInt()
-                    else -> t.minAudioKbps
-                }
+                var audioKbps = audioKbpsFor(totalKbps, normalAudioKbps, audioOn, t)
                 var vKbps = (totalKbps - audioKbps).toInt()
 
                 // AUDIO ANALYSIS. Normally the audio is simply assumed to cost its nominal bitrate,
@@ -690,15 +757,15 @@ object Converter {
                 // exactly what's left of the limit. Only when the earlier attempt used the normal
                 // audio bitrate, so that the measurement matches the audio inside its file.
                 if (audioOn && attempt >= t.audioAnalysisAttempt &&
-                    lastSize > 0 && lastVideoKbps > 0 && lastAudioKbps == t.audioKbps
+                    lastSize > 0 && lastVideoKbps > 0 && lastAudioKbps == normalAudioKbps
                 ) {
                     if (audioBytes < 0) {
                         onLog("   still over the limit after ${attempt - 1} attempts: measuring the audio on its own for a closer fit")
                         onProgress(-1f, "Attempt $attempt/${t.maxAttempts}: still too big, analysing the audio for a closer fit…")
-                        audioBytes = measureAudioBytes(input, startSec, duration, t.audioKbps, File(ctx.cacheDir, "audioprobe.webm"))
+                        audioBytes = measureAudioBytes(input, startSec, duration, normalAudioKbps, File(ctx.cacheDir, "audioprobe.webm"))
                         if (audioBytes == MEASURE_CANCELLED) return@withContext ConvertResult.Cancelled
                         if (audioBytes > 0) {
-                            onLog("   audio at ${t.audioKbps} kbps comes out at %.1f kbps for this clip".format(java.util.Locale.US, audioBytes * 8.0 / duration / 1000.0))
+                            onLog("   audio at $normalAudioKbps kbps comes out at %.1f kbps for this clip".format(java.util.Locale.US, audioBytes * 8.0 / duration / 1000.0))
                         } else {
                             onLog("   couldn't measure the audio; carrying on with the usual retry")
                         }
@@ -712,7 +779,7 @@ object Converter {
                             val analysedKbps = (wanted / response * 8.0 / duration / 1000.0).toInt()
                             if (analysedKbps >= t.minVideoKbps) {
                                 onLog("   video came out at %.0f%% of its bitrate target; now %d kbps video".format(java.util.Locale.US, response * 100, analysedKbps))
-                                audioKbps = t.audioKbps
+                                audioKbps = normalAudioKbps
                                 vKbps = analysedKbps
                                 audioAnalysed = true
                             }
@@ -725,7 +792,7 @@ object Converter {
                         "Video is too long for this size limit. Try setting it to split."
                     )
                 }
-                if (audioOn && audioKbps < t.audioKbps) {
+                if (audioOn && audioKbps < normalAudioKbps) {
                     onLog("   audio bitrate reduced to ${audioKbps} kbps to fit the limit")
                 }
                 // A Custom resolution is used exactly as asked (the automatic pick is bypassed); the
@@ -795,7 +862,7 @@ object Converter {
 
                 onLog(
                     "== Attempt $attempt/${t.maxAttempts}: ${height}p, $vKbps kbps video" +
-                        (if (audioOn) " + $audioKbps kbps audio" else ", no audio") +
+                        (if (audioOn) " + ${audioLabel(audioKbps)} audio" else ", no audio") +
                         (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
                 onLog("   filters: $filters")
@@ -821,7 +888,7 @@ object Converter {
                 onProgress(0f, "Attempt $attempt/${t.maxAttempts}, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
                 pass2Stats()
                 val audioArgs = if (audioOn) {
-                    listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", "2")
+                    listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString())
                 } else listOf("-an")
                 val p2 = FFmpegKit.executeWithArguments(
                     (common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)).toTypedArray()
@@ -873,7 +940,7 @@ object Converter {
             (listOf("-y") + seekArgs(startSec) + listOf(
                 "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, duration),
                 "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
-                "-c:a", "libvorbis", "-b:a", "${kbps}k", "-ac", "2",
+                "-c:a", "libvorbis", "-b:a", "${kbps}k", "-ac", audioChannels(kbps).toString(),
                 "-f", "webm", probeOut.absolutePath,
             )).toTypedArray()
         )
