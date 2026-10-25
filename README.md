@@ -187,6 +187,24 @@ The batch runs in the app's process, not in the screen, so closing the screen do
 
 The queue and the Finished list are saved to a small file in the app's private storage whenever they change, and loaded again when the app starts. After a restart the app checks that each queued video can still be read and that each finished file is still there (a card whose file has gone loses its Share button and says why), and anything that was mid-conversion when the app stopped is marked so Convert picks it back up.
 
+### Quality brackets
+
+Each queued card works out how many bits the video would get per pixel (the video bitrate divided by pixels per second, so frame size and frame rate both count) and says which bracket that falls in and what kind of video it suits. For example: "Quality Bracket: Web Animation. Suits simple, flat-colour animation and memes. Live action will look poor." The three lowest brackets are shown in a warning colour and add up to two ways to improve it: split into more parts, lower the frame rate, decrease sound quality, try VP9 or lower the custom resolution. Only what can still be changed is offered.
+ 
+Because it's bits per pixel, a 60 fps video needs twice the kbps of a 30 fps one to land in the same bracket, and a bigger frame needs more too. The kbps column below is only a guide, for a 240p frame at 30 fps.
+ 
+| Bracket | Bits per pixel | About (240p, 30 fps) | Suits |
+|---|---|---|---|
+| Still Image | under 0.026 | under 80 kbps | Still images and slideshows |
+| Web Animation | 0.026 to 0.041 | 80 to 126 kbps | Simple, flat-colour animation and memes |
+| Pro Animation | 0.041 to 0.065 | 126 to 200 kbps | Clean animation with smooth motion |
+| Old Web Video | 0.065 to 0.13 | 200 to 400 kbps | Live action like an old web clip, fine for talking heads and moderate motion |
+| Quality | 0.13 to 0.28 | 400 to 860 kbps | Clean-looking live action, fast motion may show some blockiness |
+| High Quality | 0.28 to 0.62 | 860 to 1,900 kbps | Live action with clean detail, including fast motion |
+| Ultra High Quality | over 0.62 | over 1,900 kbps | Detailed, grainy or fast-moving footage with room to spare |
+ 
+The app can't tell live action from animation, so treat the bracket as a guide, not a rule. The thresholds are adjustable in Advanced settings. 
+
 ### Advanced settings
 
 These are the numbers behind the steps above. Every value is kept inside an allowed range, so a typo can't break anything. Changes apply from the next conversion.
