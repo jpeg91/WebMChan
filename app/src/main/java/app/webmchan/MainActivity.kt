@@ -1,3 +1,4 @@
+// #MainActivity
 package app.webmchan
 
 import android.Manifest
@@ -317,8 +318,9 @@ private fun QueueRow(
             }
         }
 
-        // What this video is (or was) converted with. Once it's in a run it is fixed; before that
-        // it follows the settings on screen. A finished card shows what it was made for.
+        // What this video is (or was) converted with. Once it's been sent to the queue it is fixed
+        // (return it to the Holding Pen to change it); in the pen it follows the settings on
+        // screen. A finished card shows what it was made for.
         val shownSettings: Settings? = if (finishedCard) item.settings else (item.settings ?: settings)
         if (shownSettings != null && !item.probeFailed) {
             val prefix = when {
@@ -658,10 +660,9 @@ private fun settingsBrief(s: Settings): String =
         "${soundLabel(s)} · " +
         "up to ${s.targetFps} fps · ${effortName(s)} · ${if (s.useVp9) "VP9" else "VP8"}"
 
-/** "no sound", "sound on" (at the default audio bitrate) or e.g. "sound 128 kbps". */
+/** "no sound" or e.g. "sound 64 kbps" (always with the bitrate, so every card reads the same). */
 private fun soundLabel(s: Settings): String = when {
     !s.keepAudio -> "no sound"
-    s.audioKbps == Converter.DEFAULT_AUDIO_KBPS -> "sound on"
     else -> "sound ${Converter.audioLabel(s.audioKbps)}"
 }
 
@@ -689,8 +690,8 @@ private fun EmptyNote(text: String) {
 }
 
 /**
- * The cards of one section, newest at the top. A video in a running batch shows the settings it is
- * being converted with; anything else follows [liveSettings]. "Up" on a card moves it up the screen.
+ * The cards of one section, newest at the top. A video in the queue shows the settings it was sent
+ * with; one in the Holding Pen follows [liveSettings]. "Up" on a card moves it up the screen.
  */
 @Composable
 private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settings) {
@@ -703,7 +704,9 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
             CardSection.CONVERTING -> !item.inPen && item.status == ItemStatus.CONVERTING
         }
         if (show) key(item.id) {
-            val s = if (busy && !item.inPen) {
+            // A queued video shows (and is estimated with) the settings it was sent with; only the
+            // Holding Pen follows the settings on screen.
+            val s = if (!item.inPen) {
                 item.settings?.copy(tuning = liveSettings.tuning) ?: liveSettings
             } else liveSettings
             QueueRow(
