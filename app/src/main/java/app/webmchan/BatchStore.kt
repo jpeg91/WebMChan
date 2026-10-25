@@ -93,6 +93,7 @@ object BatchStore {
                     put("fastest", it.fastest)
                     put("fps", it.targetFps)
                     put("custom", it.isCustom)
+                    put("ak", it.audioKbps)
                     put("cw", it.customWidth)
                     put("ch", it.customHeight)
                     put("label", it.targetLabel)
@@ -165,6 +166,8 @@ object BatchStore {
                         targetFps = it.optInt("fps", Converter.DEFAULT_FPS),
                         isCustom = it.optBoolean("custom", false),
                         // Absent in files saved by older versions: no custom resolution.
+                        // Absent in files saved by older versions: the old fixed 64 kbps.
+                        audioKbps = it.optInt("ak", Converter.DEFAULT_AUDIO_KBPS),
                         customWidth = it.optInt("cw", 0),
                         customHeight = it.optInt("ch", 0),
                         targetLabel = it.optString("label", ""),
