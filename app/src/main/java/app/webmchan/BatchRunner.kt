@@ -199,13 +199,13 @@ object BatchRunner {
     var currentParts by mutableIntStateOf(0)
         private set
     var logLines by mutableStateOf<List<String>>(emptyList())
+        private set
 
     /**
      * The last few conversions with their complete logs, oldest first, for the Log page
      * (see [ConversionLogStore]). Unlike [logLines] these survive a new batch starting.
      */
     val conversionLogs = mutableStateListOf<ConversionLog>()
-        private set
 
     /** True from Cancel all until the run has stopped (the UI stops accepting new videos then). */
     var cancelling by mutableStateOf(false)
