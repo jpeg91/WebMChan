@@ -27,9 +27,10 @@ data class Tuning(
     val retryMarginPct: Double = 97.5,
     /** How many encodes to try before giving up on a clip. */
     val maxAttempts: Int = 4,
-    /** Normal audio bitrate, in kbps. */
-    val audioKbps: Int = 64,
-    /** Audio may drop this low (rather than failing the clip) when the budget is tight. */
+    /**
+     * Audio may drop this low (rather than failing the clip) when the budget is tight. Never
+     * higher than the audio bitrate chosen in the Sound settings (which then is the lowest).
+     */
     val minAudioKbps: Int = 32,
     /** Below this video bitrate the clip is reported as too long for the limit. */
     val minVideoKbps: Int = 40,
@@ -47,27 +48,48 @@ data class Tuning(
      */
     val audioAnalysisAttempt: Int = 3,
     /**
-     * A queue card warns that detail will suffer when the estimated video bitrate of its parts
-     * falls below this (kbps).
+     * Where each quality bracket on a queue card starts, in bits per pixel (video bitrate divided
+     * by pixels per second, so frame size and frame rate are both accounted for). Below
+     * [bracketWebAnimation] is "still image". At 240p and 30 fps, 0.026 is about 80 kbps.
      */
-    val warnVideoKbps: Int = 130,
+    val bracketWebAnimation: Double = 0.026,
+    /** Start of "pro animation" (about 126 kbps at 240p and 30 fps). */
+    val bracketProAnimation: Double = 0.041,
+    /** Start of "old web video" (about 200 kbps at 240p and 30 fps). */
+    val bracketOldWebVideo: Double = 0.065,
+    /** Start of "quality" (about 400 kbps at 240p and 30 fps). */
+    val bracketQuality: Double = 0.13,
+    /** Start of "high quality" (about 860 kbps at 240p and 30 fps). */
+    val bracketHighQuality: Double = 0.28,
+    /** Start of "ultra high quality" (about 1900 kbps at 240p and 30 fps). */
+    val bracketUltraQuality: Double = 0.62,
 ) {
     /** The same values, forced into their allowed ranges. */
     fun sanitized(): Tuning {
-        val audio = audioKbps.coerceIn(16, 192)
+        // The bracket starts have to rise from one to the next.
+        val web = bracketWebAnimation.coerceIn(0.001, 5.0)
+        val pro = bracketProAnimation.coerceIn(web, 5.0)
+        val old = bracketOldWebVideo.coerceIn(pro, 5.0)
+        val quality = bracketQuality.coerceIn(old, 5.0)
+        val high = bracketHighQuality.coerceIn(quality, 5.0)
+        val ultra = bracketUltraQuality.coerceIn(high, 5.0)
         return Tuning(
             firstTargetPct = firstTargetPct.coerceIn(80.0, 110.0),
             retryMarginPct = retryMarginPct.coerceIn(80.0, 110.0),
             maxAttempts = maxAttempts.coerceIn(1, 8),
-            audioKbps = audio,
-            minAudioKbps = minAudioKbps.coerceIn(8, audio),
+            minAudioKbps = minAudioKbps.coerceIn(8, 256),
             minVideoKbps = minVideoKbps.coerceIn(10, 500),
             normalBpp = normalBpp.coerceIn(0.01, 0.5),
             fastestBpp = fastestBpp.coerceIn(0.01, 1.0),
             lengthGraceSec = lengthGraceSec.coerceIn(0.0, 10.0),
             trimToleranceSec = trimToleranceSec.coerceIn(0.0, 5.0),
             audioAnalysisAttempt = audioAnalysisAttempt.coerceIn(2, 9),
-            warnVideoKbps = warnVideoKbps.coerceIn(20, 2000),
+            bracketWebAnimation = web,
+            bracketProAnimation = pro,
+            bracketOldWebVideo = old,
+            bracketQuality = quality,
+            bracketHighQuality = high,
+            bracketUltraQuality = ultra,
         )
     }
 
@@ -78,7 +100,6 @@ data class Tuning(
             if (firstTargetPct != d.firstTargetPct) add("first attempt target = $firstTargetPct%")
             if (retryMarginPct != d.retryMarginPct) add("retry target = $retryMarginPct%")
             if (maxAttempts != d.maxAttempts) add("max attempts = $maxAttempts")
-            if (audioKbps != d.audioKbps) add("audio = $audioKbps kbps")
             if (minAudioKbps != d.minAudioKbps) add("min audio = $minAudioKbps kbps")
             if (minVideoKbps != d.minVideoKbps) add("min video = $minVideoKbps kbps")
             if (normalBpp != d.normalBpp) add("detail threshold = $normalBpp")
@@ -86,7 +107,12 @@ data class Tuning(
             if (lengthGraceSec != d.lengthGraceSec) add("length grace = $lengthGraceSec s")
             if (trimToleranceSec != d.trimToleranceSec) add("trim tolerance = $trimToleranceSec s")
             if (audioAnalysisAttempt != d.audioAnalysisAttempt) add("audio analysis from attempt $audioAnalysisAttempt")
-            if (warnVideoKbps != d.warnVideoKbps) add("low bitrate warning = $warnVideoKbps kbps")
+            if (bracketWebAnimation != d.bracketWebAnimation) add("web animation from $bracketWebAnimation bpp")
+            if (bracketProAnimation != d.bracketProAnimation) add("pro animation from $bracketProAnimation bpp")
+            if (bracketOldWebVideo != d.bracketOldWebVideo) add("old web video from $bracketOldWebVideo bpp")
+            if (bracketQuality != d.bracketQuality) add("quality from $bracketQuality bpp")
+            if (bracketHighQuality != d.bracketHighQuality) add("high quality from $bracketHighQuality bpp")
+            if (bracketUltraQuality != d.bracketUltraQuality) add("ultra high quality from $bracketUltraQuality bpp")
         }
     }
 }
@@ -108,7 +134,6 @@ object TuningStore {
             firstTargetPct = dbl("firstTargetPct", d.firstTargetPct),
             retryMarginPct = dbl("retryMarginPct", d.retryMarginPct),
             maxAttempts = int("maxAttempts", d.maxAttempts),
-            audioKbps = int("audioKbps", d.audioKbps),
             minAudioKbps = int("minAudioKbps", d.minAudioKbps),
             minVideoKbps = int("minVideoKbps", d.minVideoKbps),
             normalBpp = dbl("normalBpp", d.normalBpp),
@@ -116,7 +141,12 @@ object TuningStore {
             lengthGraceSec = dbl("lengthGraceSec", d.lengthGraceSec),
             trimToleranceSec = dbl("trimToleranceSec", d.trimToleranceSec),
             audioAnalysisAttempt = int("audioAnalysisAttempt", d.audioAnalysisAttempt),
-            warnVideoKbps = int("warnVideoKbps", d.warnVideoKbps),
+            bracketWebAnimation = dbl("bracketWebAnimation", d.bracketWebAnimation),
+            bracketProAnimation = dbl("bracketProAnimation", d.bracketProAnimation),
+            bracketOldWebVideo = dbl("bracketOldWebVideo", d.bracketOldWebVideo),
+            bracketQuality = dbl("bracketQualityFrom", d.bracketQuality),
+            bracketHighQuality = dbl("bracketHighQualityFrom", d.bracketHighQuality),
+            bracketUltraQuality = dbl("bracketUltraQuality", d.bracketUltraQuality),
         ).sanitized()
     }
 
@@ -127,7 +157,6 @@ object TuningStore {
             .putString("firstTargetPct", s.firstTargetPct.toString())
             .putString("retryMarginPct", s.retryMarginPct.toString())
             .putString("maxAttempts", s.maxAttempts.toString())
-            .putString("audioKbps", s.audioKbps.toString())
             .putString("minAudioKbps", s.minAudioKbps.toString())
             .putString("minVideoKbps", s.minVideoKbps.toString())
             .putString("normalBpp", s.normalBpp.toString())
@@ -135,7 +164,12 @@ object TuningStore {
             .putString("lengthGraceSec", s.lengthGraceSec.toString())
             .putString("trimToleranceSec", s.trimToleranceSec.toString())
             .putString("audioAnalysisAttempt", s.audioAnalysisAttempt.toString())
-            .putString("warnVideoKbps", s.warnVideoKbps.toString())
+            .putString("bracketWebAnimation", s.bracketWebAnimation.toString())
+            .putString("bracketProAnimation", s.bracketProAnimation.toString())
+            .putString("bracketOldWebVideo", s.bracketOldWebVideo.toString())
+            .putString("bracketQualityFrom", s.bracketQuality.toString())
+            .putString("bracketHighQualityFrom", s.bracketHighQuality.toString())
+            .putString("bracketUltraQuality", s.bracketUltraQuality.toString())
             .apply()
         current = s
         return s
