@@ -1,4 +1,4 @@
-// #MainActivity
+// #main
 package app.webmchan
 
 import android.Manifest
@@ -94,13 +94,28 @@ class MainActivity : ComponentActivity() {
             // The look (black, white and red) lives in Theme.kt. It is the same whatever the
             // phone's own light/dark or wallpaper colours are.
             P5Theme {
+                var showMenu by remember { mutableStateOf(false) }
+                var showLog by remember { mutableStateOf(false) }
                 var showAbout by remember { mutableStateOf(false) }
                 var showAdvanced by remember { mutableStateOf(false) }
                 P5Background {
                     Box {
-                        // App stays composed underneath, so opening About doesn't lose the scroll
-                        // position or the settings.
-                        App(onAbout = { showAbout = true })
+                        // App stays composed underneath, so opening a page doesn't lose the scroll
+                        // position or the settings. The pages stack: Menu, then Log or About on top
+                        // of it (and Advanced on top of About), so back returns to the one before.
+                        App(onMenu = { showMenu = true })
+                        if (showMenu) {
+                            P5Background {
+                                MenuScreen(
+                                    onBack = { showMenu = false },
+                                    onLog = { showLog = true },
+                                    onAbout = { showAbout = true },
+                                )
+                            }
+                        }
+                        if (showLog) {
+                            P5Background { LogScreen(onBack = { showLog = false }) }
+                        }
                         if (showAbout) {
                             P5Background {
                                 AboutScreen(onBack = { showAbout = false }, onAdvanced = { showAdvanced = true })
@@ -397,7 +412,7 @@ private fun QueueRow(
             // frame rate count). The poor brackets also say what could improve it, best first and
             // only what can still be changed; two tips at most. Not shown for an invalid custom limit.
             if (settings.limitBytes >= 256 * 1024L && est.videoKbps > 0) {
-                val bracket = Converter.qualityBracket(est.bitsPerPixel, t)
+                val bracket = Converter.qualityBracket(est.qualityBpp, t)
                 val tips = if (bracket.poor) {
                     val outFps = Converter.effectiveFps(i, settings.targetFps)
                     buildList {
@@ -675,7 +690,7 @@ private fun customResLabel(w: Int, h: Int): String? = when {
 }
 
 /** The board name (if there is one) followed by [settingsBrief]. */
-private fun settingsWithTarget(s: Settings): String =
+internal fun settingsWithTarget(s: Settings): String =
     (if (s.targetLabel.isNotBlank()) "${s.targetLabel} · " else "") + settingsBrief(s)
 
 /** One line saying what a running batch is being converted with. */
@@ -732,7 +747,7 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
 }
 
 @Composable
-fun App(onAbout: () -> Unit = {}) {
+fun App(onMenu: () -> Unit = {}) {
     val ctx = LocalContext.current
 
     // The queue, the finished list, progress and the log all live in BatchRunner (not here), so a
@@ -1010,7 +1025,7 @@ fun App(onAbout: () -> Unit = {}) {
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            P5Button("About", onClick = onAbout, kind = P5Kind.Secondary)
+            P5Button("Menu", onClick = onMenu, kind = P5Kind.Secondary)
         }
 
         P5Button(
