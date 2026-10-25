@@ -111,6 +111,13 @@ private val FIELDS = listOf(
             "divided by pixels per second, so a bigger frame or a higher frame rate needs more kbps for " +
             "the same bracket.", false,
     ),
+    FieldSpec(
+        "bracketSizeExponent", "Quality bracket: frame size correction (exponent)",
+        "Default 0.5. Allowed 0 to 1. Larger frames get more out of each bit, so before the bracket " +
+            "starts above are applied, the bits per pixel is multiplied by (frame pixels divided by a 240p " +
+            "frame's pixels) to this power. 240p is unchanged. At 0.5 this is roughly the frame height " +
+            "divided by 240, so 720p counts three times over. 0 turns it off.", false,
+    ),
 )
 
 private fun Tuning.asText(): Map<String, String> = mapOf(
@@ -130,6 +137,7 @@ private fun Tuning.asText(): Map<String, String> = mapOf(
     "bracketQuality" to bracketQuality.toString(),
     "bracketHighQuality" to bracketHighQuality.toString(),
     "bracketUltraQuality" to bracketUltraQuality.toString(),
+    "bracketSizeExponent" to bracketSizeExponent.toString(),
 )
 
 /**
@@ -164,6 +172,7 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         bracketQuality = dbl("bracketQuality", base.bracketQuality),
         bracketHighQuality = dbl("bracketHighQuality", base.bracketHighQuality),
         bracketUltraQuality = dbl("bracketUltraQuality", base.bracketUltraQuality),
+        bracketSizeExponent = dbl("bracketSizeExponent", base.bracketSizeExponent),
     )
 }
 
