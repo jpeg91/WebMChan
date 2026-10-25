@@ -113,14 +113,14 @@ data class PartEstimate(
  * (which already includes the frame size and the frame rate). Where each bracket starts is set in
  * [Tuning]. [poor] brackets get improvement tips on the card.
  */
-enum class QualityBracket(val suits: String, val poor: Boolean) {
-    STILL_IMAGE("Suits still images and slideshows. Anything with real motion will look rough.", true),
-    WEB_ANIMATION("Suits simple, flat-colour animation and memes. Live action will look poor.", true),
-    PRO_ANIMATION("Suits clean animation with smooth motion. Live action will look soft and blocky.", true),
-    OLD_WEB_VIDEO("Suits live action that looks like an old web clip. Fine for talking heads and moderate motion.", false),
-    QUALITY("Suits clean-looking live action. Fast motion may show some blockiness.", false),
-    HIGH_QUALITY("Suits live action with clean detail, including fast motion.", false),
-    ULTRA_HIGH_QUALITY("Suits detailed, grainy or fast-moving footage with room to spare.", false),
+enum class QualityBracket(val label: String, val suits: String, val poor: Boolean) {
+    STILL_IMAGE("Still Image", "Suits still images and slideshows. Anything with real motion will look rough.", true),
+    WEB_ANIMATION("Web Animation", "Suits simple, flat-colour animation and memes. Live action will look poor.", true),
+    PRO_ANIMATION("Pro Animation", "Suits clean animation with smooth motion. Live action will look soft and blocky.", true),
+    OLD_WEB_VIDEO("Old Web Video", "Suits live action that looks like an old web clip. Fine for talking heads and moderate motion.", false),
+    QUALITY("Quality", "Suits clean-looking live action. Fast motion may show some blockiness.", false),
+    HIGH_QUALITY("High Quality", "Suits live action with clean detail, including fast motion.", false),
+    ULTRA_HIGH_QUALITY("Ultra High Quality", "Suits detailed, grainy or fast-moving footage with room to spare.", false),
 }
 
 /**
@@ -218,8 +218,8 @@ object Converter {
 
     // ---- Audio ----
 
-    /** The audio bitrates offered in the Sound settings, highest first. */
-    val AUDIO_KBPS_OPTIONS: List<Int> = listOf(256, 128, 64, 32, 16)
+    /** The audio bitrates offered in the Sound settings, lowest first (the order they are listed in). */
+    val AUDIO_KBPS_OPTIONS: List<Int> = listOf(16, 32, 64, 128, 256)
 
     const val DEFAULT_AUDIO_KBPS = 64
 
