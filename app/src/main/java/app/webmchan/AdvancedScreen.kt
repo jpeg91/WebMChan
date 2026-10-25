@@ -56,13 +56,9 @@ private val FIELDS = listOf(
             "video gets exactly what's left. Set it above the maximum attempts to turn it off.", true,
     ),
     FieldSpec(
-        "audioKbps", "Audio bitrate (kbps)",
-        "Default 64. Allowed 16 to 192.", true,
-    ),
-    FieldSpec(
         "minAudioKbps", "Lowest audio bitrate (kbps)",
-        "Default 32. Allowed 8 up to the audio bitrate. Audio may drop this low on a tight budget " +
-            "instead of failing the clip.", true,
+        "Default 32. Allowed 8 to 256. Audio may drop this low on a tight budget instead of failing " +
+            "the clip. Never above the audio bitrate chosen under Sound.", true,
     ),
     FieldSpec(
         "minVideoKbps", "Lowest video bitrate (kbps)",
@@ -88,9 +84,32 @@ private val FIELDS = listOf(
             "another part.", false,
     ),
     FieldSpec(
-        "warnVideoKbps", "Low bitrate warning (kbps)",
-        "Default 130. Allowed 20 to 2000. A queued video's card warns that detail will suffer when " +
-            "the estimated video bitrate of its parts is below this. Adding splits raises the estimate.", true,
+        "bracketWebAnimation", "Quality bracket: web animation from (bits per pixel)",
+        "Default 0.026 (about 80 kbps at 240p and 30 fps). Below this a queued video's card says " +
+            "\"still image\". The bracket starts have to rise in order; one that doesn't is " +
+            "raised to match the one before it.", false,
+    ),
+    FieldSpec(
+        "bracketProAnimation", "Quality bracket: pro animation from (bits per pixel)",
+        "Default 0.041 (about 126 kbps at 240p and 30 fps).", false,
+    ),
+    FieldSpec(
+        "bracketOldWebVideo", "Quality bracket: old web video from (bits per pixel)",
+        "Default 0.065 (about 200 kbps at 240p and 30 fps).", false,
+    ),
+    FieldSpec(
+        "bracketQuality", "Quality bracket: quality from (bits per pixel)",
+        "Default 0.13 (about 400 kbps at 240p and 30 fps).", false,
+    ),
+    FieldSpec(
+        "bracketHighQuality", "Quality bracket: high quality from (bits per pixel)",
+        "Default 0.28 (about 860 kbps at 240p and 30 fps).", false,
+    ),
+    FieldSpec(
+        "bracketUltraQuality", "Quality bracket: ultra high quality from (bits per pixel)",
+        "Default 0.62 (about 1900 kbps at 240p and 30 fps). Bits per pixel is the video bitrate " +
+            "divided by pixels per second, so a bigger frame or a higher frame rate needs more kbps for " +
+            "the same bracket.", false,
     ),
 )
 
@@ -99,14 +118,18 @@ private fun Tuning.asText(): Map<String, String> = mapOf(
     "retryMarginPct" to retryMarginPct.toString(),
     "maxAttempts" to maxAttempts.toString(),
     "audioAnalysisAttempt" to audioAnalysisAttempt.toString(),
-    "audioKbps" to audioKbps.toString(),
     "minAudioKbps" to minAudioKbps.toString(),
     "minVideoKbps" to minVideoKbps.toString(),
     "normalBpp" to normalBpp.toString(),
     "fastestBpp" to fastestBpp.toString(),
     "lengthGraceSec" to lengthGraceSec.toString(),
     "trimToleranceSec" to trimToleranceSec.toString(),
-    "warnVideoKbps" to warnVideoKbps.toString(),
+    "bracketWebAnimation" to bracketWebAnimation.toString(),
+    "bracketProAnimation" to bracketProAnimation.toString(),
+    "bracketOldWebVideo" to bracketOldWebVideo.toString(),
+    "bracketQuality" to bracketQuality.toString(),
+    "bracketHighQuality" to bracketHighQuality.toString(),
+    "bracketUltraQuality" to bracketUltraQuality.toString(),
 )
 
 /**
@@ -128,7 +151,6 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         firstTargetPct = dbl("firstTargetPct", base.firstTargetPct),
         retryMarginPct = dbl("retryMarginPct", base.retryMarginPct),
         maxAttempts = int("maxAttempts", base.maxAttempts),
-        audioKbps = int("audioKbps", base.audioKbps),
         minAudioKbps = int("minAudioKbps", base.minAudioKbps),
         minVideoKbps = int("minVideoKbps", base.minVideoKbps),
         normalBpp = dbl("normalBpp", base.normalBpp),
@@ -136,7 +158,12 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         lengthGraceSec = dbl("lengthGraceSec", base.lengthGraceSec),
         trimToleranceSec = dbl("trimToleranceSec", base.trimToleranceSec),
         audioAnalysisAttempt = int("audioAnalysisAttempt", base.audioAnalysisAttempt),
-        warnVideoKbps = int("warnVideoKbps", base.warnVideoKbps),
+        bracketWebAnimation = dbl("bracketWebAnimation", base.bracketWebAnimation),
+        bracketProAnimation = dbl("bracketProAnimation", base.bracketProAnimation),
+        bracketOldWebVideo = dbl("bracketOldWebVideo", base.bracketOldWebVideo),
+        bracketQuality = dbl("bracketQuality", base.bracketQuality),
+        bracketHighQuality = dbl("bracketHighQuality", base.bracketHighQuality),
+        bracketUltraQuality = dbl("bracketUltraQuality", base.bracketUltraQuality),
     )
 }
 
