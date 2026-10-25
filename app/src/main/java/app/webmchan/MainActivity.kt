@@ -391,13 +391,27 @@ private fun QueueRow(
                 Text(estimateText, style = MaterialTheme.typography.bodySmall)
             }
 
-            // Below the warning bitrate, detail will suffer. Not shown for an invalid custom limit.
-            if (settings.limitBytes >= 256 * 1024L && est.videoKbps < t.warnVideoKbps) {
+            // What kind of video the estimated bitrate suits (bits per pixel, so the frame size and
+            // frame rate count). The poor brackets also say what could improve it, best first and
+            // only what can still be changed; two tips at most. Not shown for an invalid custom limit.
+            if (settings.limitBytes >= 256 * 1024L && est.videoKbps > 0) {
+                val bracket = Converter.qualityBracket(est.bitsPerPixel, t)
+                val tips = if (bracket.poor) {
+                    val outFps = Converter.effectiveFps(i, settings.targetFps)
+                    buildList {
+                        if (showControls && !(busy || item.partsDone > 0) && numParts < maxParts) add("split into more parts")
+                        if (outFps > 27.0) add("lower the frame rate")
+                        if (est.audioKbps > Converter.MONO_AUDIO_MAX_KBPS &&
+                            est.audioKbps >= Converter.AUDIO_TIP_SHARE * (est.videoKbps + est.audioKbps)
+                        ) add("decrease sound quality")
+                        if (!settings.useVp9) add("try VP9 (slower)")
+                        if (settings.hasCustomSize) add("lower the custom resolution")
+                    }.take(2)
+                } else emptyList()
                 Text(
-                    "High-detail clips (e.g. live action) will look poor at this bitrate." +
-                        if (showControls && numParts < maxParts) " Increased splitting recommended." else "",
+                    bracket.suits + if (tips.isNotEmpty()) " To improve it: ${tips.joinToString(" or ")}." else "",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary
+                    color = if (bracket.poor) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -462,7 +476,7 @@ private fun QueueRow(
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
-                    "${if (shownSettings.keepAudio) "Sound on" else "Sound off"} · frame rate up to ${shownSettings.targetFps} fps · " +
+                    "${if (shownSettings.keepAudio) "Sound on, ${Converter.audioLabel(shownSettings.audioKbps)}" else "Sound off"} · frame rate up to ${shownSettings.targetFps} fps · " +
                         "${effortName(shownSettings)} · ${if (shownSettings.useVp9) "VP9" else "VP8"}",
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -640,8 +654,15 @@ private fun settingsBrief(s: Settings): String =
     "${formatLimit(s.limitBytes)} · " +
         (if (s.maxDurationSec > 0) "up to ${s.maxDurationSec} s · " else "") +
         (customResLabel(s.customWidth, s.customHeight)?.let { "$it · " } ?: "") +
-        "${if (s.keepAudio) "sound on" else "no sound"} · " +
+        "${soundLabel(s)} · " +
         "up to ${s.targetFps} fps · ${effortName(s)} · ${if (s.useVp9) "VP9" else "VP8"}"
+
+/** "no sound", "sound on" (at the default audio bitrate) or e.g. "sound 128 kbps". */
+private fun soundLabel(s: Settings): String = when {
+    !s.keepAudio -> "no sound"
+    s.audioKbps == Converter.DEFAULT_AUDIO_KBPS -> "sound on"
+    else -> "sound ${Converter.audioLabel(s.audioKbps)}"
+}
 
 /** A Custom resolution in words (e.g. "scaled to fit 640×480"), or null when none is set. */
 private fun customResLabel(w: Int, h: Int): String? = when {
@@ -738,6 +759,13 @@ fun App(onAbout: () -> Unit = {}) {
     var customW by remember { mutableStateOf(prefs.getString("ui_custom_w", "") ?: "") }
     var customH by remember { mutableStateOf(prefs.getString("ui_custom_h", "") ?: "") }
     var removeAudio by remember { mutableStateOf(prefs.getBoolean("ui_remove_audio", true)) }
+    // One of Converter.AUDIO_KBPS_OPTIONS; anything else saved falls back to the default.
+    var audioKbps by remember {
+        mutableIntStateOf(
+            prefs.getInt("ui_audio_kbps", Converter.DEFAULT_AUDIO_KBPS)
+                .takeIf { it in Converter.AUDIO_KBPS_OPTIONS } ?: Converter.DEFAULT_AUDIO_KBPS
+        )
+    }
     var fastEncode by remember { mutableStateOf(prefs.getBoolean("ui_fast_encode", false)) }
     var useVp9 by remember { mutableStateOf(prefs.getBoolean("ui_use_vp9", false)) }
     var fastest by remember { mutableStateOf(prefs.getBoolean("ui_fastest", false)) }
@@ -746,13 +774,14 @@ fun App(onAbout: () -> Unit = {}) {
         mutableIntStateOf(prefs.getInt("ui_fps_choice", FPS_DEFAULT_INDEX).coerceIn(0, FPS_PRESETS.size))
     }
     var customFps by remember { mutableStateOf(prefs.getString("ui_custom_fps", "30") ?: "30") }
-    LaunchedEffect(targetIdx, customMb, customW, customH, removeAudio, fastEncode, useVp9, fastest, fpsChoice, customFps) {
+    LaunchedEffect(targetIdx, customMb, customW, customH, removeAudio, audioKbps, fastEncode, useVp9, fastest, fpsChoice, customFps) {
         prefs.edit()
             .putInt("ui_target_idx", targetIdx)
             .putString("ui_custom_mb", customMb)
             .putString("ui_custom_w", customW)
             .putString("ui_custom_h", customH)
             .putBoolean("ui_remove_audio", removeAudio)
+            .putInt("ui_audio_kbps", audioKbps)
             .putBoolean("ui_fast_encode", fastEncode)
             .putBoolean("ui_use_vp9", useVp9)
             .putBoolean("ui_fastest", fastest)
@@ -926,6 +955,7 @@ fun App(onAbout: () -> Unit = {}) {
         targetLabel = targetLabel,
         customWidth = customWidth,
         customHeight = customHeight,
+        audioKbps = audioKbps,
     )
 
     // What each closed settings group shows as its current choice.
@@ -943,7 +973,7 @@ fun App(onAbout: () -> Unit = {}) {
     val audioSummaryText = when {
         !audioAllowed -> "Off · this target doesn't allow sound"
         removeAudio -> "Off · output has no sound"
-        else -> "On · sound is kept"
+        else -> "On · sound is kept at ${Converter.audioLabel(audioKbps)}"
     }
     val fpsSummaryText = when {
         isCustomFps && customFpsValue == null ->
@@ -1105,7 +1135,7 @@ fun App(onAbout: () -> Unit = {}) {
                         when {
                             !audioAllowed -> "This target doesn't allow sound; the space goes to video quality."
                             removeAudio -> "Sound is off: the output has no sound and the space goes to video quality."
-                            else -> "Sound is on: kept in the output (starts at 64 kbps). Only targets marked \"Audio OK\" allow it."
+                            else -> "Sound is on: kept in the output at the quality chosen below. Only targets marked \"Audio OK\" allow it."
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -1117,6 +1147,43 @@ fun App(onAbout: () -> Unit = {}) {
                     enabled = audioAllowed,
                     colors = p5SwitchColors(),
                 )
+            }
+            // Only while sound is on. Lower rates leave more of the size limit for the picture.
+            if (!effectiveRemoveAudio) {
+                Text(
+                    "Sound quality. A tight size limit may lower it a little automatically; it never goes above the choice here.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                TargetRow(
+                    selected = audioKbps == 256,
+                    enabled = true,
+                    title = "256 kbps",
+                    subtitle = "Highest quality. Takes a big share of the size limit.",
+                ) { audioKbps = 256 }
+                TargetRow(
+                    selected = audioKbps == 128,
+                    enabled = true,
+                    title = "128 kbps",
+                    subtitle = "High quality. Worth it when the size limit is generous.",
+                ) { audioKbps = 128 }
+                TargetRow(
+                    selected = audioKbps == 64,
+                    enabled = true,
+                    title = "64 kbps (default)",
+                    subtitle = "Recommended. Good sound for the space it takes.",
+                ) { audioKbps = 64 }
+                TargetRow(
+                    selected = audioKbps == 32,
+                    enabled = true,
+                    title = "32 kbps",
+                    subtitle = "Noticeably thinner sound. Frees space for the picture.",
+                ) { audioKbps = 32 }
+                TargetRow(
+                    selected = audioKbps == 16,
+                    enabled = true,
+                    title = "16 kbps (mono)",
+                    subtitle = "Poor quality, mono. Frees the most space for the picture.",
+                ) { audioKbps = 16 }
             }
         }
 
@@ -1408,6 +1475,7 @@ fun App(onAbout: () -> Unit = {}) {
                     targetLabel = targetLabel,
                     customWidth = customWidth,
                     customHeight = customHeight,
+                    audioKbps = audioKbps,
                 )
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
