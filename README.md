@@ -254,7 +254,6 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - The frame-rate cap offers 24, 30 and 60 fps presets plus a custom value. It never increases a source video's frame rate.
 - Background conversion relies on Android's foreground-service and notification support. On Android 13 and newer, allow notifications so you can see conversion progress and use the notification controls.
 - Android 11 and newer won't let an app use the top level of an SD card, or the `Download` folder, as a custom save folder. Pick or create a subfolder instead (This is why the app always places the outputs in a subfolder named `WebMChan`. If any folder named `WebMChan` is selected as a custom save location, the output will be saved there. Recursive subfolders will not be created).
-- Finished videos stay in the batch list. To convert one again with different settings, remove it and add it again.
 - Extra splits can't be changed while a batch is running, or once a video has some of its parts saved.
 - Encoding on a phone can be slow. VP9 is slower still. Speed and Fastest modes help but Fastest should be used very sparingly.
 - VP9 isn't accepted everywhere, and some older devices can't play it. VP8 is the safe choice.
