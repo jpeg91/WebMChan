@@ -266,10 +266,8 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 ## Features still to add
 
 *Not necessarily in order.*
-- Deeper Custom controls (Remove the arbitrary limits)
 - Improved title
 - Android top bar notification icons
-- Smarter bitrate warnings: (eg: still image, web animation, pro animation, old web video, high quality, ultra high quality). These must scale with frame rate.
 - Half the log height, new dedicated log screen
 - Precision mode (aim low, aim high, work out coefficient and aim exactly, keep trying until hit the exact target range)
 - Clean up text and warnings
@@ -284,7 +282,6 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Tool tips
 - Mascot
 - App icons etc
-- Custom resolution targets that maintain aspect ratio
 - Pre-conversion video editing (trim, crop etc)
 - Output renaming (before and after conversion)
 - Extended converted video card options (clear, delete, move etc (implement 'converted videos' screen with these options first))
