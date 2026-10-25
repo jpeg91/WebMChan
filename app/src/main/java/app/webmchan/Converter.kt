@@ -758,13 +758,43 @@ object Converter {
                 if (kbps >= DEFAULT_AUDIO_KBPS) 0
                 else audioRates.getOrPut(kbps) { findAudioRate(input, startSec, kbps, onLog) }
 
+            // Below the default audio bitrate, what Vorbis really produces is well off the nominal
+            // figure (about 22 kbps for a 16 kbps setting, about 30 for 32), and at the first attempt
+            // that error comes straight out of the video's share of the size limit. So measure the
+            // audio on its own first (a quick audio-only encode) and plan the video around its real
+            // size. A later attempt where the audio had to be lowered to fit goes by the nominal figure.
+            if (audioOn && normalAudioKbps < DEFAULT_AUDIO_KBPS) {
+                onProgress(-1f, "Checking how big the audio will be…")
+                val measureHz = audioRateFor(normalAudioKbps)
+                if (measureHz == AUDIO_RATE_CANCELLED) return@withContext ConvertResult.Cancelled
+                if (measureHz >= 0) {
+                    audioBytes = measureAudioBytes(input, startSec, duration, normalAudioKbps, measureHz, File(ctx.cacheDir, "audioprobe.webm"))
+                    if (audioBytes == MEASURE_CANCELLED) return@withContext ConvertResult.Cancelled
+                    if (audioBytes > 0) {
+                        onLog(
+                            "   audio at ${audioLabel(normalAudioKbps)} comes out at %.1f kbps for this clip; planning the video around that".format(
+                                java.util.Locale.US, audioBytes * 8.0 / duration / 1000.0
+                            )
+                        )
+                    } else {
+                        audioBytes = 0L
+                        onLog("   couldn't measure the audio; planning with its nominal bitrate")
+                    }
+                }
+            }
+
             for (attempt in 1..t.maxAttempts) {
                 val totalKbps = budgetBytes * 8.0 / duration / 1000.0
                 // Audio normally gets its full bitrate, but on a tight budget that alone can push
                 // video under the minimum and fail a clip that would otherwise fit fine. Let audio
                 // flex down (as low as the minimum audio bitrate) before giving up on the attempt.
                 var audioKbps = audioKbpsFor(totalKbps, normalAudioKbps, audioOn, t)
-                var vKbps = (totalKbps - audioKbps).toInt()
+                // The audio's real cost where it has been measured (and isn't being lowered to fit),
+                // else its nominal bitrate.
+                val plannedAudioKbps =
+                    if (audioOn && audioBytes > 0 && audioKbps == normalAudioKbps) audioBytes * 8.0 / duration / 1000.0
+                    else audioKbps.toDouble()
+                var vKbps = (totalKbps - plannedAudioKbps).toInt()
 
                 // AUDIO ANALYSIS. Normally the audio is simply assumed to cost its nominal bitrate,
                 // but Vorbis often comes out under that, and the usual retry (which scales the whole
