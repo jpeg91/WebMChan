@@ -1113,10 +1113,7 @@ object BatchRunner {
                                     append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
                                     append(saved.message)
                                     if (res.audioDropped) append("\nSource had no audio.")
-                                    if (res.attempts > 1) {
-                                        append("\nTook ${res.attempts} attempts to fit the size limit")
-                                        append(if (res.audioAnalysed) "; the audio was analysed on its own for a closer fit." else ".")
-                                    }
+                                    if (res.attempts > 1) append("\nTook ${res.attempts} attempts to fit the size limit.")
                                 }
                                 lastDoneDetail = detail
                                 // Each part gets its own card in Finished (a single-part conversion
@@ -1278,7 +1275,7 @@ object BatchRunner {
         }
     }
 
-    /** Adds a finished conversion to the Log page's list (the newest [ConversionLogStore.MAX_ENTRIES] are kept) and saves it. */
+    /** Adds a finished conversion to the Logs page's list (those from the last [ConversionLogStore.KEEP_MILLIS] are kept) and saves it. */
     private fun recordConversionLog(
         ctx: Context, item: QueueItem, src: SourceInfo, settings: Settings,
         outcome: ItemStatus, detail: String, lines: List<String>,
@@ -1300,6 +1297,8 @@ object BatchRunner {
                 log = lines.joinToString("\n"),
             )
         )
+        val oldest = System.currentTimeMillis() - ConversionLogStore.KEEP_MILLIS
+        conversionLogs.removeAll { it.whenMillis < oldest }
         while (conversionLogs.size > ConversionLogStore.MAX_ENTRIES) conversionLogs.removeAt(0)
         val snapshot = conversionLogs.toList()
         val appCtx = ctx.applicationContext
