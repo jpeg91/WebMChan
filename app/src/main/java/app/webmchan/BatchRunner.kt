@@ -651,6 +651,57 @@ object BatchRunner {
         persist()
     }
 
+    /**
+     * Renames the saved file of the Finished card [id] to "[newBase].webm". Returns null when it
+     * worked, otherwise a message to show the user. The card keeps pointing at the renamed file.
+     */
+    suspend fun renameFinished(ctx: Context, id: Long, newBase: String): String? {
+        val base = OutputStorage.cleanBaseName(newBase) ?: return "That name can't be used."
+        val saved = finished.firstOrNull { it.id == id }?.savedUri ?: return "This video's file isn't available."
+        val oldName = withContext(Dispatchers.IO) { OutputStorage.fileName(ctx, saved) }
+        val res = withContext(Dispatchers.IO) { OutputStorage.rename(ctx, saved, "$base.webm") }
+        if (res.uri == null) return res.error
+        val at = finished.indexOfFirst { it.id == id }
+        if (at >= 0) {
+            val cur = finished[at]
+            // The card's text names the saved file ("Saved to ..."), so bring that up to date too.
+            val detail = if (oldName != null && res.name != null) cur.detail?.replace(oldName, res.name) else cur.detail
+            finished[at] = cur.copy(savedUri = res.uri, detail = detail)
+            persist()
+        }
+        return null
+    }
+
+    /**
+     * Deletes the converted .webm of the Finished card [id]. The card stays (without its file
+     * buttons) until it is removed. Returns null when it worked, otherwise a message to show.
+     */
+    suspend fun deleteFinishedFile(ctx: Context, id: Long): String? {
+        val saved = finished.firstOrNull { it.id == id }?.savedUri ?: return "This video's file isn't available."
+        // A file that is already gone counts as deleted.
+        val gone = withContext(Dispatchers.IO) { OutputStorage.delete(ctx, saved) || !canOpen(ctx, saved) }
+        if (!gone) return "Couldn't delete the file."
+        val at = finished.indexOfFirst { it.id == id }
+        if (at >= 0) {
+            val cur = finished[at]
+            finished[at] = cur.copy(
+                savedUri = null,
+                detail = (cur.detail?.let { "$it\n" } ?: "") + "The saved file was deleted.",
+            )
+            persist()
+        }
+        return null
+    }
+
+    /** Takes one card out of the Finished list. Never touches the saved file. */
+    fun removeFinished(id: Long) {
+        val at = finished.indexOfFirst { it.id == id }
+        if (at < 0) return
+        finished.removeAt(at)
+        appContext?.let { Thumbnails.delete(it, id) }
+        persist()
+    }
+
     fun clearFinished() {
         appContext?.let { ctx -> finished.forEach { Thumbnails.delete(ctx, it.id) } }
         finished.clear()
