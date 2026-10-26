@@ -758,12 +758,12 @@ object Converter {
                 if (kbps >= DEFAULT_AUDIO_KBPS) 0
                 else audioRates.getOrPut(kbps) { findAudioRate(input, startSec, kbps, onLog) }
 
-            // Below the default audio bitrate, what Vorbis really produces is well off the nominal
-            // figure (about 22 kbps for a 16 kbps setting, about 30 for 32), and at the first attempt
-            // that error comes straight out of the video's share of the size limit. So measure the
-            // audio on its own first (a quick audio-only encode) and plan the video around its real
-            // size. A later attempt where the audio had to be lowered to fit goes by the nominal figure.
-            if (audioOn && normalAudioKbps < DEFAULT_AUDIO_KBPS) {
+            // What Vorbis really produces is off the nominal figure at every setting (about 22 kbps for
+            // a 16 kbps setting, about 30 for 32, about 56 for 64), and at the first attempt that error
+            // comes straight out of the video's share of the size limit. So measure the audio on its
+            // own first (a quick audio-only encode) and plan the video around its real size. An attempt
+            // where the audio had to be lowered to fit goes by the nominal figure for that lower rate.
+            if (audioOn) {
                 onProgress(-1f, "Checking how big the audio will be…")
                 val measureHz = audioRateFor(normalAudioKbps)
                 if (measureHz == AUDIO_RATE_CANCELLED) return@withContext ConvertResult.Cancelled
@@ -796,43 +796,26 @@ object Converter {
                     else audioKbps.toDouble()
                 var vKbps = (totalKbps - plannedAudioKbps).toInt()
 
-                // AUDIO ANALYSIS. Normally the audio is simply assumed to cost its nominal bitrate,
-                // but Vorbis often comes out under that, and the usual retry (which scales the whole
-                // file) can't tell a video overshoot from an audio one. If the earlier attempts
-                // still went over, measure the audio on its own (a quick audio-only encode), work
-                // out how the video encoder really responded to its bitrate, and give the video
-                // exactly what's left of the limit. Only when the earlier attempt used the normal
-                // audio bitrate, so that the measurement matches the audio inside its file.
-                if (audioOn && attempt >= t.audioAnalysisAttempt &&
+                // RETRY PLANNING WITH THE REAL AUDIO. After an attempt that went over, the usual retry
+                // scales the whole file, which can't tell a video overshoot from an audio one. The
+                // audio's real size is known (measured before the first attempt), so work out how the
+                // video encoder really responded to its bitrate and give the video exactly what's left
+                // of the limit. Only when the earlier attempt used the normal audio bitrate, so that
+                // the measurement matches the audio inside its file.
+                if (audioOn && attempt >= 2 && audioBytes > 0 &&
                     lastSize > 0 && lastVideoKbps > 0 && lastAudioKbps == normalAudioKbps
                 ) {
-                    if (audioBytes < 0) {
-                        onLog("   still over the limit after ${attempt - 1} attempts: measuring the audio on its own for a closer fit")
-                        onProgress(-1f, "Attempt $attempt/${t.maxAttempts}: still too big, analysing the audio for a closer fit…")
-                        val analysisHz = audioRateFor(normalAudioKbps)
-                        if (analysisHz == AUDIO_RATE_CANCELLED) return@withContext ConvertResult.Cancelled
-                        audioBytes = if (analysisHz < 0) 0L else
-                            measureAudioBytes(input, startSec, duration, normalAudioKbps, analysisHz, File(ctx.cacheDir, "audioprobe.webm"))
-                        if (audioBytes == MEASURE_CANCELLED) return@withContext ConvertResult.Cancelled
-                        if (audioBytes > 0) {
-                            onLog("   audio at $normalAudioKbps kbps comes out at %.1f kbps for this clip".format(java.util.Locale.US, audioBytes * 8.0 / duration / 1000.0))
-                        } else {
-                            onLog("   couldn't measure the audio; carrying on with the usual retry")
-                        }
-                    }
-                    if (audioBytes > 0) {
-                        val videoObserved = lastSize - audioBytes
-                        val videoAsked = lastVideoKbps * 1000.0 / 8.0 * duration
-                        if (videoObserved > 0 && videoAsked > 0) {
-                            val response = videoObserved / videoAsked // how much video it actually produced per bit asked for
-                            val wanted = settings.limitBytes * (t.retryMarginPct / 100.0) - audioBytes
-                            val analysedKbps = (wanted / response * 8.0 / duration / 1000.0).toInt()
-                            if (analysedKbps >= t.minVideoKbps) {
-                                onLog("   video came out at %.0f%% of its bitrate target; now %d kbps video".format(java.util.Locale.US, response * 100, analysedKbps))
-                                audioKbps = normalAudioKbps
-                                vKbps = analysedKbps
-                                audioAnalysed = true
-                            }
+                    val videoObserved = lastSize - audioBytes
+                    val videoAsked = lastVideoKbps * 1000.0 / 8.0 * duration
+                    if (videoObserved > 0 && videoAsked > 0) {
+                        val response = videoObserved / videoAsked // how much video it actually produced per bit asked for
+                        val wanted = settings.limitBytes * (t.retryMarginPct / 100.0) - audioBytes
+                        val analysedKbps = (wanted / response * 8.0 / duration / 1000.0).toInt()
+                        if (analysedKbps >= t.minVideoKbps) {
+                            onLog("   video came out at %.0f%% of its bitrate target; now %d kbps video".format(java.util.Locale.US, response * 100, analysedKbps))
+                            audioKbps = normalAudioKbps
+                            vKbps = analysedKbps
+                            audioAnalysed = true
                         }
                     }
                 }
@@ -883,7 +866,7 @@ object Converter {
                     }
                 }.joinToString(",").ifEmpty { "null" }
 
-                val common = listOf("-y") +
+                val common = listOf("-hide_banner", "-y") +
                     // Input seeking: fast (keyframe-based demux seek), and still frame-accurate
                     // because we're re-encoding rather than stream-copying.
                     (if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()) +
@@ -1026,7 +1009,7 @@ object Converter {
         onLog("   checking that the audio encoder accepts ${audioLabel(kbps)}")
         for (hz in AUDIO_RATE_CANDIDATES) {
             val r = FFmpegKit.executeWithArguments(
-                (listOf("-y") + seekArgs(startSec) + listOf(
+                (listOf("-hide_banner", "-y") + seekArgs(startSec) + listOf(
                     "-i", input.absolutePath, "-t", "0.5",
                     "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
                     "-c:a", "libvorbis", "-b:a", "${kbps}k", "-ac", audioChannels(kbps).toString(),
@@ -1053,7 +1036,7 @@ object Converter {
 
     private fun measureAudioBytes(input: File, startSec: Double, duration: Double, kbps: Int, hz: Int, probeOut: File): Long {
         val r = FFmpegKit.executeWithArguments(
-            (listOf("-y") + seekArgs(startSec) + listOf(
+            (listOf("-hide_banner", "-y") + seekArgs(startSec) + listOf(
                 "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, duration),
                 "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
                 "-c:a", "libvorbis", "-b:a", "${kbps}k", "-ac", audioChannels(kbps).toString(),
@@ -1062,7 +1045,15 @@ object Converter {
         )
         val bytes = when {
             ReturnCode.isCancel(r.returnCode) -> MEASURE_CANCELLED
-            ReturnCode.isSuccess(r.returnCode) -> probeOut.length()
+            ReturnCode.isSuccess(r.returnCode) -> {
+                // Count the audio's own bytes, not the test file: that has a container of its own,
+                // roughly a tenth on top, whereas in the finished video the container is shared with
+                // the picture and costs very little. ffmpeg's closing line gives the audio's size
+                // ("audio:333kB", in units of 1024 bytes); the file size is only the fallback.
+                val kib = Regex("""audio:(\d+)kB""").findAll(r.allLogsAsString.orEmpty())
+                    .lastOrNull()?.groupValues?.get(1)?.toLongOrNull()
+                if (kib != null && kib > 0) kib * 1024 else probeOut.length()
+            }
             else -> 0L
         }
         probeOut.delete()
