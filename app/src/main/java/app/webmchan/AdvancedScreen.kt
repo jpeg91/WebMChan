@@ -1,3 +1,4 @@
+// #advanced
 package app.webmchan
 
 import androidx.activity.compose.BackHandler
@@ -49,11 +50,6 @@ private val FIELDS = listOf(
     FieldSpec(
         "maxAttempts", "Maximum attempts",
         "Default 4. Allowed 1 to 8. Encodes tried before giving up on a clip.", true,
-    ),
-    FieldSpec(
-        "audioAnalysisAttempt", "Audio analysis from attempt",
-        "Default 3. Allowed 2 to 9. From this attempt on, the audio is measured on its own and the " +
-            "video gets exactly what's left. Set it above the maximum attempts to turn it off.", true,
     ),
     FieldSpec(
         "minAudioKbps", "Lowest audio bitrate (kbps)",
@@ -124,7 +120,6 @@ private fun Tuning.asText(): Map<String, String> = mapOf(
     "firstTargetPct" to firstTargetPct.toString(),
     "retryMarginPct" to retryMarginPct.toString(),
     "maxAttempts" to maxAttempts.toString(),
-    "audioAnalysisAttempt" to audioAnalysisAttempt.toString(),
     "minAudioKbps" to minAudioKbps.toString(),
     "minVideoKbps" to minVideoKbps.toString(),
     "normalBpp" to normalBpp.toString(),
@@ -165,7 +160,6 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         fastestBpp = dbl("fastestBpp", base.fastestBpp),
         lengthGraceSec = dbl("lengthGraceSec", base.lengthGraceSec),
         trimToleranceSec = dbl("trimToleranceSec", base.trimToleranceSec),
-        audioAnalysisAttempt = int("audioAnalysisAttempt", base.audioAnalysisAttempt),
         bracketWebAnimation = dbl("bracketWebAnimation", base.bracketWebAnimation),
         bracketProAnimation = dbl("bracketProAnimation", base.bracketProAnimation),
         bracketOldWebVideo = dbl("bracketOldWebVideo", base.bracketOldWebVideo),
