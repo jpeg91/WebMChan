@@ -38,7 +38,7 @@ import androidx.compose.ui.unit.sp
 import java.text.DateFormat
 import java.util.Date
 
-/** The Menu page: where the Log and About pages are reached from. */
+/** The Menu page: where the Logs and About pages are reached from. */
 @Composable
 fun MenuScreen(onBack: () -> Unit, onLog: () -> Unit, onAbout: () -> Unit) {
     // The system back gesture/button closes this page instead of leaving the app.
@@ -53,21 +53,23 @@ fun MenuScreen(onBack: () -> Unit, onLog: () -> Unit, onAbout: () -> Unit) {
     ) {
         P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
         P5Title("Menu")
-        P5Button("Log", onClick = onLog, modifier = Modifier.fillMaxWidth())
+        P5Button("Logs", onClick = onLog, modifier = Modifier.fillMaxWidth())
         P5Button("About", onClick = onAbout, kind = P5Kind.Secondary, modifier = Modifier.fillMaxWidth())
     }
 }
 
 /**
- * The Log page: the last few conversions, newest first, each with its card details and its
- * complete log. Failed and cancelled conversions are included, since those are the ones whose
+ * The Logs page: every conversion from the last 12 hours, newest first, each with its card details
+ * and its complete log. Failed and cancelled conversions are included, since those are the ones whose
  * logs are most wanted. The live log on the main screen is cleared when a new batch starts; these
  * are kept (and saved, so they survive the app being closed).
  */
 @Composable
 fun LogScreen(onBack: () -> Unit) {
     BackHandler(onBack = onBack)
-    val logs = BatchRunner.conversionLogs
+    // Only the last 12 hours (older ones are dropped from the saved list as new ones are added).
+    val oldest = System.currentTimeMillis() - ConversionLogStore.KEEP_MILLIS
+    val logs = BatchRunner.conversionLogs.filter { it.whenMillis >= oldest }
 
     Column(
         Modifier
@@ -77,9 +79,9 @@ fun LogScreen(onBack: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
-        P5Title("Log")
+        P5Title("Logs")
         Text(
-            "The last ${ConversionLogStore.MAX_ENTRIES} conversions, newest first, each with its complete log. " +
+            "Every conversion from the last 12 hours, newest first, each with its complete log. " +
                 "Failed and cancelled ones are included.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
