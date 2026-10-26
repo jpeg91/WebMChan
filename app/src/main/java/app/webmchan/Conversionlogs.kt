@@ -28,12 +28,15 @@ data class ConversionLog(
 )
 
 /**
- * Saves the last few conversion logs to a file in the app's private storage, so they are still
+ * Saves the recent conversion logs to a file in the app's private storage, so they are still
  * there after the app is closed (the live log on the main screen is cleared when a new batch starts).
  */
 object ConversionLogStore {
-    /** How many conversions are kept. Older ones are dropped. */
-    const val MAX_ENTRIES = 6
+    /** How long a conversion's log is kept: 12 hours from when it finished. */
+    const val KEEP_MILLIS = 12L * 60 * 60 * 1000
+
+    /** A safety limit on how many are kept, so the saved file can't grow without bound. The oldest go first. */
+    const val MAX_ENTRIES = 100
 
     private const val FILE = "conversion_logs.json"
 
@@ -88,7 +91,7 @@ object ConversionLogStore {
                 } catch (_: Exception) {
                     null
                 }
-            }.takeLast(MAX_ENTRIES)
+            }.filter { it.whenMillis >= System.currentTimeMillis() - KEEP_MILLIS }.takeLast(MAX_ENTRIES)
         } catch (_: Exception) {
             emptyList()
         }
