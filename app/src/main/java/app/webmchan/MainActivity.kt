@@ -50,6 +50,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,6 +72,7 @@ import androidx.core.content.IntentCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
@@ -98,32 +100,32 @@ class MainActivity : ComponentActivity() {
                 var showLog by remember { mutableStateOf(false) }
                 var showAbout by remember { mutableStateOf(false) }
                 var showAdvanced by remember { mutableStateOf(false) }
-                P5Background {
-                    Box {
-                        // App stays composed underneath, so opening a page doesn't lose the scroll
-                        // position or the settings. The pages stack: Menu, then Log or About on top
-                        // of it (and Advanced on top of About), so back returns to the one before.
-                        App(onMenu = { showMenu = true })
-                        if (showMenu) {
-                            P5Background {
-                                MenuScreen(
-                                    onBack = { showMenu = false },
-                                    onLog = { showLog = true },
-                                    onAbout = { showAbout = true },
-                                )
-                            }
+                // Every screen, including the main one, wraps itself in its own P5Background, which
+                // also keeps it clear of the status and navigation bars.
+                Box {
+                    // App stays composed underneath, so opening a page doesn't lose the scroll
+                    // position or the settings. The pages stack: Menu, then Log or About on top
+                    // of it (and Advanced on top of About), so back returns to the one before.
+                    P5Background { App(onMenu = { showMenu = true }) }
+                    if (showMenu) {
+                        P5Background {
+                            MenuScreen(
+                                onBack = { showMenu = false },
+                                onLog = { showLog = true },
+                                onAbout = { showAbout = true },
+                            )
                         }
-                        if (showLog) {
-                            P5Background { LogScreen(onBack = { showLog = false }) }
+                    }
+                    if (showLog) {
+                        P5Background { LogScreen(onBack = { showLog = false }) }
+                    }
+                    if (showAbout) {
+                        P5Background {
+                            AboutScreen(onBack = { showAbout = false }, onAdvanced = { showAdvanced = true })
                         }
-                        if (showAbout) {
-                            P5Background {
-                                AboutScreen(onBack = { showAbout = false }, onAdvanced = { showAdvanced = true })
-                            }
-                        }
-                        if (showAdvanced) {
-                            P5Background { AdvancedScreen(onBack = { showAdvanced = false }) }
-                        }
+                    }
+                    if (showAdvanced) {
+                        P5Background { AdvancedScreen(onBack = { showAdvanced = false }) }
                     }
                 }
             }
@@ -265,6 +267,13 @@ private fun QueueRow(
     val i = item.info
     // Whether the card's extra detail is open (see "Details" at the bottom of the card).
     var expanded by remember { mutableStateOf(false) }
+    // The Rename and Delete file dialogs of a Finished card.
+    val scope = rememberCoroutineScope()
+    var showRename by remember { mutableStateOf(false) }
+    var renameText by remember { mutableStateOf("") }
+    var renameError by remember { mutableStateOf<String?>(null) }
+    var renaming by remember { mutableStateOf(false) }
+    var showDelete by remember { mutableStateOf(false) }
 
     // Tapping the thumbnail plays the video: the converted file on a Finished card, the original
     // on a queue card. Nothing to play if the file is gone or the original couldn't be read.
@@ -509,24 +518,143 @@ private fun QueueRow(
             }
         }
 
-        item.savedUri?.let { saved ->
-            P5Button(
-                "Share",
-                onClick = {
-                    val send = Intent(Intent.ACTION_SEND).apply {
-                        type = "video/webm"
-                        putExtra(Intent.EXTRA_STREAM, saved)
-                        // Explicit ClipData so the read grant reliably reaches the receiving app,
-                        // whether saved is a MediaStore Uri or a document Uri from the chosen folder.
-                        clipData = ClipData.newRawUri("webm", saved)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // A finished card's file buttons: Share and Rename, then Delete file and Remove card.
+        // Once the file is gone (deleted here, or outside the app) only Remove card is left.
+        if (finishedCard) {
+            val saved = item.savedUri
+            Column(
+                Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (saved != null) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        P5Button(
+                            "Share",
+                            onClick = {
+                                val send = Intent(Intent.ACTION_SEND).apply {
+                                    type = "video/webm"
+                                    putExtra(Intent.EXTRA_STREAM, saved)
+                                    // Explicit ClipData so the read grant reliably reaches the receiving app,
+                                    // whether saved is a MediaStore Uri or a document Uri from the chosen folder.
+                                    clipData = ClipData.newRawUri("webm", saved)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                ctx.startActivity(Intent.createChooser(send, "Share webm"))
+                            },
+                            kind = P5Kind.Secondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        P5Button(
+                            "Rename",
+                            onClick = {
+                                // Starts from the file's current name, without the .webm ending.
+                                renameText = (OutputStorage.fileName(ctx, saved) ?: "").removeSuffix(".webm")
+                                renameError = null
+                                showRename = true
+                            },
+                            kind = P5Kind.Secondary,
+                            modifier = Modifier.weight(1f),
+                        )
                     }
-                    ctx.startActivity(Intent.createChooser(send, "Share webm"))
-                },
-                kind = P5Kind.Secondary,
-                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
-            )
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (saved != null) {
+                        P5Button(
+                            "Delete file",
+                            onClick = { showDelete = true },
+                            kind = P5Kind.Secondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    P5Button(
+                        "Remove card",
+                        onClick = { BatchRunner.removeFinished(item.id) },
+                        kind = P5Kind.Secondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
         }
+    }
+
+    if (showRename) {
+        val cleaned = OutputStorage.cleanBaseName(renameText)
+        val rename = {
+            if (cleaned != null && !renaming) {
+                renaming = true
+                scope.launch {
+                    val err = BatchRunner.renameFinished(ctx, item.id, cleaned)
+                    renaming = false
+                    if (err == null) showRename = false else renameError = err
+                }
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { if (!renaming) showRename = false },
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Rename file".uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { renameText = it; renameError = null },
+                        label = { Text("File name") },
+                        suffix = { Text(".webm") },
+                        isError = cleaned == null || renameError != null,
+                        supportingText = {
+                            when {
+                                renameError != null -> Text(renameError!!)
+                                cleaned == null -> Text("Enter a name without / \\ : * ? \" < > |")
+                            }
+                        },
+                        singleLine = true,
+                        shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
+                    )
+                }
+            },
+            confirmButton = {
+                P5Button("Rename", onClick = rename, enabled = cleaned != null && !renaming)
+            },
+            dismissButton = {
+                P5Button("Cancel", onClick = { showRename = false }, enabled = !renaming, kind = P5Kind.Ghost)
+            },
+        )
+    }
+
+    if (showDelete) {
+        val fileLabel = remember(item.savedUri) {
+            item.savedUri?.let { OutputStorage.fileName(ctx, it) } ?: "this file"
+        }
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Delete file".uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Text(
+                    "Delete $fileLabel from your device? This can't be undone. " +
+                        "The card stays in the Finished list until you remove it."
+                )
+            },
+            confirmButton = {
+                P5Button(
+                    "Delete",
+                    onClick = {
+                        showDelete = false
+                        scope.launch {
+                            val err = BatchRunner.deleteFinishedFile(ctx, item.id)
+                            if (err != null) Toast.makeText(ctx, err, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                )
+            },
+            dismissButton = { P5Button("Cancel", onClick = { showDelete = false }, kind = P5Kind.Ghost) },
+        )
     }
 }
 
@@ -1017,7 +1145,7 @@ fun App(onMenu: () -> Unit = {}) {
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
-                P5Title("WebMChan")
+                P5Title("WebMChan", upperCase = false)
                 Text(
                     "4chan WebM converter".uppercase(),
                     style = MaterialTheme.typography.labelMedium,
@@ -1386,19 +1514,29 @@ fun App(onMenu: () -> Unit = {}) {
                 )
                 PauseRequest.NONE -> {}
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Pause now, Pause after and Cancel all share one small row.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 P5Button(
                     "Pause now",
                     onClick = { BatchRunner.pauseNow() },
                     enabled = pauseRequest != PauseRequest.NOW,
                     kind = P5Kind.Secondary,
+                    compact = true,
                     modifier = Modifier.weight(1f),
                 )
                 P5Button(
-                    if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after this conversion",
+                    if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after",
                     onClick = { BatchRunner.pauseAfter() },
                     enabled = pauseRequest != PauseRequest.NOW,
                     kind = P5Kind.Secondary,
+                    compact = true,
+                    modifier = Modifier.weight(1f),
+                )
+                P5Button(
+                    if (runTotal > 1) "Cancel all" else "Cancel",
+                    onClick = { BatchRunner.cancelAll() },
+                    kind = P5Kind.Secondary,
+                    compact = true,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -1419,42 +1557,12 @@ fun App(onMenu: () -> Unit = {}) {
                             kind = P5Kind.Secondary,
                             modifier = Modifier.weight(1f),
                         )
-                    } else {
-                        P5Button(
-                            "Cancel",
-                            onClick = { BatchRunner.cancelAll() },
-                            kind = P5Kind.Secondary,
-                            modifier = Modifier.weight(1f),
-                        )
                     }
                 }
-                if (runTotal > 1) {
-                    P5Button(
-                        "Cancel all",
-                        onClick = { BatchRunner.cancelAll() },
-                        kind = P5Kind.Secondary,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
             } else if (runTotal > 1) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    P5Button(
-                        "Skip current",
-                        onClick = { BatchRunner.skipCurrent() },
-                        kind = P5Kind.Secondary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    P5Button(
-                        "Cancel all",
-                        onClick = { BatchRunner.cancelAll() },
-                        kind = P5Kind.Secondary,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            } else {
                 P5Button(
-                    "Cancel",
-                    onClick = { BatchRunner.cancelAll() },
+                    "Skip current",
+                    onClick = { BatchRunner.skipCurrent() },
                     kind = P5Kind.Secondary,
                     modifier = Modifier.fillMaxWidth(),
                 )
