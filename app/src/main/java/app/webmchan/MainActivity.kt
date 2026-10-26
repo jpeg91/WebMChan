@@ -1563,7 +1563,7 @@ fun App(onMenu: () -> Unit = {}) {
                 state = logListState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(220.dp)
+                    .height(150.dp)
                     .clip(CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
                     .background(Color.Black)
                     .border(1.5.dp, P5.Line, CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
