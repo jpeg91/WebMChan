@@ -186,8 +186,6 @@ sealed class ConvertResult {
         val audioIncluded: Boolean,
         /** How many encodes it took to fit (1 = first try). */
         val attempts: Int = 1,
-        /** True if the audio had to be measured on its own to get a close fit. */
-        val audioAnalysed: Boolean = false,
     ) : ConvertResult()
 
     data class Fail(val message: String) : ConvertResult()
@@ -750,7 +748,6 @@ object Converter {
             // Size of this clip's audio on its own at the normal audio bitrate: -1 = not measured
             // yet, 0 = tried and couldn't.
             var audioBytes = -1L
-            var audioAnalysed = false
             // The sample rate each audio bitrate needs (see findAudioRate), looked up once per clip.
             // The default bitrate and above are known to work at the source's rate.
             val audioRates = HashMap<Int, Int>()
@@ -815,7 +812,6 @@ object Converter {
                             onLog("   video came out at %.0f%% of its bitrate target; now %d kbps video".format(java.util.Locale.US, response * 100, analysedKbps))
                             audioKbps = normalAudioKbps
                             vKbps = analysedKbps
-                            audioAnalysed = true
                         }
                     }
                 }
@@ -970,7 +966,7 @@ object Converter {
                     cleanupLogs(ctx)
                     return@withContext ConvertResult.Ok(
                         out, size, lastHeight, lastKbps, trimmed, settings.keepAudio && !src.hasAudio, audioOn,
-                        attempts = attempt, audioAnalysed = audioAnalysed,
+                        attempts = attempt,
                     )
                 }
                 // Too big: shrink the budget proportionally and retry.
