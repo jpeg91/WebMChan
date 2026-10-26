@@ -1,3 +1,4 @@
+// #batchrunner
 package app.webmchan
 
 import android.content.Context
@@ -57,9 +58,10 @@ data class QueueItem(
     /** Whether a thumbnail file exists for this card (see [Thumbnails]). */
     val hasThumb: Boolean = false,
     /**
-     * The settings this video is converted with, fixed when it joins a run and cleared when the run
-     * ends. null whenever no run is active: the cards then follow the settings on screen. The
-     * Advanced tuning is not part of it (that stays global; the run supplies it).
+     * The settings this video is converted with, fixed when it is sent from the Holding Pen to the
+     * queue and kept (through failures, cancels and restarts of the app) until it goes back to the
+     * pen, where it follows the settings on screen again. null in the pen. The Advanced tuning is
+     * not part of it (that stays global; the run supplies it).
      */
     val settings: Settings? = null,
     /**
@@ -77,9 +79,39 @@ private class LogBuffer(private val maxLines: Int = 400) {
     private val lock = Any()
     private var lines: List<String> = emptyList()
 
+    // The complete log of the video being converted, kept for the Log page. The readout above is
+    // capped at the last few hundred lines; this holds far more. Over [CAPTURE_MAX] lines the
+    // oldest of the middle are dropped (the first [CAPTURE_HEAD] lines, which say what the video
+    // and settings were, are always kept).
+    private var capture: ArrayList<String>? = null
+    private var captureDropped = 0
+
     fun clear(publish: (List<String>) -> Unit) = synchronized(lock) {
         lines = emptyList()
         publish(lines)
+    }
+
+    /** Starts keeping everything logged from now on (see [endCapture]). */
+    fun beginCapture() = synchronized(lock) {
+        capture = ArrayList()
+        captureDropped = 0
+    }
+
+    /** Stops keeping and returns what was logged since [beginCapture]. */
+    fun endCapture(): List<String> = synchronized(lock) {
+        val kept = capture
+        capture = null
+        if (kept == null) {
+            emptyList()
+        } else {
+            if (captureDropped > 0) {
+                kept.add(
+                    CAPTURE_HEAD.coerceAtMost(kept.size),
+                    "… $captureDropped lines left out here to keep this log to a size that can be saved …"
+                )
+            }
+            kept
+        }
     }
 
     fun add(raw: String, publish: (List<String>) -> Unit) = synchronized(lock) {
@@ -87,14 +119,32 @@ private class LogBuffer(private val maxLines: Int = 400) {
         for (piece in raw.split('\n', '\r')) {
             val line = piece.trim()
             if (line.isEmpty()) continue
-            next = if (line.startsWith("frame=") && next.lastOrNull()?.startsWith("frame=") == true) {
+            val inPlace = line.startsWith("frame=")
+            next = if (inPlace && next.lastOrNull()?.startsWith("frame=") == true) {
                 next.dropLast(1) + line
             } else {
                 next + line
             }
+            capture?.let { kept ->
+                if (inPlace && kept.lastOrNull()?.startsWith("frame=") == true) {
+                    kept[kept.size - 1] = line
+                } else {
+                    kept.add(line)
+                }
+                if (kept.size > CAPTURE_MAX) {
+                    kept.subList(CAPTURE_HEAD, CAPTURE_HEAD + CAPTURE_CHUNK).clear()
+                    captureDropped += CAPTURE_CHUNK
+                }
+            }
         }
         lines = if (next.size > maxLines) next.takeLast(maxLines) else next
         publish(lines)
+    }
+
+    private companion object {
+        const val CAPTURE_MAX = 4000
+        const val CAPTURE_HEAD = 300
+        const val CAPTURE_CHUNK = 500
     }
 }
 
@@ -141,8 +191,21 @@ object BatchRunner {
     /** How many videos the current (or last) run is working through. */
     var runTotal by mutableIntStateOf(0)
         private set
+
+    /**
+     * How many parts the video being converted is split into (1 = not split), or 0 when nothing is
+     * converting. The screen uses it to offer "Skip part" for a split video.
+     */
+    var currentParts by mutableIntStateOf(0)
+        private set
     var logLines by mutableStateOf<List<String>>(emptyList())
         private set
+
+    /**
+     * The last few conversions with their complete logs, oldest first, for the Log page
+     * (see [ConversionLogStore]). Unlike [logLines] these survive a new batch starting.
+     */
+    val conversionLogs = mutableStateListOf<ConversionLog>()
 
     /** True from Cancel all until the run has stopped (the UI stops accepting new videos then). */
     var cancelling by mutableStateOf(false)
@@ -179,6 +242,9 @@ object BatchRunner {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val ids = AtomicLong(0)
     private val skipFlag = AtomicBoolean(false)
+
+    /** With [skipFlag]: the skip is for the part being encoded only, not for the whole video. */
+    private val skipPartFlag = AtomicBoolean(false)
     private val cancelAllFlag = AtomicBoolean(false)
     private val logBuffer = LogBuffer()
     private var lastNotifyMs = 0L
@@ -205,8 +271,23 @@ object BatchRunner {
         // encoder output) that a run the system killed part-way left in the cache.
         Converter.clearWorkFiles(appCtx)
 
-        val state = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); return }
-        ids.set(maxOf(ids.get(), state.lastId))
+        // The Log page's saved conversions (read off the main thread: they can be big).
+        scope.launch(Dispatchers.IO) { conversionLogs.addAll(ConversionLogStore.load(appCtx)) }
+
+        val loaded = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); return }
+        ids.set(maxOf(ids.get(), loaded.lastId))
+        // Every queued video has to carry its own settings. One saved by an older version has none,
+        // so it goes back to the Holding Pen, where it follows the settings on screen until it is
+        // sent to the queue again.
+        var sentBackToPen = 0
+        val state = loaded.copy(
+            queue = loaded.queue.map {
+                if (!it.inPen && it.settings == null) {
+                    sentBackToPen++
+                    it.copy(inPen = true, status = ItemStatus.WAITING, detail = null)
+                } else it
+            }
+        )
         // A batch that was running when the app stopped comes back paused (see resume), as long as
         // some of its videos still need converting.
         val interrupted = state.runActive && state.queue.any {
@@ -215,10 +296,9 @@ object BatchRunner {
         queue.addAll(
             state.queue.map {
                 if (!interrupted) {
-                    // No batch to come back to: the videos follow the settings on screen (the Holding
-                    // Pen stays as it was). Whatever was being converted when the app stopped has to
-                    // start again from the top.
-                    val plain = it.copy(settings = null)
+                    // No batch to come back to. Each queued video keeps its own settings. Whatever was
+                    // being converted when the app stopped has to start again from the top.
+                    val plain = it
                     if (plain.status == ItemStatus.CONVERTING) {
                         plain.copy(
                             status = ItemStatus.CANCELLED,
@@ -247,6 +327,11 @@ object BatchRunner {
             runTotal = queue.count { !it.inPen && it.info != null && it.status == ItemStatus.WAITING }
             notice = "WebMChan was closed while converting, so your batch has been paused. Press Resume to carry on. " +
                 "The video that was converting starts again (from its first unsaved part, if it was split)."
+        }
+        if (sentBackToPen > 0) {
+            val note = "$sentBackToPen queued video(s) saved by an older version had no settings of their own, " +
+                "so they went back to the Holding Pen. Send them to the queue again with the settings you want."
+            notice = notice?.let { "$it\n\n$note" } ?: note
         }
         cleanOrphanCopies(appCtx)
         scope.launch { verifyRestored(appCtx) }
@@ -446,13 +531,25 @@ object BatchRunner {
         }
     }
 
+    /**
+     * Lets go of a source video (its lasting read grant and, for a shared video, its app-storage
+     * copy) once no card in the queue uses it any more. The same video can be queued several
+     * times, so call this after the card has been taken out of [queue].
+     */
+    private fun releaseSource(ctx: Context, uri: Uri) {
+        if (queue.any { it.uri == uri }) return
+        releaseAccess(ctx, uri)
+        deleteOwnCopy(ctx, uri)
+    }
+
     // ---- Editing the queue (the UI disables these while a batch is running) ----
 
     fun addVideos(ctx: Context, picked: List<Uri>) {
         val appCtx = ctx.applicationContext
         appContext = appCtx
-        // Skip anything already in the queue.
-        val fresh = picked.filter { u -> queue.none { it.uri == u } }
+        // The same video may be added any number of times (e.g. to convert it again with different
+        // settings): every pick becomes its own card, and cards are told apart by id, not by uri.
+        val fresh = picked
         if (fresh.isEmpty()) return
         fresh.forEach { keepAccess(appCtx, it) }
         summary = null
@@ -531,26 +628,25 @@ object BatchRunner {
         if (busy && item.status == ItemStatus.WAITING && runList.remove(item.id)) {
             runTotal = (runTotal - 1).coerceAtLeast(0)
         }
-        appContext?.let {
-            releaseAccess(it, queue[index].uri)
-            deleteOwnCopy(it, queue[index].uri)
-            Thumbnails.delete(it, queue[index].id)
-        }
         queue.removeAt(index)
+        appContext?.let {
+            releaseSource(it, item.uri)
+            Thumbnails.delete(it, item.id)
+        }
         persist()
     }
 
     /** Empties the queue (not the Holding Pen). */
     fun clearQueue() {
         if (busy) return
+        val removed = queue.filter { !it.inPen }
+        queue.removeAll { !it.inPen }
         appContext?.let { ctx ->
-            queue.filter { !it.inPen }.forEach {
-                releaseAccess(ctx, it.uri)
-                deleteOwnCopy(ctx, it.uri)
+            removed.forEach {
+                releaseSource(ctx, it.uri)
                 Thumbnails.delete(ctx, it.id)
             }
         }
-        queue.removeAll { !it.inPen }
         summary = null
         persist()
     }
@@ -591,11 +687,11 @@ object BatchRunner {
         // Every video about to be tried again goes back to "Waiting", so a leftover "Cancelled",
         // "Skipped" or "Failed" message from an earlier run doesn't sit on cards the batch hasn't
         // reached yet. (Parts already saved are remembered separately in partsDone / partsTotal.)
-        // Each of them also takes the settings it will be converted with, for as long as the run lasts.
+        // Each keeps the settings it was sent to the queue with (the ones on screen only if it somehow has none).
         for (id in todo) {
             val at = queue.indexOfFirst { it.id == id }
             if (at >= 0) {
-                queue[at] = queue[at].copy(status = ItemStatus.WAITING, detail = null, settings = settings)
+                queue[at] = queue[at].copy(status = ItemStatus.WAITING, detail = null, settings = queue[at].settings ?: settings)
             }
         }
         persist()
@@ -618,8 +714,21 @@ object BatchRunner {
         scope.launch { runBatch(appCtx, settings) }
     }
 
+    /** Skips the whole video being converted (all of its remaining parts) and moves to the next one. */
     fun skipCurrent() {
         if (!busy) return
+        skipPartFlag.set(false)
+        skipFlag.set(true)
+        Converter.cancel()
+    }
+
+    /**
+     * Skips only the part being encoded and carries on with the next part of the same video. The
+     * skipped part isn't saved. For a video that isn't split this is the same as [skipCurrent].
+     */
+    fun skipPart() {
+        if (!busy) return
+        skipPartFlag.set(currentParts > 1)
         skipFlag.set(true)
         Converter.cancel()
     }
@@ -639,10 +748,6 @@ object BatchRunner {
 
     /** Ends a batch that has no running loop (one restored paused after the app stopped). */
     private fun finishWithoutLoop(ctx: Context, text: String) {
-        for (i in queue.indices) {
-            val q = queue[i]
-            if (q.settings != null) queue[i] = q.copy(settings = null)
-        }
         runSettings = null
         runList.clear()
         summary = text
@@ -700,14 +805,14 @@ object BatchRunner {
 
     /** Removes every video from the Holding Pen. */
     fun clearPen() {
+        val removed = queue.filter { it.inPen }
+        queue.removeAll { it.inPen }
         appContext?.let { ctx ->
-            queue.filter { it.inPen }.forEach {
-                releaseAccess(ctx, it.uri)
-                deleteOwnCopy(ctx, it.uri)
+            removed.forEach {
+                releaseSource(ctx, it.uri)
                 Thumbnails.delete(ctx, it.id)
             }
         }
-        queue.removeAll { it.inPen }
         persist()
     }
 
@@ -811,6 +916,7 @@ object BatchRunner {
         var okCount = 0
         var failCount = 0
         var skipCount = 0
+        var partsSkippedTotal = 0 // parts skipped with "Skip part", across the whole run
         var processed = 0 // videos actually started so far, for the "Video n of N" label
         var n = -1
         loopAlive = true
@@ -831,11 +937,14 @@ object BatchRunner {
                 val settings = item.settings?.copy(tuning = startSettings.tuning) ?: startSettings
 
                 skipFlag.set(false)
+                skipPartFlag.set(false)
                 processed++
                 val current = processed
                 // A function, not a fixed string: the total can grow while this video converts
                 // (a video added mid-run), and the label should follow it.
                 fun pos() = "Video $current of $runTotal"
+                // From here to the end of this video, everything logged is kept for the Log page.
+                logBuffer.beginCapture()
 
                 // Videos longer than the target's limit are split into consecutive parts rather
                 // than cut off, each converted and saved on its own. The video is divided evenly
@@ -846,6 +955,7 @@ object BatchRunner {
                 // the card (item.extraParts) are added on top of that minimum.
                 val numParts = Converter.partsFor(src.durationSec, settings.maxDurationSec, settings.tuning, item.extraParts)
                 val partDur = min(src.durationSec / numParts, Converter.effectiveMaxSec(settings.maxDurationSec, settings.tuning))
+                currentParts = numParts
                 val base = item.name.substringBeforeLast('.', item.name)
 
                 // Carry on after the parts that are already saved, if this video was part-way
@@ -868,10 +978,28 @@ object BatchRunner {
                 persist()
 
                 var partsSaved = resumeFrom - 1
+                // The last part dealt with, saved or skipped. Convert carries on after it, so with
+                // skipped parts this can be ahead of partsSaved.
+                var lastPartTried = resumeFrom - 1
+                var partsSkipped = 0
                 var itemFailMsg: String? = null
                 var itemCancelledAll = false
                 var itemSkipped = false
                 var itemPaused = false
+                // The card text of the part saved last, for this video's entry on the Log page.
+                var lastDoneDetail: String? = null
+
+                // "Skip part": this part is dropped (nothing saved for it) and the video carries on
+                // with the next one.
+                fun markPartSkipped(part: Int) {
+                    partsSkipped++
+                    partsSkippedTotal++
+                    lastPartTried = part
+                    logBuffer.add("   part $part/$numParts skipped") { logLines = it }
+                    val at = queue.indexOfFirst { it.id == id }
+                    if (at >= 0) queue[at] = queue[at].copy(partsDone = part, partsTotal = numParts)
+                    persist()
+                }
 
                 // One private copy of the source serves every part (and every attempt) of this video,
                 // and is deleted as soon as the video is finished with, however that happens.
@@ -887,6 +1015,7 @@ object BatchRunner {
                         val partTag = if (numParts > 1) " (part $part/$numParts)" else ""
 
                         skipFlag.set(false)
+                        skipPartFlag.set(false)
                         progress = -1f
                         status = "${pos()}$partLabel: Starting…"
                         logBuffer.add("=== ${pos()}$partTag: ${item.name} ===") { logLines = it }
@@ -906,7 +1035,13 @@ object BatchRunner {
                                 is StageResult.Ok -> staged = st.file
                                 is StageResult.Fail -> { itemFailMsg = st.message; break }
                                 StageResult.Cancelled -> {
-                                    if (cancelAllFlag.get()) itemCancelledAll = true else if (pauseRequest == PauseRequest.NOW) itemPaused = true else itemSkipped = true
+                                    if (cancelAllFlag.get()) { itemCancelledAll = true; break }
+                                    if (pauseRequest == PauseRequest.NOW) { itemPaused = true; break }
+                                    if (skipPartFlag.get() && numParts > 1) {
+                                        markPartSkipped(part)
+                                        continue
+                                    }
+                                    itemSkipped = true
                                     break
                                 }
                             }
@@ -978,11 +1113,9 @@ object BatchRunner {
                                     append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
                                     append(saved.message)
                                     if (res.audioDropped) append("\nSource had no audio.")
-                                    if (res.attempts > 1) {
-                                        append("\nTook ${res.attempts} attempts to fit the size limit")
-                                        append(if (res.audioAnalysed) "; the audio was analysed on its own for a closer fit." else ".")
-                                    }
+                                    if (res.attempts > 1) append("\nTook ${res.attempts} attempts to fit the size limit.")
                                 }
+                                lastDoneDetail = detail
                                 // Each part gets its own card in Finished (a single-part conversion
                                 // is unchanged: one card, same as before).
                                 finished.add(
@@ -1000,6 +1133,7 @@ object BatchRunner {
                                     )
                                 )
                                 partsSaved++
+                                lastPartTried = part
                                 // Remember how far this video got (see QueueItem.partsDone).
                                 if (numParts > 1) {
                                     val at = queue.indexOfFirst { it.id == id }
@@ -1012,7 +1146,13 @@ object BatchRunner {
                                 break
                             }
                             ConvertResult.Cancelled -> {
-                                if (cancelAllFlag.get()) itemCancelledAll = true else if (pauseRequest == PauseRequest.NOW) itemPaused = true else itemSkipped = true
+                                if (cancelAllFlag.get()) { itemCancelledAll = true; break }
+                                if (pauseRequest == PauseRequest.NOW) { itemPaused = true; break }
+                                if (skipPartFlag.get() && numParts > 1) {
+                                    markPartSkipped(part)
+                                    continue
+                                }
+                                itemSkipped = true
                                 break
                             }
                         }
@@ -1025,8 +1165,8 @@ object BatchRunner {
                 val now = queue.indexOfFirst { it.id == id }
                 if (now >= 0) {
                     // For a split video that stopped part-way: Convert carries on from here.
-                    val resumeHint = if (numParts > 1 && partsSaved in 1 until numParts) {
-                        " Press Convert to continue from part ${partsSaved + 1}."
+                    val resumeHint = if (numParts > 1 && lastPartTried in 1 until numParts) {
+                        " Press Convert to continue from part ${lastPartTried + 1}."
                     } else ""
                     when {
                         itemCancelledAll -> {
@@ -1041,29 +1181,59 @@ object BatchRunner {
                             queue[now] = queue[now].copy(status = ItemStatus.WAITING, detail = null)
                         }
                         itemSkipped -> {
-                            val note = if (partsSaved > 0) {
+                            val note = if (lastPartTried > 0) {
                                 "Skipped ($partsSaved of $numParts parts saved).$resumeHint"
                             } else "Skipped."
                             queue[now] = queue[now].copy(status = ItemStatus.CANCELLED, detail = note)
                             skipCount++
                         }
                         itemFailMsg != null -> {
-                            val note = (if (partsSaved > 0) "$partsSaved of $numParts parts saved before this failed.$resumeHint\n" else "") +
+                            val note = (if (lastPartTried > 0) "$partsSaved of $numParts parts saved before this failed.$resumeHint\n" else "") +
                                 itemFailMsg
                             queue[now] = queue[now].copy(status = ItemStatus.FAILED, detail = note)
                             failCount++
                         }
+                        partsSkipped > 0 && partsSaved == 0 -> {
+                            // Every part was skipped, so there is nothing to show in Finished. Keep the
+                            // card (like a skipped video) so it can be converted again.
+                            queue[now] = queue[now].copy(
+                                status = ItemStatus.CANCELLED,
+                                detail = "Every part was skipped, so nothing was saved.",
+                            )
+                            skipCount++
+                        }
                         else -> {
-                            // All parts done: the card moves from the queue (the per-part cards
-                            // above are what shows up in Finished).
+                            // All parts done (some may have been skipped): the card moves from the
+                            // queue (the per-part cards above are what shows up in Finished).
+                            if (partsSkipped > 0) {
+                                logBuffer.add("=== ${item.name}: $partsSkipped of $numParts parts skipped, the rest saved ===") { logLines = it }
+                            }
                             queue.removeAt(now)
                             // The source video isn't needed any more, nor its thumbnail.
-                            releaseAccess(ctx, item.uri)
-                            deleteOwnCopy(ctx, item.uri)
+                            releaseSource(ctx, item.uri)
                             Thumbnails.delete(ctx, item.id)
                             okCount++
                         }
                     }
+                }
+                // Keep this video's complete log for the Log page. A pause isn't an ending (the video
+                // goes round again and starts a fresh log), so nothing is kept for it.
+                val capturedLog = logBuffer.endCapture()
+                if (!itemPaused) {
+                    val outcome = when {
+                        itemCancelledAll || itemSkipped -> ItemStatus.CANCELLED
+                        itemFailMsg != null -> ItemStatus.FAILED
+                        partsSkipped > 0 && partsSaved == 0 -> ItemStatus.CANCELLED
+                        else -> ItemStatus.DONE
+                    }
+                    val detailText = if (outcome == ItemStatus.DONE) {
+                        if (numParts > 1) {
+                            "Done: $partsSaved of $numParts parts saved." + (lastDoneDetail?.let { "\nLast part: $it" } ?: "")
+                        } else lastDoneDetail ?: "Done."
+                    } else {
+                        queue.firstOrNull { it.id == id }?.detail ?: itemFailMsg.orEmpty()
+                    }
+                    recordConversionLog(ctx, item, src, settings, outcome, detailText, capturedLog)
                 }
                 persist()
                 if (itemCancelledAll) break
@@ -1075,21 +1245,18 @@ object BatchRunner {
                 }
             }
         } finally {
-            // The run is over: what's left in the queue goes back to following the settings on screen.
-            // Whatever is left in the queue goes back to following the settings on screen.
-            for (i in queue.indices) {
-                val q = queue[i]
-                if (q.settings != null) queue[i] = q.copy(settings = null)
-            }
+            // The run is over. Whatever is left in the queue keeps the settings it was sent with.
             runSettings = null
             val text = buildString {
                 append("Finished: $okCount done")
                 if (failCount > 0) append(", $failCount failed")
                 if (skipCount > 0) append(", $skipCount skipped or cancelled")
+                if (partsSkippedTotal > 0) append(", $partsSkippedTotal part${if (partsSkippedTotal == 1) "" else "s"} skipped")
                 if (cancelAllFlag.get()) append(" (cancelled)")
             }
             summary = text
             busy = false
+            currentParts = 0
             cancelling = false
             paused = false
             pauseRequest = PauseRequest.NONE
@@ -1106,6 +1273,36 @@ object BatchRunner {
             ConvertService.clearPaused(ctx)
             if (!uiVisible) ConvertService.postFinished(ctx, text)
         }
+    }
+
+    /** Adds a finished conversion to the Logs page's list (those from the last [ConversionLogStore.KEEP_MILLIS] are kept) and saves it. */
+    private fun recordConversionLog(
+        ctx: Context, item: QueueItem, src: SourceInfo, settings: Settings,
+        outcome: ItemStatus, detail: String, lines: List<String>,
+    ) {
+        val fpsText = if (src.fpsReadable) {
+            String.format(Locale.US, "%.2f", src.fps).trimEnd('0').trimEnd('.') + " fps"
+        } else "fps unreadable"
+        val sourceLine = "${src.width}×${src.height}, ${String.format(Locale.US, "%.1f", src.durationSec)}s, " +
+            "$fpsText, ${if (src.hasAudio) "has audio" else "no audio"}"
+        conversionLogs.add(
+            ConversionLog(
+                id = item.id,
+                name = item.name,
+                outcome = outcome,
+                whenMillis = System.currentTimeMillis(),
+                sourceLine = sourceLine,
+                settingsLine = settingsWithTarget(settings),
+                detail = detail,
+                log = lines.joinToString("\n"),
+            )
+        )
+        val oldest = System.currentTimeMillis() - ConversionLogStore.KEEP_MILLIS
+        conversionLogs.removeAll { it.whenMillis < oldest }
+        while (conversionLogs.size > ConversionLogStore.MAX_ENTRIES) conversionLogs.removeAt(0)
+        val snapshot = conversionLogs.toList()
+        val appCtx = ctx.applicationContext
+        scope.launch(Dispatchers.IO) { ConversionLogStore.save(appCtx, snapshot) }
     }
 
     /** Updates the ongoing notification, at most about once a second. */
