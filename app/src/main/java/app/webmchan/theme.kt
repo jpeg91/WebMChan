@@ -1,3 +1,4 @@
+// #theme
 package app.webmchan
 
 import androidx.compose.foundation.Canvas
@@ -8,6 +9,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -159,7 +165,18 @@ fun P5Background(content: @Composable () -> Unit) {
             .background(P5.Black)
             .drawP5Backdrop(),
     ) {
-        CompositionLocalProvider(LocalContentColor provides P5.White) { content() }
+        // Keeps the content clear of the status bar, the navigation bar and any camera cut-out
+        // (Android 15 draws apps edge to edge), plus a little breathing room top and bottom. The
+        // backdrop above stays full screen. Every page wraps itself in its own P5Background, so
+        // this covers all of them.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
+                .padding(vertical = 8.dp),
+        ) {
+            CompositionLocalProvider(LocalContentColor provides P5.White) { content() }
+        }
     }
 }
 
@@ -217,8 +234,10 @@ fun P5Button(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     kind: P5Kind = P5Kind.Primary,
+    /** A smaller button (shorter, tighter, smaller text) for crowded rows. */
+    compact: Boolean = false,
 ) {
-    val shape = remember { SlantShape(9.dp) }
+    val shape = remember { SlantShape(if (compact) 6.dp else 9.dp) }
     val fill = when (kind) {
         P5Kind.Primary -> if (enabled) P5.Red else P5.Panel
         P5Kind.Secondary -> P5.Black
@@ -232,13 +251,13 @@ fun P5Button(
     val borderColor = if (enabled) P5.White else P5.Line
     Box(
         modifier
-            .heightIn(min = if (kind == P5Kind.Ghost) 40.dp else 46.dp)
+            .heightIn(min = if (compact) 34.dp else if (kind == P5Kind.Ghost) 40.dp else 46.dp)
             .then(
                 if (kind != P5Kind.Ghost && enabled) {
                     Modifier.drawBehindCompat { w, h, px ->
-                        val s = px(9f).coerceAtMost(w / 3f)
+                        val s = px(if (compact) 6f else 9f).coerceAtMost(w / 3f)
                         drawPath(
-                            slantPath(w, h, s, px(4f), px(4f)),
+                            slantPath(w, h, s, px(if (compact) 3f else 4f), px(if (compact) 3f else 4f)),
                             if (kind == P5Kind.Primary) P5.RedDeep else P5.Red.copy(alpha = 0.8f),
                         )
                     }
@@ -246,15 +265,20 @@ fun P5Button(
             )
             .clip(shape)
             .background(fill)
-            .then(if (kind == P5Kind.Ghost) Modifier else Modifier.border(2.dp, borderColor, shape))
+            .then(if (kind == P5Kind.Ghost) Modifier else Modifier.border(if (compact) 1.5.dp else 2.dp, borderColor, shape))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = if (kind == P5Kind.Ghost) 10.dp else 16.dp, vertical = 9.dp),
+            .padding(
+                horizontal = if (compact) 6.dp else if (kind == P5Kind.Ghost) 10.dp else 16.dp,
+                vertical = if (compact) 5.dp else 9.dp,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             label.uppercase(),
             color = textColor,
-            style = MaterialTheme.typography.labelLarge,
+            style = if (compact) {
+                MaterialTheme.typography.labelLarge.copy(fontSize = 11.sp, lineHeight = 13.sp, letterSpacing = 0.2.sp)
+            } else MaterialTheme.typography.labelLarge,
             textAlign = TextAlign.Center,
         )
     }
@@ -322,9 +346,9 @@ fun P5SectionTitle(title: String, modifier: Modifier = Modifier) {
 
 /** The big title at the top of a screen: heavy italic capitals with a red drop shadow. */
 @Composable
-fun P5Title(text: String, modifier: Modifier = Modifier, size: TextUnit = 34.sp) {
+fun P5Title(text: String, modifier: Modifier = Modifier, size: TextUnit = 34.sp, upperCase: Boolean = true) {
     Text(
-        text.uppercase(),
+        if (upperCase) text.uppercase() else text,
         modifier = modifier,
         color = P5.White,
         style = MaterialTheme.typography.headlineMedium.copy(
