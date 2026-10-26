@@ -1,3 +1,4 @@
+// #tuning
 package app.webmchan
 
 import android.content.Context
@@ -43,11 +44,6 @@ data class Tuning(
     /** An overshoot of this many seconds or less is trimmed off instead of becoming another part. */
     val trimToleranceSec: Double = 0.5,
     /**
-     * From this attempt on, the audio is measured on its own and the video gets exactly what's
-     * left. Set above [maxAttempts] to turn it off.
-     */
-    val audioAnalysisAttempt: Int = 3,
-    /**
      * Where each quality bracket on a queue card starts, in bits per pixel (video bitrate divided
      * by pixels per second, so frame size and frame rate are both accounted for, then adjusted for
      * frame size by [bracketSizeExponent]; the starts are set for a 240p frame). Below
@@ -92,7 +88,6 @@ data class Tuning(
             fastestBpp = fastestBpp.coerceIn(0.01, 1.0),
             lengthGraceSec = lengthGraceSec.coerceIn(0.0, 10.0),
             trimToleranceSec = trimToleranceSec.coerceIn(0.0, 5.0),
-            audioAnalysisAttempt = audioAnalysisAttempt.coerceIn(2, 9),
             bracketWebAnimation = web,
             bracketProAnimation = pro,
             bracketOldWebVideo = old,
@@ -116,7 +111,6 @@ data class Tuning(
             if (fastestBpp != d.fastestBpp) add("Fastest detail threshold = $fastestBpp")
             if (lengthGraceSec != d.lengthGraceSec) add("length grace = $lengthGraceSec s")
             if (trimToleranceSec != d.trimToleranceSec) add("trim tolerance = $trimToleranceSec s")
-            if (audioAnalysisAttempt != d.audioAnalysisAttempt) add("audio analysis from attempt $audioAnalysisAttempt")
             if (bracketWebAnimation != d.bracketWebAnimation) add("web animation from $bracketWebAnimation bpp")
             if (bracketProAnimation != d.bracketProAnimation) add("pro animation from $bracketProAnimation bpp")
             if (bracketOldWebVideo != d.bracketOldWebVideo) add("old web video from $bracketOldWebVideo bpp")
@@ -151,7 +145,6 @@ object TuningStore {
             fastestBpp = dbl("fastestBpp", d.fastestBpp),
             lengthGraceSec = dbl("lengthGraceSec", d.lengthGraceSec),
             trimToleranceSec = dbl("trimToleranceSec", d.trimToleranceSec),
-            audioAnalysisAttempt = int("audioAnalysisAttempt", d.audioAnalysisAttempt),
             bracketWebAnimation = dbl("bracketWebAnimation", d.bracketWebAnimation),
             bracketProAnimation = dbl("bracketProAnimation", d.bracketProAnimation),
             bracketOldWebVideo = dbl("bracketOldWebVideo", d.bracketOldWebVideo),
@@ -175,7 +168,6 @@ object TuningStore {
             .putString("fastestBpp", s.fastestBpp.toString())
             .putString("lengthGraceSec", s.lengthGraceSec.toString())
             .putString("trimToleranceSec", s.trimToleranceSec.toString())
-            .putString("audioAnalysisAttempt", s.audioAnalysisAttempt.toString())
             .putString("bracketWebAnimation", s.bracketWebAnimation.toString())
             .putString("bracketProAnimation", s.bracketProAnimation.toString())
             .putString("bracketOldWebVideo", s.bracketOldWebVideo.toString())
