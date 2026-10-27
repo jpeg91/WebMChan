@@ -62,6 +62,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -213,6 +218,20 @@ private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
             // Fit, not Crop: shows the whole frame, so a portrait clip isn't cut off.
             Image(it, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
         }
+        // A small play mark in the bottom-left corner says the thumbnail can be tapped. ► is a
+        // plain text symbol (not the ▶ emoji), so it stays white-on-black on every device.
+        if (onClick != null) {
+            Text(
+                "►",
+                color = P5.White,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 6.dp, bottom = 5.dp)
+                    .background(Color.Black.copy(alpha = 0.65f), CutCornerShape(3.dp))
+                    .padding(horizontal = 4.dp, vertical = 1.dp),
+            )
+        }
     }
 }
 
@@ -236,7 +255,7 @@ private fun fpsLabel(i: SourceInfo, finished: Boolean): String = when {
 @Composable
 private fun QueueButton(label: String, enabled: Boolean, onClick: () -> Unit) {
     // The remove button (✕) gets the red accent.
-    P5SquareButton(label, onClick, enabled, accent = label == "✕")
+    P5SquareButton(label, onClick, enabled, accent = label == "✕", size = 38.dp)
 }
 
 @Composable
@@ -293,6 +312,28 @@ private fun QueueRow(
         ItemStatus.WAITING -> P5.RedDeep
     }
     P5Card(Modifier.fillMaxWidth(), accent = accent) {
+        // Header: the file name gets the whole width but for the buttons (it wrapped to four lines
+        // when the thumbnail sat beside it too). Long names stop at two lines; the full name is
+        // under Details.
+        Row(verticalAlignment = Alignment.Top) {
+            Text(
+                item.name,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(top = 8.dp, end = 8.dp),
+            )
+            if (showControls) {
+                if (!busy) {
+                    QueueButton("▲", canMoveUp, onUp)
+                    QueueButton("▼", canMoveDown, onDown)
+                }
+                // Removing is allowed during a run, except for the video being converted.
+                QueueButton("✕", item.status != ItemStatus.CONVERTING, onRemove)
+            }
+        }
+
+        // Body: the thumbnail, with what the video is and where it stands beside it.
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (!item.probeFailed) {
                 Thumb(
@@ -305,10 +346,9 @@ private fun QueueRow(
                         }
                     },
                 )
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(12.dp))
             }
-            Column(Modifier.weight(1f)) {
-                Text(item.name, style = MaterialTheme.typography.titleSmall)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 when {
                     item.probeFailed -> Text(
                         "Couldn't read this video.",
@@ -318,27 +358,29 @@ private fun QueueRow(
                     i == null -> Text("Reading video…", style = MaterialTheme.typography.bodySmall)
                     else -> {
                         val len = String.format(Locale.US, "%.1f", i.durationSec)
-                        val state = when (item.status) {
-                            ItemStatus.WAITING -> "Waiting"
-                            ItemStatus.CONVERTING -> "Converting…"
-                            ItemStatus.DONE -> "Done"
-                            ItemStatus.FAILED -> "Failed"
-                            ItemStatus.CANCELLED -> "Not converted"
+                        val (state, tagColor) = when (item.status) {
+                            ItemStatus.WAITING -> "Waiting" to P5.Grey
+                            ItemStatus.CONVERTING -> "Converting…" to P5.Red
+                            ItemStatus.DONE -> "Done" to P5.White
+                            ItemStatus.FAILED -> "Failed" to P5.Amber
+                            ItemStatus.CANCELLED -> "Not converted" to P5.GreyDim
                         }
                         Text(
-                            "${i.width}×${i.height}, ${len}s, ${fpsLabel(i, finishedCard)}, ${if (i.hasAudio) "has audio" else "no audio"} · $state",
+                            "${i.width}×${i.height} · ${fpsLabel(i, finishedCard)}",
                             style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "${len}s · ${if (i.hasAudio) "has audio" else "no audio"}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        P5Tag(
+                            state,
+                            tagColor,
+                            Modifier.padding(top = 2.dp),
+                            filled = item.status == ItemStatus.CONVERTING || item.status == ItemStatus.DONE,
                         )
                     }
                 }
-            }
-            if (showControls) {
-                if (!busy) {
-                    QueueButton("▲", canMoveUp, onUp)
-                    QueueButton("▼", canMoveDown, onDown)
-                }
-                // Removing is allowed during a run, except for the video being converted.
-                QueueButton("✕", item.status != ItemStatus.CONVERTING, onRemove)
             }
         }
 
@@ -353,8 +395,12 @@ private fun QueueRow(
                 item.settings != null -> "Will convert with"
                 else -> "Current settings"
             }
+            Box(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 2.dp).height(1.dp).background(P5.Line))
             Text(
-                "$prefix: ${settingsWithTarget(shownSettings)}",
+                buildAnnotatedString {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = P5.RedBright)) { append("$prefix: ") }
+                    append(settingsWithTarget(shownSettings))
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -400,15 +446,24 @@ private fun QueueRow(
                 if (numParts > 1) append("Each part ${String.format(Locale.US, "%.1f", est.partSec)}s - ")
                 append("${est.height}p at ${est.videoKbps}kbps")
             }
+            val panelShape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp)
             if (showControls) {
                 val locked = busy || item.partsDone > 0
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                        .clip(panelShape)
+                        .background(P5.Panel)
+                        .padding(start = 10.dp, top = 2.dp, bottom = 2.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Column(Modifier.weight(1f)) {
                         Text(
                             if (numParts == 1) "No split" else "$numParts parts",
                             style = MaterialTheme.typography.titleSmall
                         )
-                        Text(estimateText, style = MaterialTheme.typography.bodySmall)
+                        Text(estimateText, style = MaterialTheme.typography.bodySmall, color = P5.Grey)
                     }
                     QueueButton("−", !locked && numParts > minParts) { onExtraParts(numParts - minParts - 1) }
                     QueueButton("+", !locked && numParts < maxParts) { onExtraParts(numParts - minParts + 1) }
@@ -434,11 +489,15 @@ private fun QueueRow(
                         if (settings.hasCustomSize) add("lower the custom resolution")
                     }.take(2)
                 } else emptyList()
+                val bracketColor = if (bracket.poor) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Quality bracket", style = MaterialTheme.typography.labelMedium, color = P5.Grey)
+                    P5Tag(bracket.label, if (bracket.poor) P5.Amber else P5.White)
+                }
                 Text(
-                    "Quality Bracket: ${bracket.label}. ${bracket.suits}" +
-                        if (tips.isNotEmpty()) "\nTo improve it: ${tips.joinToString(" or ")}." else "",
+                    bracket.suits + if (tips.isNotEmpty()) "\nTo improve it: ${tips.joinToString(" or ")}." else "",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (bracket.poor) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = bracketColor
                 )
             }
         }
@@ -467,6 +526,7 @@ private fun QueueRow(
             }
         }
         if (expanded) {
+            Text("File: ${item.name}", style = MaterialTheme.typography.bodySmall)
             if (i != null && !item.probeFailed) {
                 val len = String.format(Locale.US, "%.1f", i.durationSec)
                 val audio = if (i.hasAudio) {
@@ -503,7 +563,7 @@ private fun QueueRow(
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
-                    "${if (shownSettings.keepAudio) "Sound on, ${Converter.audioLabel(shownSettings.audioKbps)}" else "Sound off"} · frame rate up to ${shownSettings.targetFps} fps · " +
+                    "${if (shownSettings.keepAudio) "Sound on, ${Converter.audioLabel(shownSettings.audioKbps)}" else "Sound off"} · frame rate ≤ ${shownSettings.targetFps} fps · " +
                         "${effortName(shownSettings)} · ${if (shownSettings.useVp9) "VP9" else "VP8"}",
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -795,18 +855,18 @@ private fun prettyCodec(c: String): String = when (c.lowercase()) {
 
 private fun effortName(s: Settings) = if (s.fastest) "Fastest" else if (s.fastEncode) "Speed" else "Quality"
 
-/** The settings in one short line, e.g. "6 MB · up to 400 s · sound on · up to 30 fps · Quality · VP8". */
+/** The settings in one short line, e.g. "6 MB · ≤ 400 s · ♪ 64 kbps · ≤ 30 fps · Quality · VP8". */
 private fun settingsBrief(s: Settings): String =
     "${formatLimit(s.limitBytes)} · " +
-        (if (s.maxDurationSec > 0) "up to ${s.maxDurationSec} s · " else "") +
+        (if (s.maxDurationSec > 0) "≤ ${s.maxDurationSec} s · " else "") +
         (customResLabel(s.customWidth, s.customHeight)?.let { "$it · " } ?: "") +
         "${soundLabel(s)} · " +
-        "up to ${s.targetFps} fps · ${effortName(s)} · ${if (s.useVp9) "VP9" else "VP8"}"
+        "≤ ${s.targetFps} fps · ${effortName(s)} · ${if (s.useVp9) "VP9" else "VP8"}"
 
-/** "no sound" or e.g. "sound 64 kbps" (always with the bitrate, so every card reads the same). */
+/** "no sound" or e.g. "♪ 64 kbps" (a plain text music note, not an emoji; always with the bitrate, so every card reads the same). */
 private fun soundLabel(s: Settings): String = when {
     !s.keepAudio -> "no sound"
-    else -> "sound ${Converter.audioLabel(s.audioKbps)}"
+    else -> "♪ ${Converter.audioLabel(s.audioKbps)}"
 }
 
 /** A Custom resolution in words (e.g. "scaled to fit 640×480"), or null when none is set. */
