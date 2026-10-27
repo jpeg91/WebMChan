@@ -132,7 +132,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Sharing again while the app is open arrives here (launchMode singleTop).
+    // Sharing again while the app is open arrives here (launchMode singleTask).
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -964,7 +964,7 @@ fun App(onMenu: () -> Unit = {}) {
         if (logLines.isNotEmpty()) logListState.scrollToItem(logLines.lastIndex)
     }
 
-    // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 1.2s.
+    // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 4s.
     LaunchedEffect(progress < 0f || copyingTotal > 0) {
         if (progress < 0f || copyingTotal > 0) {
             var t = 0L
@@ -1591,19 +1591,7 @@ fun App(onMenu: () -> Unit = {}) {
         P5Button(
             if (pending > 1) "Convert $pending videos" else "Convert",
             onClick = {
-                val settings = Settings(
-                    limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
-                    fastEncode = fastEncode,
-                    useVp9 = useVp9,
-                    fastest = fastest,
-                    targetFps = targetFps,
-                    tuning = TuningStore.current,
-                    isCustom = isCustom,
-                    targetLabel = targetLabel,
-                    customWidth = customWidth,
-                    customHeight = customHeight,
-                    audioKbps = audioKbps,
-                )
+                val settings = cardSettings
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
                     PackageManager.PERMISSION_GRANTED
