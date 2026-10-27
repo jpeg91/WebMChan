@@ -286,7 +286,14 @@ fun P5Button(
 
 /** The small square buttons on a card (move up, move down, remove, more, fewer). */
 @Composable
-fun P5SquareButton(label: String, onClick: () -> Unit, enabled: Boolean = true, accent: Boolean = false) {
+fun P5SquareButton(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    accent: Boolean = false,
+    /** The button's outer size; the card header uses a smaller one so the title gets more room. */
+    size: Dp = 42.dp,
+) {
     val shape = remember { SlantShape(6.dp) }
     val color = when {
         !enabled -> P5.Line
@@ -295,7 +302,7 @@ fun P5SquareButton(label: String, onClick: () -> Unit, enabled: Boolean = true, 
     }
     Box(
         Modifier
-            .size(42.dp)
+            .size(size)
             .padding(3.dp)
             .clip(shape)
             .background(if (enabled) P5.Panel else P5.Black)
@@ -304,6 +311,29 @@ fun P5SquareButton(label: String, onClick: () -> Unit, enabled: Boolean = true, 
         contentAlignment = Alignment.Center,
     ) {
         Text(label, color = if (enabled) color else P5.GreyDim, style = MaterialTheme.typography.titleSmall)
+    }
+}
+
+/**
+ * A small slanted label for a status or category (Waiting, Done, a quality bracket). Outlined in
+ * [color]; with [filled] the whole tag is [color] and the text is black.
+ */
+@Composable
+fun P5Tag(text: String, color: Color, modifier: Modifier = Modifier, filled: Boolean = false) {
+    val shape = remember { SlantShape(5.dp) }
+    Box(
+        modifier
+            .clip(shape)
+            .background(if (filled) color else P5.Black)
+            .border(1.5.dp, color, shape)
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text.uppercase(),
+            color = if (filled) (if (color == P5.Red) P5.White else P5.Black) else color,
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp),
+        )
     }
 }
 
