@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TransformOrigin
@@ -419,7 +420,7 @@ fun P5Card(
             .drawBehindCompat { _, _, px ->
                 drawRect(accent, size = Size(px(6f), size.height))
             }
-            .border(1.5.dp, if (runPhase != null) P5.RedDeep else P5.Line, shape)
+            .border(1.5.dp, if (runPhase != null) P5.RedDeep.copy(alpha = 0.6f) else P5.Line, shape)
             .then(
                 if (runPhase == null) Modifier else Modifier.drawWithContent {
                     drawContent()
@@ -438,19 +439,28 @@ fun P5Card(
  */
 private fun DrawScope.drawRunningBorder(phase: Float) {
     val c = 16.dp.toPx()
+    // Drawn a little inside the card's edge: the card is clipped to its shape, and a line on the
+    // edge itself would lose half its thickness.
+    val i = 2.5.dp.toPx()
     val w = size.width
     val h = size.height
     val outline = Path().apply {
-        moveTo(c, 0f); lineTo(w, 0f); lineTo(w, h - c); lineTo(w - c, h); lineTo(0f, h); lineTo(0f, c); close()
+        moveTo(c, i); lineTo(w - i, i); lineTo(w - i, h - c); lineTo(w - c, h - i)
+        lineTo(i, h - i); lineTo(i, c); close()
     }
     val measure = PathMeasure().apply { setPath(outline, false) }
     val len = measure.length
     val head = (phase - phase.toInt()) * len
-    val stroke = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Butt)
-    // Longest and faintest first, so the bright head ends up on top.
-    val tail = listOf(0.34f to 0.22f, 0.22f to 0.45f, 0.12f to 0.8f, 0.05f to 1f)
-    for ((share, alpha) in tail) {
-        val color = if (share <= 0.05f) P5.RedBright else P5.Red
+    val stroke = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Butt, join = StrokeJoin.Round)
+    // Longest and faintest first, so the bright head ends up on top; the very tip is white-hot.
+    val tail = listOf(
+        0.45f to P5.Red.copy(alpha = 0.25f),
+        0.30f to P5.Red.copy(alpha = 0.5f),
+        0.18f to P5.Red.copy(alpha = 0.8f),
+        0.09f to P5.RedBright,
+        0.035f to P5.White,
+    )
+    for ((share, color) in tail) {
         val from = head - share * len
         val seg = Path()
         if (from >= 0f) {
@@ -459,7 +469,7 @@ private fun DrawScope.drawRunningBorder(phase: Float) {
             measure.getSegment(len + from, len, seg, true)
             measure.getSegment(0f, head, seg, true)
         }
-        drawPath(seg, color.copy(alpha = alpha), style = stroke)
+        drawPath(seg, color, style = stroke)
     }
 }
 
