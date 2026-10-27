@@ -946,20 +946,26 @@ object Converter {
                 // Asked for against delivered, to show whether the encoder is undershooting its target
                 // (and, if so, whether it has run out of room to spend bits: see the q value).
                 run {
-                    val askedKbps = vKbps + audioKbps
+                    val askedAudioKbps =
+                        if (audioOn && audioBytes > 0 && audioKbps == normalAudioKbps) audioBytes * 8.0 / duration / 1000.0
+                        else audioKbps.toDouble()
+                    val askedKbps = vKbps + askedAudioKbps
                     val gotKbps = size * 8.0 / duration / 1000.0
                     val qEnd = Regex("""\bq=(-?\d+(?:\.\d+)?)""").findAll(p2.allLogsAsString.orEmpty())
                         .lastOrNull()?.groupValues?.get(1)
                     onLog(
-                        "   asked for $vKbps kbps video + $audioKbps kbps audio ($askedKbps kbps in all); the file came out at " +
-                            "%.0f kbps in all, %.0f%% of what was asked and %.0f%% of the size limit".format(
-                                java.util.Locale.US, gotKbps, gotKbps / askedKbps * 100.0,
+                        "   asked for $vKbps kbps video + " +
+                            "%.1f kbps audio (%.0f kbps in all); the file came out at %.0f kbps in all, %.0f%% of what was asked and %.0f%% of the size limit".format(
+                                java.util.Locale.US, askedAudioKbps, askedKbps, gotKbps, gotKbps / askedKbps * 100.0,
                                 size * 100.0 / settings.limitBytes
                             ) + (qEnd?.let { "; encoder q at the end: $it" } ?: "")
                     )
                     if (gotKbps < askedKbps * 0.85 && (qEnd?.toDoubleOrNull() ?: 99.0) <= 4.5) {
                         onLog("   note: well under the target with q at 4 (libvpx's default lowest), so the encoder likely couldn't spend more bits on this clip")
                     }
+                }
+                if (size <= 0L) {
+                    return@withContext ConvertResult.Fail("Encoding produced an empty file.")
                 }
                 if (size in 1..settings.limitBytes) {
                     onProgress(1f, "Done")
@@ -988,11 +994,6 @@ object Converter {
 
     private const val MEASURE_CANCELLED = -1L
 
-    /**
-     * Encodes just this clip's audio at [kbps] into [probeOut] and returns its size in bytes, to
-     * learn what the audio really costs (Vorbis often comes out under its nominal bitrate).
-     * 0 = couldn't be measured; [MEASURE_CANCELLED] = the user cancelled. Deletes the file.
-     */
     /**
      * libvorbis refuses some combinations of bitrate, channels and sample rate ("encoder setup
      * failed"). Low bitrates hit that at a typical source's 44.1 or 48 kHz, where the encoder has
@@ -1030,6 +1031,11 @@ object Converter {
     /** Sample rates [findAudioRate] tries, in order (0 = leave as the source has it). */
     private val AUDIO_RATE_CANDIDATES = listOf(0, 32000, 24000, 22050, 16000, 12000, 11025, 8000)
 
+    /**
+     * Encodes just this clip's audio at [kbps] into [probeOut] and returns its size in bytes, to
+     * learn what the audio really costs (Vorbis often comes out under its nominal bitrate).
+     * 0 = couldn't be measured; [MEASURE_CANCELLED] = the user cancelled. Deletes the file.
+     */
     private fun measureAudioBytes(input: File, startSec: Double, duration: Double, kbps: Int, hz: Int, probeOut: File): Long {
         val r = FFmpegKit.executeWithArguments(
             (listOf("-hide_banner", "-y") + seekArgs(startSec) + listOf(
@@ -1077,8 +1083,12 @@ object Converter {
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
         try {
-            resolver.openOutputStream(uri)?.use { os -> file.inputStream().use { it.copyTo(os) } }
-                ?: return null
+            val os = resolver.openOutputStream(uri)
+            if (os == null) {
+                resolver.delete(uri, null, null)
+                return null
+            }
+            os.use { file.inputStream().use { input -> input.copyTo(it) } }
             values.clear()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
