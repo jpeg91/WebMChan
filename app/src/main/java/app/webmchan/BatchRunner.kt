@@ -232,9 +232,6 @@ object BatchRunner {
      */
     private val runList = ArrayList<Long>()
 
-    /** The settings the current run started with. Videos that join it mid-run get these. */
-    private var runSettings: Settings? = null
-
     /** Set by the activity: whether the app screen is visible (no "finished" notification if so). */
     @Volatile
     var uiVisible = false
@@ -298,16 +295,15 @@ object BatchRunner {
                 if (!interrupted) {
                     // No batch to come back to. Each queued video keeps its own settings. Whatever was
                     // being converted when the app stopped has to start again from the top.
-                    val plain = it
-                    if (plain.status == ItemStatus.CONVERTING) {
-                        plain.copy(
+                    if (it.status == ItemStatus.CONVERTING) {
+                        it.copy(
                             status = ItemStatus.CANCELLED,
-                            detail = if (plain.partsDone > 0 && plain.partsDone < plain.partsTotal) {
-                                "Interrupted when the app closed (${plain.partsDone} of ${plain.partsTotal} parts saved). " +
-                                    "Press Convert to continue from part ${plain.partsDone + 1}."
+                            detail = if (it.partsDone > 0 && it.partsDone < it.partsTotal) {
+                                "Interrupted when the app closed (${it.partsDone} of ${it.partsTotal} parts saved). " +
+                                    "Press Convert to continue from part ${it.partsDone + 1}."
                             } else "Interrupted when the app closed. Press Convert to try again.",
                         )
-                    } else plain
+                    } else it
                 } else if (it.status == ItemStatus.CONVERTING) {
                     // Starts again when the batch is resumed.
                     it.copy(
@@ -549,12 +545,11 @@ object BatchRunner {
         appContext = appCtx
         // The same video may be added any number of times (e.g. to convert it again with different
         // settings): every pick becomes its own card, and cards are told apart by id, not by uri.
-        val fresh = picked
-        if (fresh.isEmpty()) return
-        fresh.forEach { keepAccess(appCtx, it) }
+        if (picked.isEmpty()) return
+        picked.forEach { keepAccess(appCtx, it) }
         summary = null
         // New videos always wait in the Holding Pen until they are sent to the queue.
-        val added = fresh.map { u -> QueueItem(ids.incrementAndGet(), u, Converter.displayName(appCtx, u), inPen = true) }
+        val added = picked.map { u -> QueueItem(ids.incrementAndGet(), u, Converter.displayName(appCtx, u), inPen = true) }
         queue.addAll(added)
         persist()
         scope.launch {
@@ -724,7 +719,6 @@ object BatchRunner {
         runTotal = todo.size
         runList.clear()
         runList.addAll(todo)
-        runSettings = settings
         cancelling = false
         paused = false
         pauseRequest = PauseRequest.NONE
@@ -799,7 +793,6 @@ object BatchRunner {
 
     /** Ends a batch that has no running loop (one restored paused after the app stopped). */
     private fun finishWithoutLoop(ctx: Context, text: String) {
-        runSettings = null
         runList.clear()
         summary = text
         paused = false
@@ -915,7 +908,6 @@ object BatchRunner {
         runList.addAll(todo)
         runTotal = todo.size
         val base = fallback.copy(tuning = TuningStore.current)
-        runSettings = base
         pauseRequest = PauseRequest.NONE
         skipFlag.set(false)
         cancelAllFlag.set(false)
@@ -1297,7 +1289,6 @@ object BatchRunner {
             }
         } finally {
             // The run is over. Whatever is left in the queue keeps the settings it was sent with.
-            runSettings = null
             val text = buildString {
                 append("Finished: $okCount done")
                 if (failCount > 0) append(", $failCount failed")
@@ -1353,7 +1344,8 @@ object BatchRunner {
         while (conversionLogs.size > ConversionLogStore.MAX_ENTRIES) conversionLogs.removeAt(0)
         val snapshot = conversionLogs.toList()
         val appCtx = ctx.applicationContext
-        scope.launch(Dispatchers.IO) { ConversionLogStore.save(appCtx, snapshot) }
+        // The same single writer thread as the queue saves, so log saves also happen in order.
+        writer.execute { ConversionLogStore.save(appCtx, snapshot) }
     }
 
     /** Updates the ongoing notification, at most about once a second. */
