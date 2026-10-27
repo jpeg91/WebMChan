@@ -53,7 +53,6 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -314,15 +313,17 @@ private fun QueueRow(
         ItemStatus.WAITING -> P5.RedDeep
     }
     // The card being converted has a light running round its border, so it stands out from the
-    // queue and shows that work is going on. Driven by hand from the frame clock rather than
-    // Compose's animation system, so it runs even with the phone's animations turned off.
+    // queue and shows that work is going on. Driven by hand with a plain timer (like the progress
+    // sweep, see pass1Sweep) rather than Compose's animation system, so it runs even with the
+    // phone's animations turned off.
     val converting = item.status == ItemStatus.CONVERTING
     var runPhase by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(converting) {
         if (converting) {
-            val start = withFrameNanos { it }
+            val start = System.nanoTime()
             while (isActive) {
-                withFrameNanos { now -> runPhase = ((now - start) / 3_000_000_000.0).toFloat() % 1f }
+                runPhase = ((System.nanoTime() - start) / 3_000_000_000.0).toFloat() % 1f
+                delay(16)
             }
         }
     }
