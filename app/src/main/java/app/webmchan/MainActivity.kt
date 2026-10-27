@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -52,6 +53,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -311,7 +313,25 @@ private fun QueueRow(
         ItemStatus.CANCELLED -> P5.GreyDim
         ItemStatus.WAITING -> P5.RedDeep
     }
-    P5Card(Modifier.fillMaxWidth(), accent = accent) {
+    // The card being converted has a light running round its border, so it stands out from the
+    // queue and shows that work is going on. Driven by hand from the frame clock rather than
+    // Compose's animation system, so it runs even with the phone's animations turned off.
+    val converting = item.status == ItemStatus.CONVERTING
+    var runPhase by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(converting) {
+        if (converting) {
+            val start = withFrameNanos { it }
+            while (isActive) {
+                withFrameNanos { now -> runPhase = ((now - start) / 3_000_000_000.0).toFloat() % 1f }
+            }
+        }
+    }
+    val warnColor = MaterialTheme.colorScheme.tertiary
+    P5Card(
+        Modifier.fillMaxWidth(),
+        accent = accent,
+        runPhase = if (converting) ({ runPhase }) else null,
+    ) {
         // Header: the file name gets the whole width but for the buttons (it wrapped to four lines
         // when the thumbnail sat beside it too). Long names stop at two lines; the full name is
         // under Details.
@@ -428,14 +448,14 @@ private fun QueueRow(
                         "Will be split into $numParts files to fit the ${maxDuration}s limit ($names)."
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary
+                    color = warnColor
                 )
             }
             if ((minW > 0 || minH > 0) && (i.width < minW || i.height < minH)) {
                 Text(
                     "Below this target's minimum (${minW}×${minH}): it will be scaled up, keeping its aspect ratio.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary
+                    color = warnColor
                 )
             }
 
@@ -1574,57 +1594,49 @@ fun App(onMenu: () -> Unit = {}) {
                 )
                 PauseRequest.NONE -> {}
             }
-            // Pause now, Pause after and Cancel all share one small row.
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Pause, skip and cancel share one small row. The buttons keep their own width (short
+            // labels, small type); the row only scrolls on a very narrow screen, so none is cut off.
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 P5Button(
                     "Pause now",
                     onClick = { BatchRunner.pauseNow() },
                     enabled = pauseRequest != PauseRequest.NOW,
                     kind = P5Kind.Secondary,
-                    compact = true,
-                    modifier = Modifier.weight(1f),
+                    dense = true,
                 )
                 P5Button(
                     if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after",
                     onClick = { BatchRunner.pauseAfter() },
                     enabled = pauseRequest != PauseRequest.NOW,
                     kind = P5Kind.Secondary,
-                    compact = true,
-                    modifier = Modifier.weight(1f),
+                    dense = true,
                 )
-                P5Button(
-                    if (runTotal > 1) "Cancel all" else "Cancel",
-                    onClick = { BatchRunner.cancelAll() },
-                    kind = P5Kind.Secondary,
-                    compact = true,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            if (currentParts > 1) {
                 // A split video: Skip part drops just the part being encoded and carries on with the
                 // next one. With other videos waiting there is also Skip video (the whole video).
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (currentParts > 1) {
                     P5Button(
                         "Skip part",
                         onClick = { BatchRunner.skipPart() },
                         kind = P5Kind.Secondary,
-                        modifier = Modifier.weight(1f),
+                        dense = true,
                     )
-                    if (runTotal > 1) {
-                        P5Button(
-                            "Skip video",
-                            onClick = { BatchRunner.skipCurrent() },
-                            kind = P5Kind.Secondary,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
                 }
-            } else if (runTotal > 1) {
+                if (runTotal > 1) {
+                    P5Button(
+                        "Skip video",
+                        onClick = { BatchRunner.skipCurrent() },
+                        kind = P5Kind.Secondary,
+                        dense = true,
+                    )
+                }
                 P5Button(
-                    "Skip current",
-                    onClick = { BatchRunner.skipCurrent() },
+                    if (runTotal > 1) "Cancel all" else "Cancel",
+                    onClick = { BatchRunner.cancelAll() },
                     kind = P5Kind.Secondary,
-                    modifier = Modifier.fillMaxWidth(),
+                    dense = true,
                 )
             }
             Text(
