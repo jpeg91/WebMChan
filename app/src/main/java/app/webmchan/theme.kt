@@ -35,12 +35,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathMeasure
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TransformOrigin
@@ -236,8 +239,10 @@ fun P5Button(
     kind: P5Kind = P5Kind.Primary,
     /** A smaller button (shorter, tighter, smaller text) for crowded rows. */
     compact: Boolean = false,
+    /** Smaller still than [compact]: a short one-line label, for a row of several small buttons. */
+    dense: Boolean = false,
 ) {
-    val shape = remember { SlantShape(if (compact) 6.dp else 9.dp) }
+    val shape = remember { SlantShape(if (dense) 5.dp else if (compact) 6.dp else 9.dp) }
     val fill = when (kind) {
         P5Kind.Primary -> if (enabled) P5.Red else P5.Panel
         P5Kind.Secondary -> P5.Black
@@ -251,7 +256,7 @@ fun P5Button(
     val borderColor = if (enabled) P5.White else P5.Line
     Box(
         modifier
-            .heightIn(min = if (compact) 34.dp else if (kind == P5Kind.Ghost) 40.dp else 46.dp)
+            .heightIn(min = if (dense) 30.dp else if (compact) 34.dp else if (kind == P5Kind.Ghost) 40.dp else 46.dp)
             .then(
                 if (kind != P5Kind.Ghost && enabled) {
                     Modifier.drawBehindCompat { w, h, px ->
@@ -268,17 +273,21 @@ fun P5Button(
             .then(if (kind == P5Kind.Ghost) Modifier else Modifier.border(if (compact) 1.5.dp else 2.dp, borderColor, shape))
             .clickable(enabled = enabled, onClick = onClick)
             .padding(
-                horizontal = if (compact) 6.dp else if (kind == P5Kind.Ghost) 10.dp else 16.dp,
-                vertical = if (compact) 5.dp else 9.dp,
+                horizontal = if (dense) 8.dp else if (compact) 6.dp else if (kind == P5Kind.Ghost) 10.dp else 16.dp,
+                vertical = if (dense) 4.dp else if (compact) 5.dp else 9.dp,
             ),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             label.uppercase(),
             color = textColor,
-            style = if (compact) {
+            style = if (dense) {
+                MaterialTheme.typography.labelLarge.copy(fontSize = 10.sp, lineHeight = 12.sp, letterSpacing = 0.2.sp)
+            } else if (compact) {
                 MaterialTheme.typography.labelLarge.copy(fontSize = 11.sp, lineHeight = 13.sp, letterSpacing = 0.2.sp)
             } else MaterialTheme.typography.labelLarge,
+            maxLines = if (dense) 1 else Int.MAX_VALUE,
+            softWrap = !dense,
             textAlign = TextAlign.Center,
         )
     }
@@ -331,7 +340,7 @@ fun P5Tag(text: String, color: Color, modifier: Modifier = Modifier, filled: Boo
     ) {
         Text(
             text.uppercase(),
-            color = if (filled) (if (color == P5.Red) P5.White else P5.Black) else color,
+            color = if (filled) (if (color == P5.Red || color == P5.Black) P5.White else P5.Black) else color,
             style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp),
         )
     }
@@ -394,6 +403,11 @@ fun P5Title(text: String, modifier: Modifier = Modifier, size: TextUnit = 34.sp,
 fun P5Card(
     modifier: Modifier = Modifier,
     accent: Color = P5.Red,
+    /**
+     * For the card being converted: where the light running round its border is, 0..1 per lap.
+     * Read while drawing, so the card isn't recomposed as it moves. Null = the plain border.
+     */
+    runPhase: (() -> Float)? = null,
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(4.dp),
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -405,11 +419,48 @@ fun P5Card(
             .drawBehindCompat { _, _, px ->
                 drawRect(accent, size = Size(px(6f), size.height))
             }
-            .border(1.5.dp, P5.Line, shape)
+            .border(1.5.dp, if (runPhase != null) P5.RedDeep else P5.Line, shape)
+            .then(
+                if (runPhase == null) Modifier else Modifier.drawWithContent {
+                    drawContent()
+                    drawRunningBorder(runPhase())
+                }
+            )
             .padding(start = 18.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
         verticalArrangement = verticalArrangement,
         content = content,
     )
+}
+
+/**
+ * A comet of red light running clockwise round the card's cut-corner outline: a bright head with a
+ * tail that fades behind it. [phase] is the head's place on the outline, 0..1 for one lap.
+ */
+private fun DrawScope.drawRunningBorder(phase: Float) {
+    val c = 16.dp.toPx()
+    val w = size.width
+    val h = size.height
+    val outline = Path().apply {
+        moveTo(c, 0f); lineTo(w, 0f); lineTo(w, h - c); lineTo(w - c, h); lineTo(0f, h); lineTo(0f, c); close()
+    }
+    val measure = PathMeasure().apply { setPath(outline, false) }
+    val len = measure.length
+    val head = (phase - phase.toInt()) * len
+    val stroke = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Butt)
+    // Longest and faintest first, so the bright head ends up on top.
+    val tail = listOf(0.34f to 0.22f, 0.22f to 0.45f, 0.12f to 0.8f, 0.05f to 1f)
+    for ((share, alpha) in tail) {
+        val color = if (share <= 0.05f) P5.RedBright else P5.Red
+        val from = head - share * len
+        val seg = Path()
+        if (from >= 0f) {
+            measure.getSegment(from, head, seg, true)
+        } else {
+            measure.getSegment(len + from, len, seg, true)
+            measure.getSegment(0f, head, seg, true)
+        }
+        drawPath(seg, color.copy(alpha = alpha), style = stroke)
+    }
 }
 
 /**
