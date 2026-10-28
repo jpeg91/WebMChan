@@ -8,6 +8,8 @@ import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -26,6 +28,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 enum class ItemStatus { WAITING, CONVERTING, DONE, FAILED, CANCELLED }
+
+/** A one-off effect a card plays when it appears: a flash for a finished video, a shake for a failed one. */
+enum class CardEventKind { DONE, FAILED }
+
+/** [at] is SystemClock.elapsedRealtime() when it happened, so a stale one (app in the background) is ignored. */
+data class CardEvent(val kind: CardEventKind, val at: Long)
 
 /** A pause that has been asked for but hasn't happened yet. */
 enum class PauseRequest { NONE, AFTER, NOW }
@@ -178,6 +186,25 @@ object BatchRunner {
     var copyingTotal by mutableIntStateOf(0)
         private set
     var copyingDone by mutableIntStateOf(0)
+        private set
+
+    /**
+     * Effects waiting for a card to play, by card id. A card removes its own entry when it plays it
+     * (see [noteCardEvent]). Not saved: they only matter for the next few seconds.
+     */
+    val cardEvents = mutableStateMapOf<Long, CardEvent>()
+
+    private fun noteCardEvent(id: Long, kind: CardEventKind) {
+        val now = SystemClock.elapsedRealtime()
+        cardEvents.entries.removeAll { now - it.value.at > 30_000L } // never played (app in the background)
+        cardEvents[id] = CardEvent(kind, now)
+    }
+
+    /**
+     * The video that Pause Now interrupted: its card stays in the Converting section, with the
+     * light round its border held still, until the batch carries on (or ends). -1 = none.
+     */
+    var pausedItemId by mutableLongStateOf(-1L)
         private set
 
     /** < 0 means indeterminate (pass 1). */
@@ -1014,6 +1041,7 @@ object BatchRunner {
                     logBuffer.add("=== ${pos()}: ${item.name}: split has changed since the earlier attempt, starting again from part 1 ===") { logLines = it }
                 }
 
+                pausedItemId = -1L
                 queue[idx] = item.copy(
                     status = ItemStatus.CONVERTING, detail = null, savedUri = null,
                     partsDone = resumeFrom - 1, partsTotal = if (numParts > 1) numParts else 0,
@@ -1161,6 +1189,7 @@ object BatchRunner {
                                 lastDoneDetail = detail
                                 // Each part gets its own card in Finished (a single-part conversion
                                 // is unchanged: one card, same as before).
+                                noteCardEvent(cardId, CardEventKind.DONE) // before the card exists, so it finds it
                                 finished.add(
                                     QueueItem(
                                         id = cardId,
@@ -1222,6 +1251,7 @@ object BatchRunner {
                         itemPaused -> {
                             // Pause Now: back to waiting; starts again after Resume.
                             queue[now] = queue[now].copy(status = ItemStatus.WAITING, detail = null)
+                            pausedItemId = id
                         }
                         itemSkipped -> {
                             val note = if (lastPartTried > 0) {
@@ -1233,6 +1263,7 @@ object BatchRunner {
                         itemFailMsg != null -> {
                             val note = (if (lastPartTried > 0) "$partsSaved of $numParts parts saved before this failed.$resumeHint\n" else "") +
                                 itemFailMsg
+                            noteCardEvent(id, CardEventKind.FAILED) // before the card moves, so it finds it
                             queue[now] = queue[now].copy(status = ItemStatus.FAILED, detail = note)
                             failCount++
                         }
@@ -1299,6 +1330,7 @@ object BatchRunner {
             summary = text
             busy = false
             currentParts = 0
+            pausedItemId = -1L
             cancelling = false
             paused = false
             pauseRequest = PauseRequest.NONE
