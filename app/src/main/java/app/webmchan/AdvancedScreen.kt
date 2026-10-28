@@ -1,3 +1,4 @@
+
 // #advanced
 package app.webmchan
 
@@ -80,6 +81,21 @@ private val FIELDS = listOf(
             "another part.", false,
     ),
     FieldSpec(
+        "floorBudgetPct", "Easy clips: frame size budget (% of video bitrate)",
+        "Default 70. Allowed 0 to 100. Simple clips can't use the whole bitrate budget, so they come out " +
+            "far under the size limit. The app predicts the smallest size the encoder can reach at " +
+            "its best quality from the source, and uses the biggest frame size (up to 1080p) whose " +
+            "prediction is at most this % of the budget, if that is bigger than the detail threshold " +
+            "would pick. Lower is more cautious. 0 turns this off. Not used in Fastest mode or with a " +
+            "Custom resolution.", false,
+    ),
+    FieldSpec(
+        "floorFactor", "Easy clips: prediction factor",
+        "Default 3.5. Allowed 1 to 10. Scales the prediction above. Fitted from a few test clips, " +
+            "where it came out between 2.75 and 3.97. Higher predicts bigger files, so smaller frames " +
+            "are picked.", false,
+    ),
+    FieldSpec(
         "bracketWebAnimation", "Quality bracket: web animation from (bits per pixel)",
         "Default 0.026 (about 80 kbps at 240p and 30 fps). Below this a queued video's card says " +
             "\"still image\". The bracket starts have to rise in order; one that doesn't is " +
@@ -126,6 +142,8 @@ private fun Tuning.asText(): Map<String, String> = mapOf(
     "fastestBpp" to fastestBpp.toString(),
     "lengthGraceSec" to lengthGraceSec.toString(),
     "trimToleranceSec" to trimToleranceSec.toString(),
+    "floorBudgetPct" to floorBudgetPct.toString(),
+    "floorFactor" to floorFactor.toString(),
     "bracketWebAnimation" to bracketWebAnimation.toString(),
     "bracketProAnimation" to bracketProAnimation.toString(),
     "bracketOldWebVideo" to bracketOldWebVideo.toString(),
@@ -160,6 +178,8 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         fastestBpp = dbl("fastestBpp", base.fastestBpp),
         lengthGraceSec = dbl("lengthGraceSec", base.lengthGraceSec),
         trimToleranceSec = dbl("trimToleranceSec", base.trimToleranceSec),
+        floorBudgetPct = dbl("floorBudgetPct", base.floorBudgetPct),
+        floorFactor = dbl("floorFactor", base.floorFactor),
         bracketWebAnimation = dbl("bracketWebAnimation", base.bracketWebAnimation),
         bracketProAnimation = dbl("bracketProAnimation", base.bracketProAnimation),
         bracketOldWebVideo = dbl("bracketOldWebVideo", base.bracketOldWebVideo),
