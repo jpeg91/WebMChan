@@ -482,10 +482,14 @@ fun P5Card(
     )
 }
 
-/** A soft red band travelling down the card: faint above, a crisp edge below, so it reads as "going down". */
+/**
+ * A soft red band travelling down the card: faint above, a crisp edge below, so it reads as "going
+ * down". It runs on until its whole faded tail has left the bottom of the card, so the tail slides
+ * out rather than vanishing when the crisp edge arrives.
+ */
 private fun DrawScope.drawSweep(t: Float) {
     val band = size.height * 0.6f
-    val y = -band + t * (size.height + band)
+    val y = t * (size.height + band)
     drawRect(
         brush = Brush.verticalGradient(
             colors = listOf(Color.Transparent, P5.Red.copy(alpha = 0.22f)),
