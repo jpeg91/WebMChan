@@ -396,7 +396,7 @@ object Converter {
             chooseHeight(
                 vKbps, src, minHeightFor(src, settings.minWidth, settings.minHeight),
                 if (settings.fastest) t.fastestBpp else t.normalBpp,
-                settings.targetFps,
+                settings.targetFps, t, !settings.fastest,
             )
         }
         // Bits per pixel of the output: the width follows from the height at the source's shape.
@@ -594,12 +594,39 @@ object Converter {
         return (need + 1) / 2 * 2
     }
 
+    // How the predicted lowest-quantiser size scales with frame size and frame rate (rough rules of
+    // thumb: bitrate grows more slowly than pixel count or frame rate).
+    private const val FLOOR_PIXEL_EXPONENT = 0.75
+    private const val FLOOR_FPS_EXPONENT = 0.7
+
+    /**
+     * A guess at the video bitrate the encoder would use at [height] when it can't spend any more
+     * bits (its lowest quantiser), worked out from the source's own video bitrate, scaled for the
+     * change in frame size and frame rate and multiplied by [Tuning.floorFactor]. null when the
+     * source's bitrate or frame rate isn't known, so nothing can be predicted.
+     */
+    private fun predictedFloorKbps(src: SourceInfo, height: Int, targetFps: Int, t: Tuning): Double? {
+        if (src.videoKbps <= 0 || !src.fpsReadable || src.width <= 0 || src.height <= 0 || src.fps <= 0.0) return null
+        val aspect = src.width.toDouble() / src.height
+        val pixelRatio = (height * height * aspect) / (src.width.toDouble() * src.height)
+        val fpsRatio = effectiveFps(src, targetFps) / src.fps
+        return src.videoKbps * pixelRatio.pow(FLOOR_PIXEL_EXPONENT) * fpsRatio.pow(FLOOR_FPS_EXPONENT) * t.floorFactor
+    }
+
     /**
      * Biggest height (<=1080, <= source) that still gets a decent bits-per-pixel for VP8,
      * never below [minHeight]. A source smaller than the minimum is scaled up to it. The frame
      * rate used for the bits-per-pixel sum is the output's: the source's, capped at [targetFps].
+     *
+     * With [predictFloor] on (and [Tuning.floorBudgetPct] above 0), a bigger height wins if its
+     * predicted lowest-quantiser size (see [predictedFloorKbps]) is within that % of [vKbps]: an
+     * easy clip can't use the whole budget, so a fixed bits-per-pixel rule would shrink it for
+     * nothing. It only ever raises the pick, never lowers it.
      */
-    private fun chooseHeight(vKbps: Int, src: SourceInfo, minHeight: Int, minBpp: Double, targetFps: Int): Int {
+    private fun chooseHeight(
+        vKbps: Int, src: SourceInfo, minHeight: Int, minBpp: Double, targetFps: Int,
+        t: Tuning, predictFloor: Boolean,
+    ): Int {
         val fps = effectiveFps(src, targetFps)
         val aspect = src.width.toDouble() / src.height
         val ladder = listOf(1080, 720, 480, 360, 240)
@@ -610,12 +637,27 @@ object Converter {
         if (minHeight > 0 && (candidates.isEmpty() || candidates.last() > minHeight)) {
             candidates.add(minHeight)
         }
+        var pick = candidates.last() / 2 * 2
         for (h in candidates) {
             val w = h * aspect
             val bpp = vKbps * 1000.0 / (w * h * fps)
-            if (bpp >= minBpp) return h / 2 * 2
+            if (bpp >= minBpp) {
+                pick = h / 2 * 2
+                break
+            }
         }
-        return candidates.last() / 2 * 2
+        if (predictFloor && t.floorBudgetPct > 0.0) {
+            val room = vKbps * t.floorBudgetPct / 100.0
+            for (h in candidates) {
+                if (h / 2 * 2 <= pick) break // nothing bigger left to offer
+                val floor = predictedFloorKbps(src, h, targetFps, t) ?: break
+                if (floor <= room) {
+                    pick = h / 2 * 2
+                    break
+                }
+            }
+        }
+        return pick
     }
 
     // Spare room wanted in the cache on top of the source's own size (encoder output, pass logs).
@@ -840,7 +882,7 @@ object Converter {
                 } else {
                     chooseHeight(
                         vKbps, src, minHeight, if (settings.fastest) t.fastestBpp else t.normalBpp,
-                        settings.targetFps,
+                        settings.targetFps, t, !settings.fastest,
                     )
                 }
                 lastHeight = height
@@ -912,6 +954,15 @@ object Converter {
                 onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
                 onLog("   encoder effort: $effortName (cpu-used $cpuUsed)")
                 onLog("   rate control: 2-pass, average target $vKbps kbps for the video, no minimum or maximum rate and no quantiser limits set (libvpx defaults)")
+                if (!settings.hasCustomSize) {
+                    predictedFloorKbps(src, height, settings.targetFps, t)?.let { floor ->
+                        onLog(
+                            "   predicted size at the encoder's best quality for ${height}p: about %.0f kbps video (%.0f%% of the video target)".format(
+                                java.util.Locale.US, floor, floor / vKbps * 100.0
+                            )
+                        )
+                    }
+                }
                 onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
                 FFmpegKitConfig.enableStatisticsCallback { }
                 onProgress(-1f, "Attempt $attempt/${t.maxAttempts}, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
@@ -962,6 +1013,15 @@ object Converter {
                     )
                     if (gotKbps < askedKbps * 0.85 && (qEnd?.toDoubleOrNull() ?: 99.0) <= 4.5) {
                         onLog("   note: well under the target with q at 4 (libvpx's default lowest), so the encoder likely couldn't spend more bits on this clip")
+                        if (!settings.hasCustomSize) {
+                            predictedFloorKbps(src, height, settings.targetFps, t)?.let { floor ->
+                                onLog(
+                                    "   the prediction for ${height}p was about %.0f kbps video; the video actually came out at about %.0f kbps".format(
+                                        java.util.Locale.US, floor, (gotKbps - askedAudioKbps).coerceAtLeast(0.0)
+                                    )
+                                )
+                            }
+                        }
                     }
                 }
                 if (size <= 0L) {
