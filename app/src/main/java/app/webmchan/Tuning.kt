@@ -44,6 +44,21 @@ data class Tuning(
     /** An overshoot of this many seconds or less is trimmed off instead of becoming another part. */
     val trimToleranceSec: Double = 0.5,
     /**
+     * Easy clips (logos, test patterns) can't use the whole bitrate budget: the encoder hits its
+     * lowest quantiser and the file comes out far under the limit. So the frame size is also
+     * chosen by predicting that point from the source (see [floorFactor]): the biggest frame size
+     * whose predicted size is at most this % of the video bitrate budget is used, if that is
+     * bigger than the detail threshold would pick. 0 turns the prediction off. Not used in Fastest
+     * mode or with a Custom resolution.
+     */
+    val floorBudgetPct: Double = 70.0,
+    /**
+     * How the prediction is scaled: predicted kbps = source video kbps, scaled for frame size and
+     * frame rate, times this. Fitted from a few test clips (2.75 to 3.97), so it's a rough guide.
+     * Higher is more cautious (picks smaller frames).
+     */
+    val floorFactor: Double = 3.5,
+    /**
      * Where each quality bracket on a queue card starts, in bits per pixel (video bitrate divided
      * by pixels per second, so frame size and frame rate are both accounted for, then adjusted for
      * frame size by [bracketSizeExponent]; the starts are set for a 240p frame). Below
@@ -88,6 +103,8 @@ data class Tuning(
             fastestBpp = fastestBpp.coerceIn(0.01, 1.0),
             lengthGraceSec = lengthGraceSec.coerceIn(0.0, 10.0),
             trimToleranceSec = trimToleranceSec.coerceIn(0.0, 5.0),
+            floorBudgetPct = floorBudgetPct.coerceIn(0.0, 100.0),
+            floorFactor = floorFactor.coerceIn(1.0, 10.0),
             bracketWebAnimation = web,
             bracketProAnimation = pro,
             bracketOldWebVideo = old,
@@ -111,6 +128,8 @@ data class Tuning(
             if (fastestBpp != d.fastestBpp) add("Fastest detail threshold = $fastestBpp")
             if (lengthGraceSec != d.lengthGraceSec) add("length grace = $lengthGraceSec s")
             if (trimToleranceSec != d.trimToleranceSec) add("trim tolerance = $trimToleranceSec s")
+            if (floorBudgetPct != d.floorBudgetPct) add("easy-clip frame size limit = $floorBudgetPct% of budget")
+            if (floorFactor != d.floorFactor) add("easy-clip prediction factor = $floorFactor")
             if (bracketWebAnimation != d.bracketWebAnimation) add("web animation from $bracketWebAnimation bpp")
             if (bracketProAnimation != d.bracketProAnimation) add("pro animation from $bracketProAnimation bpp")
             if (bracketOldWebVideo != d.bracketOldWebVideo) add("old web video from $bracketOldWebVideo bpp")
@@ -145,6 +164,8 @@ object TuningStore {
             fastestBpp = dbl("fastestBpp", d.fastestBpp),
             lengthGraceSec = dbl("lengthGraceSec", d.lengthGraceSec),
             trimToleranceSec = dbl("trimToleranceSec", d.trimToleranceSec),
+            floorBudgetPct = dbl("floorBudgetPct", d.floorBudgetPct),
+            floorFactor = dbl("floorFactor", d.floorFactor),
             bracketWebAnimation = dbl("bracketWebAnimation", d.bracketWebAnimation),
             bracketProAnimation = dbl("bracketProAnimation", d.bracketProAnimation),
             bracketOldWebVideo = dbl("bracketOldWebVideo", d.bracketOldWebVideo),
@@ -168,6 +189,8 @@ object TuningStore {
             .putString("fastestBpp", s.fastestBpp.toString())
             .putString("lengthGraceSec", s.lengthGraceSec.toString())
             .putString("trimToleranceSec", s.trimToleranceSec.toString())
+            .putString("floorBudgetPct", s.floorBudgetPct.toString())
+            .putString("floorFactor", s.floorFactor.toString())
             .putString("bracketWebAnimation", s.bracketWebAnimation.toString())
             .putString("bracketProAnimation", s.bracketProAnimation.toString())
             .putString("bracketOldWebVideo", s.bracketOldWebVideo.toString())
