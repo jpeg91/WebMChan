@@ -19,6 +19,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.material3.LocalContentColor
@@ -31,6 +34,14 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import kotlin.math.sin
+import kotlin.math.PI
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -399,32 +410,70 @@ fun P5Title(text: String, modifier: Modifier = Modifier, size: TextUnit = 34.sp,
     )
 }
 
-/** A card with two cut corners and a coloured stripe down its left edge. */
+/** What a card being converted is doing, which sets how the light runs round its border. */
+enum class RunLook {
+    /** Starting, copying the video, checking the audio: slow, pale and pulsing. */
+    PREPARING,
+
+    /** Pass 1, the analysis: four short comets, faster, scanning round. */
+    ANALYSING,
+
+    /** Pass 2, the encoding: two red comets. */
+    ENCODING,
+
+    /** Done, saving the file: two white comets, fast. */
+    FINISHING,
+
+    /** Pause Now has been pressed and the encoder is stopping: slowing down, pulsing. */
+    PAUSING,
+}
+
+/**
+ * What the running border needs each frame. Lambdas, so the values are read while drawing and the
+ * card isn't recomposed 60 times a second: [phase] is the first comet's place on the outline (0..1
+ * per lap), [amber] is 1 at the start of a retry and fades to 0.
+ */
+class RunBorder(val phase: () -> Float, val look: () -> RunLook, val amber: () -> Float)
+
+/** A one-off effect on a card: a colour flash laid over it, and a sideways shake. */
+class CardFx {
+    var shakeDp by mutableFloatStateOf(0f)
+    var flash by mutableFloatStateOf(0f)
+    var flashColor by mutableStateOf(P5.White)
+}
+
+/**
+ * A card with two cut corners and a coloured stripe down its left edge. [runBorder] puts the light
+ * running round the border of the card being converted, [fx] plays a flash or shake on it, and
+ * [sweep] (0..1 per pass) draws a soft red band moving down the card's background, for the video
+ * that is next in the queue.
+ */
 @Composable
 fun P5Card(
     modifier: Modifier = Modifier,
     accent: Color = P5.Red,
-    /**
-     * For the card being converted: where the light running round its border is, 0..1 per lap.
-     * Read while drawing, so the card isn't recomposed as it moves. Null = the plain border.
-     */
-    runPhase: (() -> Float)? = null,
+    runBorder: RunBorder? = null,
+    fx: CardFx? = null,
+    sweep: (() -> Float)? = null,
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(4.dp),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val shape = remember { CutCornerShape(topStart = 16.dp, bottomEnd = 16.dp) }
     Column(
         modifier
+            .then(if (fx != null) Modifier.graphicsLayer { translationX = fx.shakeDp * density } else Modifier)
             .clip(shape)
             .background(P5.Ink)
             .drawBehindCompat { _, _, px ->
+                if (sweep != null) drawSweep(sweep())
                 drawRect(accent, size = Size(px(6f), size.height))
             }
-            .border(1.5.dp, if (runPhase != null) P5.RedDeep.copy(alpha = 0.6f) else P5.Line, shape)
+            .border(1.5.dp, if (runBorder != null) P5.RedDeep.copy(alpha = 0.6f) else P5.Line, shape)
             .then(
-                if (runPhase == null) Modifier else Modifier.drawWithContent {
+                if (runBorder == null && fx == null) Modifier else Modifier.drawWithContent {
                     drawContent()
-                    drawRunningBorder(runPhase())
+                    if (runBorder != null) drawRunningBorder(runBorder.phase(), runBorder.look(), runBorder.amber())
+                    if (fx != null && fx.flash > 0f) drawRect(fx.flashColor.copy(alpha = fx.flash.coerceIn(0f, 1f)))
                 }
             )
             .padding(start = 18.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
@@ -433,11 +482,28 @@ fun P5Card(
     )
 }
 
+/** A soft red band travelling down the card: faint above, a crisp edge below, so it reads as "going down". */
+private fun DrawScope.drawSweep(t: Float) {
+    val band = size.height * 0.6f
+    val y = -band + t * (size.height + band)
+    drawRect(
+        brush = Brush.verticalGradient(
+            colors = listOf(Color.Transparent, P5.Red.copy(alpha = 0.22f)),
+            startY = y - band,
+            endY = y,
+        ),
+        topLeft = Offset(0f, y - band),
+        size = Size(size.width, band),
+    )
+}
+
 /**
- * Two comets of red light, on opposite sides, running clockwise round the card's cut-corner outline: each a bright head with a
+ * Comets of light running clockwise round the card's cut-corner outline, each a bright head with a
  * tail that fades behind it. [phase] is the first head's place on the outline, 0..1 for one lap.
+ * What they look like follows [look] (see [RunLook]); [amber] tints them (and the border) amber,
+ * for the moment a new attempt starts.
  */
-private fun DrawScope.drawRunningBorder(phase: Float) {
+private fun DrawScope.drawRunningBorder(phase: Float, look: RunLook, amber: Float) {
     val c = 16.dp.toPx()
     // Drawn a little inside the card's edge: the card is clipped to its shape, and a line on the
     // edge itself would lose half its thickness.
@@ -451,18 +517,40 @@ private fun DrawScope.drawRunningBorder(phase: Float) {
     val measure = PathMeasure().apply { setPath(outline, false) }
     val len = measure.length
     val stroke = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Butt, join = StrokeJoin.Round)
+    if (amber > 0f) drawPath(outline, P5.Amber.copy(alpha = 0.75f * amber), style = Stroke(width = 2.dp.toPx()))
+
+    val count = if (look == RunLook.ANALYSING) 4 else 2
+    val tailScale = when (look) {
+        RunLook.PREPARING -> 0.55f
+        RunLook.ANALYSING -> 0.4f
+        else -> 1f
+    }
+    // A slow pulse for the stages that are waiting rather than working (a whole number of beats
+    // per lap, so it doesn't jump when the lap wraps round).
+    val pulse = when (look) {
+        RunLook.PREPARING, RunLook.PAUSING -> 0.65f + 0.35f * sin(phase * 2f * PI.toFloat() * 8f)
+        else -> 1f
+    }
+    val body = when (look) {
+        RunLook.PREPARING -> P5.Grey
+        RunLook.FINISHING -> P5.White
+        else -> P5.Red
+    }
+    val bright = when (look) {
+        RunLook.PREPARING, RunLook.FINISHING -> P5.White
+        else -> P5.RedBright
+    }
+    fun tint(color: Color, alpha: Float) = lerp(color, P5.Amber, amber).copy(alpha = alpha * pulse)
     // Longest and faintest first, so the bright head ends up on top; the very tip is white-hot.
-    // The tails are short enough that each comet fades out before it reaches the other one.
     val tail = listOf(
-        0.34f to P5.Red.copy(alpha = 0.25f),
-        0.23f to P5.Red.copy(alpha = 0.5f),
-        0.14f to P5.Red.copy(alpha = 0.8f),
-        0.07f to P5.RedBright,
-        0.03f to P5.White,
+        0.34f * tailScale to tint(body, 0.25f),
+        0.23f * tailScale to tint(body, 0.5f),
+        0.14f * tailScale to tint(body, 0.8f),
+        0.07f * tailScale to tint(bright, 1f),
+        0.03f * tailScale to tint(P5.White, 1f),
     )
-    // Two comets, half a lap apart, both following the outline the same way.
-    for (offset in listOf(0f, 0.5f)) {
-        val p = phase + offset
+    for (k in 0 until count) {
+        val p = phase + k.toFloat() / count
         val head = (p - p.toInt()) * len
         for ((share, color) in tail) {
             val from = head - share * len
@@ -474,6 +562,56 @@ private fun DrawScope.drawRunningBorder(phase: Float) {
                 measure.getSegment(0f, head, seg, true)
             }
             drawPath(seg, color, style = stroke)
+        }
+    }
+}
+
+/**
+ * A big readout in the style of the 💯 emoji: heavy red italic digits, tilted, with a white
+ * outline, a hard black shadow and two slanted underlines. [value] null shows dashes, dimmed (for
+ * the stages that have no percentage).
+ */
+@Composable
+fun P5Percent(value: Int?, modifier: Modifier = Modifier) {
+    val digits = value?.coerceIn(0, 100)?.toString() ?: "--"
+    val fill = if (value != null) P5.Red else P5.RedDeep
+    val outline = if (value != null) P5.White else P5.GreyDim
+    val big = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic,
+        fontSize = 38.sp, lineHeight = 40.sp, letterSpacing = (-1).sp,
+    )
+    val small = big.copy(fontSize = 20.sp, lineHeight = 22.sp, letterSpacing = 0.sp)
+    @Composable
+    fun Glyphs(style: TextStyle, color: Color, stroked: Boolean) {
+        val st = if (stroked) style.copy(drawStyle = Stroke(width = 9f, join = StrokeJoin.Round)) else style
+        Text(digits, style = st, color = color)
+    }
+    Column(
+        modifier.graphicsLayer { rotationZ = -6f },
+        horizontalAlignment = Alignment.End,
+    ) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Box {
+                // Hard shadow, white outline, then the red fill on top.
+                Box(Modifier.offset(3.dp, 3.dp)) { Glyphs(big, Color.Black, stroked = true) }
+                Glyphs(big, outline, stroked = true)
+                Glyphs(big, fill, stroked = false)
+            }
+            Box(Modifier.padding(bottom = 4.dp)) {
+                Box(Modifier.offset(2.dp, 2.dp)) { Text("%", style = small.copy(drawStyle = Stroke(width = 7f, join = StrokeJoin.Round)), color = Color.Black) }
+                Text("%", style = small.copy(drawStyle = Stroke(width = 7f, join = StrokeJoin.Round)), color = outline)
+                Text("%", style = small, color = fill)
+            }
+        }
+        // The two underlines, the lower one shorter and pushed right, as on the emoji.
+        Canvas(Modifier.width(76.dp).height(11.dp)) {
+            val bar = 3.dp.toPx()
+            val slant = 5.dp.toPx()
+            drawPath(slantPath(size.width, bar, slant, dx = 3.dp.toPx(), dy = 3.dp.toPx()), Color.Black)
+            drawPath(slantPath(size.width, bar, slant), fill)
+            val y2 = bar + 2.dp.toPx()
+            drawPath(slantPath(size.width * 0.7f, bar, slant, dx = size.width * 0.3f + 3.dp.toPx(), dy = y2 + 3.dp.toPx()), Color.Black)
+            drawPath(slantPath(size.width * 0.7f, bar, slant, dx = size.width * 0.3f, dy = y2), fill)
         }
     }
 }
