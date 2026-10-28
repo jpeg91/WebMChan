@@ -271,7 +271,7 @@ private fun runStage(status: String, progress: Float): RunLook = when {
 /** How fast the light runs round the border at each stage, in laps per second. */
 private fun lapsPerSecond(look: RunLook): Float = when (look) {
     RunLook.PREPARING -> 1f / 6f
-    RunLook.ANALYSING -> 1f / 2.2f
+    RunLook.ANALYSING -> 1f / 4.4f
     RunLook.ENCODING -> 1f / 3f
     RunLook.FINISHING -> 1f / 1.2f
     RunLook.PAUSING -> 1f / 9f
@@ -345,8 +345,13 @@ private fun QueueRow(
     /** Queue cards offer "Return to holding pen". */
     showReturn: Boolean = false,
     onReturn: () -> Unit = {},
-    /** The video that will be converted next: gets a NEXT tag, and a band moving down while a batch runs. */
+    /** The video that will be converted next: gets a NEXT tag. */
     isNext: Boolean = false,
+    /**
+     * Waiting videos while a batch runs: where the soft band moving down the card is (0..1 per
+     * pass). One shared clock for all the cards, so the bands move down together.
+     */
+    sweep: (() -> Float)? = null,
 ) {
     val ctx = LocalContext.current
     val i = item.info
@@ -435,25 +440,13 @@ private fun QueueRow(
         if (SystemClock.elapsedRealtime() - ev.at < 4000L) playCardEvent(fx, ev.kind)
     }
 
-    // The next video in the queue has a soft band moving down its background while a batch runs.
-    val sweeping = isNext && BatchRunner.busy && !BatchRunner.paused
-    var sweepPhase by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(sweeping) {
-        if (sweeping) {
-            val start = System.nanoTime()
-            while (isActive) {
-                sweepPhase = ((System.nanoTime() - start) / 2_400_000_000.0).toFloat() % 1f
-                delay(16)
-            }
-        }
-    }
     val warnColor = MaterialTheme.colorScheme.tertiary
     P5Card(
         Modifier.fillMaxWidth(),
         accent = accent,
         runBorder = if (converting || pausedHere) runBorder else null,
         fx = fx,
-        sweep = if (sweeping) ({ sweepPhase }) else null,
+        sweep = sweep,
     ) {
         // Header: the file name gets the whole width but for the buttons (it wrapped to four lines
         // when the thumbnail sat beside it too). Long names stop at two lines; the full name is
@@ -1051,6 +1044,19 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
     val queue = BatchRunner.queue
     // Conversion runs from the bottom of the list up, so the next video is the first waiting one
     // in list order (the one lowest on screen).
+    // While a batch runs, every waiting video has a soft band moving down its background (one
+    // shared clock, so they move together); the next one also has the NEXT tag.
+    val sweeping = section == CardSection.QUEUE && busy && !BatchRunner.paused
+    var sweepPhase by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(sweeping) {
+        if (sweeping) {
+            val start = System.nanoTime()
+            while (isActive) {
+                sweepPhase = ((System.nanoTime() - start) / 2_400_000_000.0).toFloat() % 1f
+                delay(16)
+            }
+        }
+    }
     val nextId = if (section == CardSection.QUEUE) {
         queue.firstOrNull {
             !it.inPen && it.info != null && !it.probeFailed && it.status == ItemStatus.WAITING &&
@@ -1089,6 +1095,9 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
                 showReturn = section == CardSection.QUEUE,
                 onReturn = { BatchRunner.returnToPen(item.id) },
                 isNext = item.id == nextId,
+                sweep = if (sweeping && item.status == ItemStatus.WAITING && item.info != null && !item.probeFailed) {
+                    { sweepPhase }
+                } else null,
             )
         }
     }
