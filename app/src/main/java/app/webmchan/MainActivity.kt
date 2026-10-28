@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.widget.Toast
 import android.os.Build
+import android.os.SystemClock
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -44,6 +45,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -77,6 +79,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlin.math.PI
+import kotlin.math.sin
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -253,6 +257,65 @@ private fun fpsLabel(i: SourceInfo, finished: Boolean): String = when {
     else -> "Cannot read fps. Encoder kept the source rate"
 }
 
+/**
+ * Which stage the running video is at, worked out from the status text the converter reports
+ * ("Attempt 1/4, pass 2/2: encoding ...") and the progress (below 0 = the stage can't say).
+ */
+private fun runStage(status: String, progress: Float): RunLook = when {
+    status.contains("pass 1/2") -> RunLook.ANALYSING
+    status.contains("pass 2/2") -> if (progress >= 1f) RunLook.FINISHING else RunLook.ENCODING
+    status.endsWith("Done") -> RunLook.FINISHING
+    else -> RunLook.PREPARING // Starting, copying the video, checking the audio
+}
+
+/** How fast the light runs round the border at each stage, in laps per second. */
+private fun lapsPerSecond(look: RunLook): Float = when (look) {
+    RunLook.PREPARING -> 1f / 6f
+    RunLook.ANALYSING -> 1f / 2.2f
+    RunLook.ENCODING -> 1f / 3f
+    RunLook.FINISHING -> 1f / 1.2f
+    RunLook.PAUSING -> 1f / 9f
+}
+
+/** Plays a card's one-off effect by hand (a timer, not Compose animation, so it ignores the animation-scale setting). */
+private suspend fun playCardEvent(fx: CardFx, kind: CardEventKind) {
+    val done = kind == CardEventKind.DONE
+    val seconds = if (done) 0.8f else 0.9f
+    fx.flashColor = if (done) P5.White else P5.Amber
+    val start = System.nanoTime()
+    try {
+        while (true) {
+            val t = (System.nanoTime() - start) / 1_000_000_000f
+            if (t >= seconds) break
+            val k = t / seconds
+            if (done) {
+                fx.flash = (1f - k) * (1f - k) * 0.85f
+            } else {
+                fx.flash = (1f - k) * 0.5f
+                // Shakes sideways six times, dying away.
+                fx.shakeDp = sin(t * 2f * PI.toFloat() * 6f) * 12f * (1f - k)
+            }
+            delay(16)
+        }
+    } finally {
+        fx.flash = 0f
+        fx.shakeDp = 0f
+    }
+}
+
+/** The big percentage on the card being converted. Reads the progress itself, so only this redraws as it changes. */
+@Composable
+private fun RunPercent(item: QueueItem) {
+    val stage = runStage(BatchRunner.status, BatchRunner.progress)
+    val value: Int? = if (stage == RunLook.ENCODING || stage == RunLook.FINISHING) {
+        val p = BatchRunner.progress.coerceIn(0f, 1f)
+        // A split video counts all its parts: the ones already saved plus how far this one is.
+        val overall = if (item.partsTotal > 1) (item.partsDone + p) / item.partsTotal else p
+        (overall * 100f).toInt()
+    } else null
+    P5Percent(value)
+}
+
 @Composable
 private fun QueueButton(label: String, enabled: Boolean, onClick: () -> Unit) {
     // The remove button (✕) gets the red accent.
@@ -282,6 +345,8 @@ private fun QueueRow(
     /** Queue cards offer "Return to holding pen". */
     showReturn: Boolean = false,
     onReturn: () -> Unit = {},
+    /** The video that will be converted next: gets a NEXT tag, and a band moving down while a batch runs. */
+    isNext: Boolean = false,
 ) {
     val ctx = LocalContext.current
     val i = item.info
@@ -312,17 +377,72 @@ private fun QueueRow(
         ItemStatus.CANCELLED -> P5.GreyDim
         ItemStatus.WAITING -> P5.RedDeep
     }
-    // The card being converted has a light running round its border, so it stands out from the
-    // queue and shows that work is going on. Driven by hand with a plain timer (like the progress
-    // sweep, see pass1Sweep) rather than Compose's animation system, so it runs even with the
-    // phone's animations turned off.
+    // The card being converted has light running round its border, so it stands out from the
+    // queue and shows what stage the work is at (see RunLook). Everything here is driven by hand
+    // with plain timers (like the progress sweep, see pass1Sweep) rather than Compose's animation
+    // system, so it runs even with the phone's animations turned off.
     val converting = item.status == ItemStatus.CONVERTING
+    // After Pause Now the card stays up here with the light held still, until the batch resumes.
+    val pausedHere = item.id == BatchRunner.pausedItemId
+    val look by remember {
+        derivedStateOf {
+            if (BatchRunner.pauseRequest == PauseRequest.NOW) RunLook.PAUSING
+            else runStage(BatchRunner.status, BatchRunner.progress)
+        }
+    }
     var runPhase by remember { mutableFloatStateOf(0f) }
+    // Moves only while converting, so when paused it stops where it is and carries on from there.
     LaunchedEffect(converting) {
         if (converting) {
+            var last = System.nanoTime()
+            while (isActive) {
+                delay(16)
+                val now = System.nanoTime()
+                runPhase = (runPhase + (now - last) / 1_000_000_000f * lapsPerSecond(look)) % 1f
+                last = now
+            }
+        }
+    }
+    // A new attempt (the last one came out over the size limit) flashes the light amber.
+    val attempt by remember {
+        derivedStateOf { Regex("Attempt (\\d+)/").find(BatchRunner.status)?.groupValues?.get(1)?.toIntOrNull() ?: 0 }
+    }
+    var amber by remember { mutableFloatStateOf(0f) }
+    var lastAttempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(attempt, converting) {
+        if (converting && attempt > 1 && attempt > lastAttempt) {
+            val start = System.nanoTime()
+            try {
+                while (true) {
+                    val t = (System.nanoTime() - start) / 1_300_000_000f
+                    if (t >= 1f) break
+                    amber = 1f - t
+                    delay(16)
+                }
+            } finally {
+                amber = 0f
+            }
+        }
+        if (attempt > 0) lastAttempt = attempt
+    }
+    val runBorder = remember { RunBorder(phase = { runPhase }, look = { look }, amber = { amber }) }
+
+    // A flash when this card shows up as a finished video, a shake when it shows up as a failure.
+    val fx = remember { CardFx() }
+    LaunchedEffect(item.id) {
+        val ev = BatchRunner.cardEvents[item.id] ?: return@LaunchedEffect
+        BatchRunner.cardEvents.remove(item.id)
+        if (SystemClock.elapsedRealtime() - ev.at < 4000L) playCardEvent(fx, ev.kind)
+    }
+
+    // The next video in the queue has a soft band moving down its background while a batch runs.
+    val sweeping = isNext && BatchRunner.busy && !BatchRunner.paused
+    var sweepPhase by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(sweeping) {
+        if (sweeping) {
             val start = System.nanoTime()
             while (isActive) {
-                runPhase = ((System.nanoTime() - start) / 3_000_000_000.0).toFloat() % 1f
+                sweepPhase = ((System.nanoTime() - start) / 2_400_000_000.0).toFloat() % 1f
                 delay(16)
             }
         }
@@ -331,7 +451,9 @@ private fun QueueRow(
     P5Card(
         Modifier.fillMaxWidth(),
         accent = accent,
-        runPhase = if (converting) ({ runPhase }) else null,
+        runBorder = if (converting || pausedHere) runBorder else null,
+        fx = fx,
+        sweep = if (sweeping) ({ sweepPhase }) else null,
     ) {
         // Header: the file name gets the whole width but for the buttons (it wrapped to four lines
         // when the thumbnail sat beside it too). Long names stop at two lines; the full name is
@@ -379,7 +501,7 @@ private fun QueueRow(
                     i == null -> Text("Reading video…", style = MaterialTheme.typography.bodySmall)
                     else -> {
                         val len = String.format(Locale.US, "%.1f", i.durationSec)
-                        val (state, tagColor) = when (item.status) {
+                        val (state, tagColor) = if (pausedHere) "Paused" to P5.Amber else when (item.status) {
                             ItemStatus.WAITING -> "Waiting" to P5.Grey
                             ItemStatus.CONVERTING -> "Converting…" to P5.Red
                             ItemStatus.DONE -> "Done" to P5.White
@@ -394,14 +516,21 @@ private fun QueueRow(
                             "${len}s · ${if (i.hasAudio) "has audio" else "no audio"}",
                             style = MaterialTheme.typography.bodySmall
                         )
-                        P5Tag(
-                            state,
-                            tagColor,
-                            Modifier.padding(top = 2.dp),
-                            filled = item.status == ItemStatus.CONVERTING || item.status == ItemStatus.DONE,
-                        )
+                        Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            P5Tag(
+                                state,
+                                tagColor,
+                                filled = item.status == ItemStatus.CONVERTING || item.status == ItemStatus.DONE,
+                            )
+                            if (isNext) P5Tag("Next ▼", P5.White, filled = true)
+                        }
                     }
                 }
+            }
+            // The percentage of the video being converted, big and red, in the style of 💯.
+            if (converting && i != null && !item.probeFailed) {
+                Spacer(Modifier.size(8.dp))
+                RunPercent(item)
             }
         }
 
@@ -920,12 +1049,21 @@ private fun EmptyNote(text: String) {
 @Composable
 private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settings) {
     val queue = BatchRunner.queue
+    // Conversion runs from the bottom of the list up, so the next video is the first waiting one
+    // in list order (the one lowest on screen).
+    val nextId = if (section == CardSection.QUEUE) {
+        queue.firstOrNull {
+            !it.inPen && it.info != null && !it.probeFailed && it.status == ItemStatus.WAITING &&
+                it.id != BatchRunner.pausedItemId
+        }?.id
+    } else null
     for (idx in queue.indices.reversed()) {
         val item = queue[idx]
         val show = when (section) {
             CardSection.PEN -> item.inPen
-            CardSection.QUEUE -> !item.inPen && item.status != ItemStatus.CONVERTING
-            CardSection.CONVERTING -> !item.inPen && item.status == ItemStatus.CONVERTING
+            CardSection.QUEUE -> !item.inPen && item.status != ItemStatus.CONVERTING && item.id != BatchRunner.pausedItemId
+            // Includes the video Pause Now interrupted, which keeps its card here while paused.
+            CardSection.CONVERTING -> !item.inPen && (item.status == ItemStatus.CONVERTING || item.id == BatchRunner.pausedItemId)
         }
         if (show) key(item.id) {
             // A queued video shows (and is estimated with) the settings it was sent with; only the
@@ -950,6 +1088,7 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
                 onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
                 showReturn = section == CardSection.QUEUE,
                 onReturn = { BatchRunner.returnToPen(item.id) },
+                isNext = item.id == nextId,
             )
         }
     }
