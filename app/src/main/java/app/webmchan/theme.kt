@@ -434,8 +434,8 @@ fun P5Card(
 }
 
 /**
- * A comet of red light running clockwise round the card's cut-corner outline: a bright head with a
- * tail that fades behind it. [phase] is the head's place on the outline, 0..1 for one lap.
+ * Two comets of red light, on opposite sides, running clockwise round the card's cut-corner outline: each a bright head with a
+ * tail that fades behind it. [phase] is the first head's place on the outline, 0..1 for one lap.
  */
 private fun DrawScope.drawRunningBorder(phase: Float) {
     val c = 16.dp.toPx()
@@ -450,26 +450,31 @@ private fun DrawScope.drawRunningBorder(phase: Float) {
     }
     val measure = PathMeasure().apply { setPath(outline, false) }
     val len = measure.length
-    val head = (phase - phase.toInt()) * len
     val stroke = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Butt, join = StrokeJoin.Round)
     // Longest and faintest first, so the bright head ends up on top; the very tip is white-hot.
+    // The tails are short enough that each comet fades out before it reaches the other one.
     val tail = listOf(
-        0.45f to P5.Red.copy(alpha = 0.25f),
-        0.30f to P5.Red.copy(alpha = 0.5f),
-        0.18f to P5.Red.copy(alpha = 0.8f),
-        0.09f to P5.RedBright,
-        0.035f to P5.White,
+        0.34f to P5.Red.copy(alpha = 0.25f),
+        0.23f to P5.Red.copy(alpha = 0.5f),
+        0.14f to P5.Red.copy(alpha = 0.8f),
+        0.07f to P5.RedBright,
+        0.03f to P5.White,
     )
-    for ((share, color) in tail) {
-        val from = head - share * len
-        val seg = Path()
-        if (from >= 0f) {
-            measure.getSegment(from, head, seg, true)
-        } else {
-            measure.getSegment(len + from, len, seg, true)
-            measure.getSegment(0f, head, seg, true)
+    // Two comets, half a lap apart, both following the outline the same way.
+    for (offset in listOf(0f, 0.5f)) {
+        val p = phase + offset
+        val head = (p - p.toInt()) * len
+        for ((share, color) in tail) {
+            val from = head - share * len
+            val seg = Path()
+            if (from >= 0f) {
+                measure.getSegment(from, head, seg, true)
+            } else {
+                measure.getSegment(len + from, len, seg, true)
+                measure.getSegment(0f, head, seg, true)
+            }
+            drawPath(seg, color, style = stroke)
         }
-        drawPath(seg, color, style = stroke)
     }
 }
 
