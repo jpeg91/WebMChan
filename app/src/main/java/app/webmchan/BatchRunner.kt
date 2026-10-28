@@ -874,6 +874,20 @@ object BatchRunner {
         persist()
     }
 
+    /**
+     * A video that failed, was skipped or was cancelled goes back to the top of the Holding Pen,
+     * keeping its message, so the queue only holds videos still waiting for their turn. Not when
+     * some of its parts are already saved: it keeps its place in the queue so Convert can carry on
+     * from the next part (see [QueueItem.partsDone]).
+     */
+    private fun backToPen(at: Int) {
+        val item = queue[at]
+        if (item.partsDone > 0) return
+        queue.removeAt(at)
+        // The end of the list is the top of the pen. It follows the settings on screen again.
+        queue.add(item.copy(inPen = true, settings = null))
+    }
+
     /** Removes every video from the Holding Pen. */
     fun clearPen() {
         val removed = queue.filter { it.inPen }
@@ -1246,6 +1260,7 @@ object BatchRunner {
                                 "Cancelled ($partsSaved of $numParts parts saved).$resumeHint"
                             } else "Cancelled."
                             queue[now] = queue[now].copy(status = ItemStatus.CANCELLED, detail = note)
+                            backToPen(now)
                             skipCount++
                         }
                         itemPaused -> {
@@ -1258,6 +1273,7 @@ object BatchRunner {
                                 "Skipped ($partsSaved of $numParts parts saved).$resumeHint"
                             } else "Skipped."
                             queue[now] = queue[now].copy(status = ItemStatus.CANCELLED, detail = note)
+                            backToPen(now)
                             skipCount++
                         }
                         itemFailMsg != null -> {
@@ -1265,6 +1281,7 @@ object BatchRunner {
                                 itemFailMsg
                             noteCardEvent(id, CardEventKind.FAILED) // before the card moves, so it finds it
                             queue[now] = queue[now].copy(status = ItemStatus.FAILED, detail = note)
+                            backToPen(now)
                             failCount++
                         }
                         partsSkipped > 0 && partsSaved == 0 -> {
