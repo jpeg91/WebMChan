@@ -91,6 +91,7 @@ object BatchStore {
                     put("fast", it.fastEncode)
                     put("vp9", it.useVp9)
                     put("fastest", it.fastest)
+                    put("best", it.bestQuality)
                     put("fps", it.targetFps)
                     put("custom", it.isCustom)
                     put("ak", it.audioKbps)
@@ -167,6 +168,8 @@ object BatchStore {
                         fastEncode = it.optBoolean("fast", false),
                         useVp9 = it.optBoolean("vp9", false),
                         fastest = it.optBoolean("fastest", false),
+                        // Absent in files saved by older versions: not Best quality.
+                        bestQuality = it.optBoolean("best", false),
                         targetFps = it.optInt("fps", Converter.DEFAULT_FPS),
                         isCustom = it.optBoolean("custom", false),
                         // Absent in files saved by older versions: the old fixed 64 kbps.
