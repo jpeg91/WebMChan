@@ -64,6 +64,14 @@ data class Settings(
     /** Fastest: still two-pass, but the highest effort setting, short look-ahead and smaller frames. Overrides [fastEncode]. */
     val fastest: Boolean = false,
     /**
+     * Best quality: the Quality encode plus hidden alt-ref frames, a slower effort setting
+     * ([Tuning.bestCpuUsed]) and extra attempts that keep going until the file is within about 1% of
+     * the size limit ([Tuning.bestMinFillPct]), keeping the fullest result that fits. Time is no
+     * object. Overrides [fastEncode]; never set together with [fastest] (the screen makes the three
+     * choices exclusive).
+     */
+    val bestQuality: Boolean = false,
+    /**
      * The highest frame rate the output may have. A source at or below this keeps its own rate;
      * a faster source is reduced to it. Never raises a source's rate. See [Converter.effectiveFps].
      */
@@ -172,6 +180,16 @@ val TARGETS: List<Target> = listOf(
     Target(4096, 120, 0, 0, true, listOf("r", "wsr")),
     Target(4096, 300, 0, 0, true, listOf("gif")),
     Target(6144, 400, 0, 0, true, listOf("wsg")),
+)
+
+/** One finished attempt of a Best quality conversion (see [Converter.convert]). */
+private data class BestTry(
+    /** The video bitrate that was asked for. */
+    val vKbps: Int,
+    /** What came out: the file's size less its audio's expected share. */
+    val videoBytes: Double,
+    /** The whole file's size. */
+    val size: Long,
 )
 
 sealed class ConvertResult {
@@ -386,7 +404,9 @@ object Converter {
         val t = settings.tuning
         val parts = partsFor(src.durationSec, settings.maxDurationSec, t, extraParts)
         val partSec = min(src.durationSec / parts, effectiveMaxSec(settings.maxDurationSec, t)).coerceAtLeast(0.1)
-        val totalKbps = settings.limitBytes * (t.firstTargetPct / 100.0) * 8.0 / partSec / 1000.0
+        // Best quality aims a little higher than the other modes on every attempt, the first included.
+        val aimPct = if (settings.bestQuality) t.bestAimPct else t.firstTargetPct
+        val totalKbps = settings.limitBytes * (aimPct / 100.0) * 8.0 / partSec / 1000.0
         val audioOn = settings.keepAudio && src.hasAudio
         val audioKbps = audioKbpsFor(totalKbps, settings.audioKbps, audioOn, t)
         val vKbps = (totalKbps - audioKbps).toInt()
@@ -733,8 +753,8 @@ object Converter {
      */
     fun clearWorkFiles(ctx: Context) {
         ctx.cacheDir.listFiles()?.filter {
-            it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name == "audioprobe.webm" ||
-                it.name.startsWith("ffpass")
+            it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name == BEST_FILE_NAME ||
+                it.name == "audioprobe.webm" || it.name.startsWith("ffpass")
         }?.forEach { it.delete() }
     }
 
@@ -769,16 +789,56 @@ object Converter {
 
             val out = File(ctx.cacheDir, "out.webm")
             val passLog = File(ctx.cacheDir, "ffpass").absolutePath
-            var budgetBytes = settings.limitBytes * (t.firstTargetPct / 100.0)
+
+            // BEST QUALITY. Instead of stopping at the first file that fits, keep encoding with a
+            // corrected bitrate until a file lands between [Tuning.bestMinFillPct] and 100% of the
+            // limit, or the attempts run out, or the encoder shows it can't use more bits. Only two
+            // encodes ever exist at once: the attempt being made (out.webm) and the fullest one so far
+            // that fits (out-best.webm). An attempt that is over the limit, or that fits but is
+            // emptier than the one kept, is deleted as soon as it is measured.
+            val best = settings.bestQuality
+            val maxAttempts = if (best) t.bestMaxAttempts else t.maxAttempts
+            val bestFile = File(ctx.cacheDir, BEST_FILE_NAME)
+            var bestSize = 0L
+            var bestHeight = 0
+            var bestVKbps = 0
+            // The frame height is picked once, on the first attempt, and kept: a bitrate that moves
+            // the pick across a size boundary would make the attempts incomparable.
+            var lockedHeight = 0
+            val tries = ArrayList<BestTry>()
+
+            /** Puts the kept result back as out.webm (where the caller expects it) and reports it. */
+            fun finishBest(attemptsUsed: Int): ConvertResult {
+                out.delete()
+                if (!bestFile.renameTo(out)) {
+                    bestFile.copyTo(out, overwrite = true)
+                    bestFile.delete()
+                }
+                cleanupLogs(ctx)
+                onProgress(1f, "Done")
+                return ConvertResult.Ok(
+                    out, bestSize, bestHeight, bestVKbps, trimmed, settings.keepAudio && !src.hasAudio, audioOn,
+                    attempts = attemptsUsed,
+                )
+            }
+
+            var budgetBytes = settings.limitBytes * ((if (best) t.bestAimPct else t.firstTargetPct) / 100.0)
             var lastHeight = 0
             var lastKbps = 0
             val hasMin = settings.minWidth > 0 || settings.minHeight > 0
             val minHeight = minHeightFor(src, settings.minWidth, settings.minHeight)
             // Encoder effort, not CPU cores: higher = faster but slightly lower quality at the
             // same bitrate. The same value is used for both passes.
-            val cpuUsed = if (settings.fastest) "5" else if (settings.fastEncode) "4" else "2"
+            val cpuUsed =
+                if (best) t.bestCpuUsed.toString()
+                else if (settings.fastest) "5" else if (settings.fastEncode) "4" else "2"
             val lagFrames = if (settings.fastest) "8" else "25"
-            val effortName = if (settings.fastest) "Fastest" else if (settings.fastEncode) "Speed" else "Quality"
+            val effortName =
+                if (best) "Best quality"
+                else if (settings.fastest) "Fastest" else if (settings.fastEncode) "Speed" else "Quality"
+            // Best quality only: hidden alt-ref frames and their noise-reduction settings, added to the
+            // encoder's arguments below. Empty in every other mode, which are encoded exactly as before.
+            val bestArgs = if (best) vpxBestArgs(settings.useVp9, t, onLog) else emptyList()
 
             // The audio bitrate chosen in the Sound settings. See [audioKbpsFor] for how far it may drop.
             val normalAudioKbps = settings.audioKbps
@@ -822,7 +882,7 @@ object Converter {
                 }
             }
 
-            for (attempt in 1..t.maxAttempts) {
+            for (attempt in 1..maxAttempts) {
                 val totalKbps = budgetBytes * 8.0 / duration / 1000.0
                 // Audio normally gets its full bitrate, but on a tight budget that alone can push
                 // video under the minimum and fail a clip that would otherwise fit fine. Let audio
@@ -834,14 +894,17 @@ object Converter {
                     if (audioOn && audioBytes > 0 && audioKbps == normalAudioKbps) audioBytes * 8.0 / duration / 1000.0
                     else audioKbps.toDouble()
                 var vKbps = (totalKbps - plannedAudioKbps).toInt()
+                // What the audio is expected to take of the file (0 with no audio).
+                val plannedAudioBytes = if (audioOn) plannedAudioKbps * 125.0 * duration else 0.0
 
                 // RETRY PLANNING WITH THE REAL AUDIO. After an attempt that went over, the usual retry
                 // scales the whole file, which can't tell a video overshoot from an audio one. The
                 // audio's real size is known (measured before the first attempt), so work out how the
                 // video encoder really responded to its bitrate and give the video exactly what's left
                 // of the limit. Only when the earlier attempt used the normal audio bitrate, so that
-                // the measurement matches the audio inside its file.
-                if (audioOn && attempt >= 2 && audioBytes > 0 &&
+                // the measurement matches the audio inside its file. (Best quality plans its own
+                // retries, below, from every attempt so far.)
+                if (!best && audioOn && attempt >= 2 && audioBytes > 0 &&
                     lastSize > 0 && lastVideoKbps > 0 && lastAudioKbps == normalAudioKbps
                 ) {
                     val videoObserved = lastSize - audioBytes
@@ -858,7 +921,31 @@ object Converter {
                     }
                 }
 
+                // BEST QUALITY RETRY PLANNING. Aim the video at what is left of the target once the audio
+                // has its share, using the attempts so far: between two attempts either side of the
+                // target it interpolates, otherwise it scales from the closest one. See
+                // [planBestVideoKbps]. null = every bitrate worth trying has been tried.
+                if (best && attempt >= 2) {
+                    val wantedVideoBytes = settings.limitBytes * (t.bestAimPct / 100.0) - plannedAudioBytes
+                    val next = planBestVideoKbps(tries, wantedVideoBytes, duration)
+                    if (next == null) {
+                        onLog("   no untried video bitrate is left between the attempts so far")
+                        if (bestSize > 0L) return@withContext finishBest(attempt - 1)
+                        return@withContext ConvertResult.Fail(
+                            "Couldn't get under the size limit after ${attempt - 1} attempts. " +
+                                "You've probably changed something in Advanced Settings. If not, please copy " +
+                                "the log and report this edge case on Github. In the meantime, try splitting."
+                        )
+                    }
+                    onLog("   next video bitrate: $next kbps (aiming for %.1f%% of the limit)".format(java.util.Locale.US, t.bestAimPct))
+                    vKbps = next
+                }
+
                 if (vKbps < t.minVideoKbps) {
+                    if (best && bestSize > 0L) {
+                        onLog("   the next bitrate would be below the lowest video bitrate; keeping the best result so far")
+                        return@withContext finishBest(attempt - 1)
+                    }
                     return@withContext ConvertResult.Fail(
                         "Video is too long for this size limit. Try setting it to split."
                     )
@@ -877,7 +964,9 @@ object Converter {
                 }
                 // A Custom resolution is used exactly as asked (the automatic pick is bypassed); the
                 // size limit then only steers the bitrate.
-                val height = if (settings.hasCustomSize) {
+                val height = if (best && lockedHeight > 0) {
+                    lockedHeight
+                } else if (settings.hasCustomSize) {
                     customOutputHeight(src, settings.customWidth, settings.customHeight)
                 } else {
                     chooseHeight(
@@ -885,6 +974,7 @@ object Converter {
                         settings.targetFps, t, !settings.fastest,
                     )
                 }
+                if (best && lockedHeight == 0) lockedHeight = height
                 lastHeight = height
                 lastKbps = vKbps
 
@@ -925,7 +1015,7 @@ object Converter {
                     ) + (if (settings.useVp9) {
                     listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
-                } else emptyList()) + listOf(
+                } else emptyList()) + bestArgs + listOf(
                     "-passlogfile", passLog,
                 )
 
@@ -935,13 +1025,13 @@ object Converter {
                         val frac = (st.time.toDouble() / 1000.0 / duration).coerceIn(0.0, 1.0)
                         onProgress(
                             frac.toFloat(),
-                            "Attempt $attempt/${t.maxAttempts}, pass 2/2: encoding (${height}p, ${vKbps} kbps)"
+                            "Attempt $attempt/$maxAttempts, pass 2/2: encoding (${height}p, ${vKbps} kbps)"
                         )
                     }
                 }
 
                 onLog(
-                    "== Attempt $attempt/${t.maxAttempts}: ${height}p, $vKbps kbps video" +
+                    "== Attempt $attempt/$maxAttempts: ${height}p, $vKbps kbps video" +
                         (if (audioOn) " + ${audioLabel(audioKbps)} audio" else ", no audio") +
                         (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
@@ -953,6 +1043,14 @@ object Converter {
                 )
                 onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
                 onLog("   encoder effort: $effortName (cpu-used $cpuUsed)")
+                if (best) {
+                    onLog("   best quality: ${bestArgs.joinToString(" ")}")
+                    onLog(
+                        "   best quality: up to $maxAttempts attempts, aiming for %.1f%% of the limit and accepting %.1f%% to 100%%; frame height kept at ${height}p for every attempt".format(
+                            java.util.Locale.US, t.bestAimPct, t.bestMinFillPct
+                        )
+                    )
+                }
                 onLog("   rate control: 2-pass, average target $vKbps kbps for the video, no minimum or maximum rate and no quantiser limits set (libvpx defaults)")
                 if (!settings.hasCustomSize) {
                     predictedFloorKbps(src, height, settings.targetFps, t)?.let { floor ->
@@ -965,17 +1063,22 @@ object Converter {
                 }
                 onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
                 FFmpegKitConfig.enableStatisticsCallback { }
-                onProgress(-1f, "Attempt $attempt/${t.maxAttempts}, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
+                onProgress(-1f, "Attempt $attempt/$maxAttempts, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
                 val p1 = FFmpegKit.executeWithArguments(
                     (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
                 )
                 if (ReturnCode.isCancel(p1.returnCode)) return@withContext ConvertResult.Cancelled
                 if (!ReturnCode.isSuccess(p1.returnCode)) {
+                    // A failed attempt shouldn't throw away a good result from an earlier one.
+                    if (best && bestSize > 0L) {
+                        onLog("   pass 1 failed; keeping the best result so far")
+                        return@withContext finishBest(attempt)
+                    }
                     return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
                 }
 
                 onLog("-- pass 2/2: encoding")
-                onProgress(0f, "Attempt $attempt/${t.maxAttempts}, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
+                onProgress(0f, "Attempt $attempt/$maxAttempts, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
                 pass2Stats()
                 val audioArgs = if (audioOn) {
                     listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString()) +
@@ -986,6 +1089,11 @@ object Converter {
                 )
                 if (ReturnCode.isCancel(p2.returnCode)) return@withContext ConvertResult.Cancelled
                 if (!ReturnCode.isSuccess(p2.returnCode)) {
+                    if (best && bestSize > 0L) {
+                        onLog("   pass 2 failed; keeping the best result so far")
+                        out.delete()
+                        return@withContext finishBest(attempt)
+                    }
                     return@withContext ConvertResult.Fail("Encoding failed (pass 2).\n${tail(p2.allLogsAsString)}")
                 }
 
@@ -1025,8 +1133,84 @@ object Converter {
                     }
                 }
                 if (size <= 0L) {
+                    if (best && bestSize > 0L) {
+                        onLog("   the attempt produced an empty file; keeping the best result so far")
+                        return@withContext finishBest(attempt)
+                    }
                     return@withContext ConvertResult.Fail("Encoding produced an empty file.")
                 }
+
+                if (best) {
+                    // What this attempt's video came to once the audio is taken off, for planning the next.
+                    tries.add(BestTry(vKbps, (size - plannedAudioBytes).coerceAtLeast(1.0), size))
+                    val fits = size <= settings.limitBytes
+                    val pctOfLimit = size * 100.0 / settings.limitBytes
+                    val pctText = "%.2f%%".format(java.util.Locale.US, pctOfLimit)
+
+                    // Keep the fullest file that fits; delete the other one straight away.
+                    if (fits && size > bestSize) {
+                        bestFile.delete()
+                        if (!out.renameTo(bestFile)) {
+                            out.copyTo(bestFile, overwrite = true)
+                            out.delete()
+                        }
+                        bestSize = size
+                        bestHeight = height
+                        bestVKbps = vKbps
+                        onLog("   fits, at $pctText of the limit: kept as the best so far")
+                    } else if (fits) {
+                        out.delete()
+                        onLog("   fits, at $pctText of the limit, but the one kept is fuller: this one is deleted")
+                    } else {
+                        out.delete()
+                        onLog("   over the limit, at $pctText: deleted")
+                    }
+
+                    if (fits && pctOfLimit >= t.bestMinFillPct) {
+                        onLog(
+                            "== Done: %.2f%% of the limit, inside the accepted %.1f%% to 100%%".format(
+                                java.util.Locale.US, pctOfLimit, t.bestMinFillPct
+                            )
+                        )
+                        return@withContext finishBest(attempt)
+                    }
+
+                    // Under the accepted range. More bitrate only helps if the encoder can use it.
+                    if (fits) {
+                        val gotKbps = size * 8.0 / duration / 1000.0
+                        val askedKbps = vKbps + plannedAudioKbps
+                        val qEnd = Regex("""\bq=(-?\d+(?:\.\d+)?)""").findAll(p2.allLogsAsString.orEmpty())
+                            .lastOrNull()?.groupValues?.get(1)?.toDoubleOrNull()
+                        val atFloor = gotKbps < askedKbps * 0.85 && (qEnd ?: 99.0) <= 4.5
+                        // Stalled: this attempt asked for clearly more bitrate than the one before it (3% or
+                        // more) but the video grew by less than a quarter of that. The encoder is already
+                        // spending all it can, so a further retry would only repeat the result.
+                        val prev = tries.getOrNull(tries.size - 2)
+                        val askedGrowth = if (prev != null) vKbps.toDouble() / prev.vKbps - 1.0 else 0.0
+                        val gotGrowth = if (prev != null) tries.last().videoBytes / prev.videoBytes - 1.0 else 0.0
+                        val stalled = prev != null && askedGrowth >= 0.03 && gotGrowth < 0.25 * askedGrowth
+                        if (atFloor) {
+                            onLog("== Done: the encoder is at its lowest quantiser, so this clip can't use more bits. The best result is $pctText of the limit.")
+                            return@withContext finishBest(attempt)
+                        }
+                        if (stalled) {
+                            onLog("== Done: asking for more bitrate no longer makes the file bigger. The best result is %.2f%% of the limit.".format(java.util.Locale.US, bestSize * 100.0 / settings.limitBytes))
+                            return@withContext finishBest(attempt)
+                        }
+                    }
+
+                    if (attempt >= maxAttempts) {
+                        if (bestSize > 0L) {
+                            onLog("== Done: out of attempts. The best result is %.2f%% of the limit.".format(java.util.Locale.US, bestSize * 100.0 / settings.limitBytes))
+                            return@withContext finishBest(attempt)
+                        }
+                        // Nothing fitted: falls out of the loop to the usual failure message.
+                    } else {
+                        onLog(if (fits) "   under the accepted range, retrying with a higher bitrate" else "   over the limit, retrying with a smaller bitrate")
+                    }
+                    continue
+                }
+
                 if (size in 1..settings.limitBytes) {
                     onProgress(1f, "Done")
                     cleanupLogs(ctx)
@@ -1041,7 +1225,7 @@ object Converter {
             }
             cleanupLogs(ctx)
             ConvertResult.Fail(
-                "Couldn't get under the size limit after ${t.maxAttempts} attempts. " +
+                "Couldn't get under the size limit after $maxAttempts attempts. " +
                     "You've probably changed something in Advanced Settings. If not, please copy " +
                     "the log and report this edge case on Github. In the meantime, try splitting."
             )
@@ -1050,6 +1234,91 @@ object Converter {
             FFmpegKitConfig.enableLogCallback { }
             FFmpegKitConfig.enableStatisticsCallback { }
         }
+    }
+
+    // ---- Best quality ----
+
+    /** The fullest result of a Best quality conversion so far is kept under this name (out.webm is the attempt in progress). */
+    private const val BEST_FILE_NAME = "out-best.webm"
+
+    /**
+     * The video bitrate for the next Best quality attempt, in kbps, or null when no untried bitrate is
+     * left that could be worth encoding. [tries] is every attempt so far; [wantedVideoBytes] is the
+     * target size less the audio's share.
+     *
+     * Between an attempt that came out under the target and one that came out over it, the bitrate is
+     * interpolated (file size isn't proportional to the bitrate, so two points beat one) and kept
+     * strictly inside the two. With attempts on one side only, it scales from the closest one.
+     */
+    private fun planBestVideoKbps(tries: List<BestTry>, wantedVideoBytes: Double, duration: Double): Int? {
+        if (tries.isEmpty() || wantedVideoBytes <= 0.0 || duration <= 0.0) return null
+        val below = tries.filter { it.videoBytes <= wantedVideoBytes }.maxByOrNull { it.videoBytes }
+        val above = tries.filter { it.videoBytes > wantedVideoBytes }.minByOrNull { it.videoBytes }
+        val tried = tries.map { it.vKbps }.toSet()
+        val bytesPerKbps = 125.0 * duration // one kbps, held for the clip's length
+
+        if (below != null && above != null) {
+            val lo = minOf(below.vKbps, above.vKbps)
+            val hi = maxOf(below.vKbps, above.vKbps)
+            if (hi - lo < 2) return null // no whole kbps left strictly between them
+            val dBytes = above.videoBytes - below.videoBytes
+            val dKbps = (above.vKbps - below.vKbps).toDouble()
+            val raw = if (dBytes > 0.0 && dKbps > 0.0) {
+                below.vKbps + (wantedVideoBytes - below.videoBytes) / dBytes * dKbps
+            } else {
+                (below.vKbps + above.vKbps) / 2.0
+            }
+            val k = raw.toInt().coerceIn(lo + 1, hi - 1)
+            return if (k in tried) null else k
+        }
+
+        val base = below ?: above ?: return null
+        val response = base.videoBytes / (base.vKbps * bytesPerKbps) // video bytes out per byte asked for
+        if (response <= 0.0) return null
+        var k = (wantedVideoBytes / (response * bytesPerKbps)).toInt()
+        if (k in tried) k += if (below != null) 1 else -1 // an exact repeat would give the same file
+        return if (k in tried || k < 1) null else k
+    }
+
+    // What this ffmpeg build says its libvpx encoders accept, from `-h encoder=...`, looked up once each.
+    private val encoderOptionCache = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
+
+    private fun encoderOptionNames(encoder: String, onLog: (String) -> Unit): Set<String> {
+        encoderOptionCache[encoder]?.let { return it }
+        // The help text is long and of no use in the conversion log, so the log is muted while it is read.
+        FFmpegKitConfig.enableLogCallback { }
+        val names = try {
+            val session = FFmpegKit.executeWithArguments(arrayOf("-hide_banner", "-h", "encoder=$encoder"))
+            Regex("""(?m)^\s+-([A-Za-z0-9_-]+)\s""").findAll(session.allLogsAsString.orEmpty())
+                .map { it.groupValues[1] }.toSet()
+        } catch (_: Exception) {
+            emptySet()
+        } finally {
+            FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
+        }
+        if (names.isNotEmpty()) encoderOptionCache[encoder] = names // an empty answer is a failed look-up: try again next time
+        return names
+    }
+
+    /**
+     * The encoder arguments only Best quality adds: hidden alt-ref frames (the encoder looks ahead, builds
+     * a cleaned-up reference frame from several neighbours, codes it without showing it, and the frames
+     * around it then need fewer bits), with the settings for how many frames are blended and how strongly.
+     * Each option other than auto-alt-ref is only passed if this ffmpeg build lists it, so a build that
+     * names one differently or lacks it can't make the whole encode fail.
+     */
+    private fun vpxBestArgs(vp9: Boolean, t: Tuning, onLog: (String) -> Unit): List<String> {
+        val known = encoderOptionNames(if (vp9) "libvpx-vp9" else "libvpx", onLog)
+        fun firstKnown(vararg names: String): String? = names.firstOrNull { it in known }
+        val args = arrayListOf("-auto-alt-ref", "1")
+        firstKnown("arnr-maxframes", "arnr-max-frames")?.let { args += listOf("-$it", t.bestArnrMaxFrames.toString()) }
+        firstKnown("arnr-strength")?.let { args += listOf("-$it", t.bestArnrStrength.toString()) }
+        // The blend type only exists for VP8: 3 = centred on the alt-ref frame (the usual choice).
+        if (!vp9) firstKnown("arnr-type")?.let { args += listOf("-$it", "3") }
+        // VP9's temporal dependency model, which decides where the bits are best spent.
+        if (vp9) firstKnown("enable-tpl")?.let { args += listOf("-$it", "1") }
+        if (known.isEmpty()) onLog("   couldn't read this encoder's option list; using auto-alt-ref only")
+        return args
     }
 
     private const val MEASURE_CANCELLED = -1L
