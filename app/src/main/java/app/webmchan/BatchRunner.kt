@@ -1153,7 +1153,8 @@ object BatchRunner {
                                 // there are 10 or more, so they sort), and every name ends with the
                                 // app tag: "clip-Part02-MQ-WebMChan_for_Android.webm".
                                 val audioMarker = if (res.audioIncluded) "A" else "M"
-                                val effortMarker = if (settings.fastest) "F" else if (settings.fastEncode) "S" else "Q"
+                                val effortMarker =
+                                    if (settings.bestQuality) "B" else if (settings.fastest) "F" else if (settings.fastEncode) "S" else "Q"
                                 val partSuffix = if (numParts > 1) "-${Converter.partName(part, numParts)}" else ""
                                 val outName = "$base$partSuffix-$audioMarker$effortMarker-${Converter.OUTPUT_NAME_TAG}.webm"
 
