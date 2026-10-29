@@ -772,7 +772,8 @@ object Converter {
         onLog: (line: String) -> Unit,
         onProgress: (fraction: Float, status: String) -> Unit, // fraction < 0 = indeterminate
     ): ConvertResult = withContext(Dispatchers.IO) {
-        FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
+        vpxTimestampNoteShown.set(false)
+        FFmpegKitConfig.enableLogCallback(logSink(onLog))
         try {
             val remaining = (src.durationSec - startSec).coerceAtLeast(0.0)
             val t = settings.tuning
@@ -1280,6 +1281,22 @@ object Converter {
         return if (k in tried || k < 1) null else k
     }
 
+    // Best quality's hidden alt-ref frames make ffmpeg's libvpx wrapper print "Mismatching timestamps ...
+    // this is a bug, please report it" once per frame. The output is fine (the hidden frames just share
+    // timestamps with visible ones), so those lines are replaced by a single explanatory line per run.
+    private val vpxTimestampNoteShown = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun logSink(onLog: (String) -> Unit): (com.arthenica.ffmpegkit.Log) -> Unit = { log ->
+        val msg = log.message
+        if (msg.contains("Mismatching timestamps: libvpx")) {
+            if (vpxTimestampNoteShown.compareAndSet(false, true)) {
+                onLog("   note: libvpx timestamp notices from hidden alt-ref frames are hidden from this log (harmless)")
+            }
+        } else {
+            onLog(msg)
+        }
+    }
+
     // What this ffmpeg build says its libvpx encoders accept, from `-h encoder=...`, looked up once each.
     private val encoderOptionCache = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
 
@@ -1294,7 +1311,7 @@ object Converter {
         } catch (_: Exception) {
             emptySet()
         } finally {
-            FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
+            FFmpegKitConfig.enableLogCallback(logSink(onLog))
         }
         if (names.isNotEmpty()) encoderOptionCache[encoder] = names // an empty answer is a failed look-up: try again next time
         return names
