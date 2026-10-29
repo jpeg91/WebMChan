@@ -1,4 +1,3 @@
-
 // #advanced
 package app.webmchan
 
@@ -96,6 +95,38 @@ private val FIELDS = listOf(
             "are picked.", false,
     ),
     FieldSpec(
+        "bestMaxAttempts", "Best quality: maximum attempts",
+        "Default 7. Allowed 1 to 12. Best quality keeps re-encoding with a corrected bitrate until the " +
+            "file lands inside the accepted range below. This caps how many full encodes that may take. " +
+            "The fullest result that fits is kept, and a clip that can't use more bits stops early.", true,
+    ),
+    FieldSpec(
+        "bestMinFillPct", "Best quality: accepted from (% of limit)",
+        "Default 99. Allowed 80 to 100. A result at or above this (and not over the limit) is accepted " +
+            "at once. Below it, Best quality encodes again with a higher bitrate.", false,
+    ),
+    FieldSpec(
+        "bestAimPct", "Best quality: target (% of limit)",
+        "Default 99.5. Allowed from the accepted value above up to 100. What every Best quality attempt " +
+            "aims for, the first one included.", false,
+    ),
+    FieldSpec(
+        "bestCpuUsed", "Best quality: encoder effort (cpu-used)",
+        "Default 1. Allowed 0 to 3. 0 is the slowest and gives the most detail per bit; each step up is " +
+            "quicker and slightly softer. Quality mode uses 2.", true,
+    ),
+    FieldSpec(
+        "bestArnrMaxFrames", "Best quality: alt-ref blend frames",
+        "Default 7. Allowed 0 to 15. How many neighbouring frames are blended into each hidden " +
+            "alt-ref frame, which the frames around it then copy from. More cleans up noise in that " +
+            "reference better, for more time.", true,
+    ),
+    FieldSpec(
+        "bestArnrStrength", "Best quality: alt-ref blend strength",
+        "Default 5. Allowed 0 to 6. How strongly those frames are blended. It only affects the hidden " +
+            "reference frame, never a frame that is shown. 0 turns the blending off.", true,
+    ),
+    FieldSpec(
         "bracketWebAnimation", "Quality bracket: web animation from (bits per pixel)",
         "Default 0.026 (about 80 kbps at 240p and 30 fps). Below this a queued video's card says " +
             "\"still image\". The bracket starts have to rise in order; one that doesn't is " +
@@ -144,6 +175,12 @@ private fun Tuning.asText(): Map<String, String> = mapOf(
     "trimToleranceSec" to trimToleranceSec.toString(),
     "floorBudgetPct" to floorBudgetPct.toString(),
     "floorFactor" to floorFactor.toString(),
+    "bestMaxAttempts" to bestMaxAttempts.toString(),
+    "bestMinFillPct" to bestMinFillPct.toString(),
+    "bestAimPct" to bestAimPct.toString(),
+    "bestCpuUsed" to bestCpuUsed.toString(),
+    "bestArnrMaxFrames" to bestArnrMaxFrames.toString(),
+    "bestArnrStrength" to bestArnrStrength.toString(),
     "bracketWebAnimation" to bracketWebAnimation.toString(),
     "bracketProAnimation" to bracketProAnimation.toString(),
     "bracketOldWebVideo" to bracketOldWebVideo.toString(),
@@ -180,6 +217,12 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         trimToleranceSec = dbl("trimToleranceSec", base.trimToleranceSec),
         floorBudgetPct = dbl("floorBudgetPct", base.floorBudgetPct),
         floorFactor = dbl("floorFactor", base.floorFactor),
+        bestMaxAttempts = int("bestMaxAttempts", base.bestMaxAttempts),
+        bestMinFillPct = dbl("bestMinFillPct", base.bestMinFillPct),
+        bestAimPct = dbl("bestAimPct", base.bestAimPct),
+        bestCpuUsed = int("bestCpuUsed", base.bestCpuUsed),
+        bestArnrMaxFrames = int("bestArnrMaxFrames", base.bestArnrMaxFrames),
+        bestArnrStrength = int("bestArnrStrength", base.bestArnrStrength),
         bracketWebAnimation = dbl("bracketWebAnimation", base.bracketWebAnimation),
         bracketProAnimation = dbl("bracketProAnimation", base.bracketProAnimation),
         bracketOldWebVideo = dbl("bracketOldWebVideo", base.bracketOldWebVideo),
