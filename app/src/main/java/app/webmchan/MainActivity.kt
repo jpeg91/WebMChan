@@ -996,7 +996,8 @@ private fun prettyCodec(c: String): String = when (c.lowercase()) {
     else -> c.uppercase()
 }
 
-private fun effortName(s: Settings) = if (s.fastest) "Fastest" else if (s.fastEncode) "Speed" else "Quality"
+private fun effortName(s: Settings) =
+    if (s.bestQuality) "Best quality" else if (s.fastest) "Fastest" else if (s.fastEncode) "Speed" else "Quality"
 
 /** The settings in one short line, e.g. "6 MB · ≤ 400 s · ♪ 64 kbps · ≤ 30 fps · Quality · VP8". */
 private fun settingsBrief(s: Settings): String =
@@ -1145,12 +1146,14 @@ fun App(onMenu: () -> Unit = {}) {
     var fastEncode by remember { mutableStateOf(prefs.getBoolean("ui_fast_encode", false)) }
     var useVp9 by remember { mutableStateOf(prefs.getBoolean("ui_use_vp9", false)) }
     var fastest by remember { mutableStateOf(prefs.getBoolean("ui_fastest", false)) }
+    // Best quality, one of the three exclusive encoding choices (with Quality/Speed and Fastest).
+    var bestQuality by remember { mutableStateOf(prefs.getBoolean("ui_best_quality", false)) }
     // Index into FPS_PRESETS; FPS_PRESETS.size means "Custom".
     var fpsChoice by remember {
         mutableIntStateOf(prefs.getInt("ui_fps_choice", FPS_DEFAULT_INDEX).coerceIn(0, FPS_PRESETS.size))
     }
     var customFps by remember { mutableStateOf(prefs.getString("ui_custom_fps", "30") ?: "30") }
-    LaunchedEffect(targetIdx, customMb, customW, customH, removeAudio, audioKbps, fastEncode, useVp9, fastest, fpsChoice, customFps) {
+    LaunchedEffect(targetIdx, customMb, customW, customH, removeAudio, audioKbps, fastEncode, useVp9, fastest, bestQuality, fpsChoice, customFps) {
         prefs.edit()
             .putInt("ui_target_idx", targetIdx)
             .putString("ui_custom_mb", customMb)
@@ -1161,6 +1164,7 @@ fun App(onMenu: () -> Unit = {}) {
             .putBoolean("ui_fast_encode", fastEncode)
             .putBoolean("ui_use_vp9", useVp9)
             .putBoolean("ui_fastest", fastest)
+            .putBoolean("ui_best_quality", bestQuality)
             .putInt("ui_fps_choice", fpsChoice)
             .putString("ui_custom_fps", customFps)
             .apply()
@@ -1171,6 +1175,8 @@ fun App(onMenu: () -> Unit = {}) {
     var audioOpen by remember { mutableStateOf(false) }
     var fpsOpen by remember { mutableStateOf(false) }
     var encodingOpen by remember { mutableStateOf(false) }
+    // The one-time heads-up shown the first time Best quality is picked.
+    var showBestNotice by remember { mutableStateOf(false) }
     var codecOpen by remember { mutableStateOf(false) }
     var saveOpen by remember { mutableStateOf(false) }
 
@@ -1286,6 +1292,33 @@ fun App(onMenu: () -> Unit = {}) {
         )
     }
 
+    // Shown once, the first time Best quality is chosen.
+    if (showBestNotice) {
+        val gotIt = {
+            showBestNotice = false
+            prefs.edit().putBoolean("best_notice_seen", true).apply()
+        }
+        AlertDialog(
+            onDismissRequest = gotIt,
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Best quality".uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Text(
+                    "This mode can take a very long time. It encodes each video up to " +
+                        "${TuningStore.current.bestMaxAttempts} times with slower settings, so expect a warm phone " +
+                        "that may slow itself down to cool off, and heavy use of battery and memory.\n\n" +
+                        "Plug the phone in and keep it somewhere cool. Long or high resolution videos are " +
+                        "the heaviest, and VP9 is slower again.\n\n" +
+                        "This notice is only shown once."
+                )
+            },
+            confirmButton = { P5Button("Got it", onClick = gotIt) },
+        )
+    }
+
     val target: Target? = TARGETS.getOrNull(targetIdx)
     val isCustom = target == null
     val limitKb: Int = target?.limitKb ?: ((customMb.toDoubleOrNull() ?: 0.0) * 1024).toInt()
@@ -1325,6 +1358,7 @@ fun App(onMenu: () -> Unit = {}) {
         fastEncode = fastEncode,
         useVp9 = useVp9,
         fastest = fastest,
+        bestQuality = bestQuality,
         targetFps = targetFps,
         tuning = TuningStore.current,
         isCustom = isCustom,
@@ -1358,7 +1392,8 @@ fun App(onMenu: () -> Unit = {}) {
         fpsChoice == FPS_DEFAULT_INDEX -> "${FPS_PRESETS[fpsChoice]} fps (default)"
         else -> "${FPS_PRESETS[fpsChoice]} fps"
     }
-    val encodingSummaryText = if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality (default)"
+    val encodingSummaryText =
+        if (bestQuality) "Best quality" else if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality (default)"
     val codecSummaryText = if (useVp9) "VP9" else "VP8 (default)"
 
     // The Holding Pen holds videos you've added until the button below sends them to the queue.
@@ -1624,23 +1659,35 @@ fun App(onMenu: () -> Unit = {}) {
             onToggle = { encodingOpen = !encodingOpen },
         ) {
             TargetRow(
-                selected = !fastEncode && !fastest,
+                selected = bestQuality,
+                enabled = true,
+                title = "Best quality",
+                subtitle = "The highest quality that fits, however long it takes. Much slower than Quality: it " +
+                    "encodes again and again until the file is within about 1% of the size limit. " +
+                    "VP9 (under Codec) gives better quality still, but is slower again.",
+            ) {
+                bestQuality = true; fastEncode = false; fastest = false
+                // A heads-up the first time only: this mode runs hot and long.
+                if (!prefs.getBoolean("best_notice_seen", false)) showBestNotice = true
+            }
+            TargetRow(
+                selected = !bestQuality && !fastEncode && !fastest,
                 enabled = true,
                 title = "Quality (default)",
                 subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
-            ) { fastEncode = false; fastest = false }
+            ) { bestQuality = false; fastEncode = false; fastest = false }
             TargetRow(
-                selected = fastEncode && !fastest,
+                selected = !bestQuality && fastEncode && !fastest,
                 enabled = true,
                 title = "Speed",
                 subtitle = "Faster than Quality mode, only slightly softer detail.",
-            ) { fastEncode = true; fastest = false }
+            ) { bestQuality = false; fastEncode = true; fastest = false }
             TargetRow(
-                selected = fastest,
+                selected = !bestQuality && fastest,
                 enabled = true,
                 title = "Fastest",
                 subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
-            ) { fastest = true }
+            ) { bestQuality = false; fastest = true }
         }
 
         CollapsibleSection(
