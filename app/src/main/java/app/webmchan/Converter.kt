@@ -807,6 +807,11 @@ object Converter {
             // the pick across a size boundary would make the attempts incomparable.
             var lockedHeight = 0
             val tries = ArrayList<BestTry>()
+            // What the pass-1 stats file (ffpass) was made for: the filters, codec, start and length.
+            // Pass 1 only analyses the picture, so its stats don't depend on the bitrate being aimed for,
+            // and a later attempt with the same key can go straight to pass 2 on the same stats.
+            // null = no usable stats yet (so the first attempt of every clip always runs pass 1).
+            var pass1Key: String? = null
 
             /** Puts the kept result back as out.webm (where the caller expects it) and reports it. */
             fun finishBest(attemptsUsed: Int): ConvertResult {
@@ -1062,20 +1067,28 @@ object Converter {
                         )
                     }
                 }
-                onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
-                FFmpegKitConfig.enableStatisticsCallback { }
-                onProgress(-1f, "Attempt $attempt/$maxAttempts, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
-                val p1 = FFmpegKit.executeWithArguments(
-                    (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
-                )
-                if (ReturnCode.isCancel(p1.returnCode)) return@withContext ConvertResult.Cancelled
-                if (!ReturnCode.isSuccess(p1.returnCode)) {
-                    // A failed attempt shouldn't throw away a good result from an earlier one.
-                    if (best && bestSize > 0L) {
-                        onLog("   pass 1 failed; keeping the best result so far")
-                        return@withContext finishBest(attempt)
+                val thisPass1Key = "$filters|vp9=${settings.useVp9}|start=$startSec|len=$duration"
+                if (pass1Key == thisPass1Key) {
+                    onLog("-- pass 1/2: skipped, the analysis from the earlier attempt is the same picture (only the bitrate changed) and is reused")
+                } else {
+                    onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
+                    FFmpegKitConfig.enableStatisticsCallback { }
+                    onProgress(-1f, "Attempt $attempt/$maxAttempts, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
+                    // The stats file is rewritten by pass 1, so until it succeeds it can't be trusted.
+                    pass1Key = null
+                    val p1 = FFmpegKit.executeWithArguments(
+                        (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
+                    )
+                    if (ReturnCode.isCancel(p1.returnCode)) return@withContext ConvertResult.Cancelled
+                    if (!ReturnCode.isSuccess(p1.returnCode)) {
+                        // A failed attempt shouldn't throw away a good result from an earlier one.
+                        if (best && bestSize > 0L) {
+                            onLog("   pass 1 failed; keeping the best result so far")
+                            return@withContext finishBest(attempt)
+                        }
+                        return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
                     }
-                    return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
+                    pass1Key = thisPass1Key
                 }
 
                 onLog("-- pass 2/2: encoding")
