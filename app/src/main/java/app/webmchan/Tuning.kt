@@ -82,6 +82,37 @@ data class Tuning(
      * height / 240 (720p counts three times over). 0 turns the correction off.
      */
     val bracketSizeExponent: Double = 0.5,
+    /**
+     * Best quality mode only: how many encodes may be tried to get the file as close under the
+     * size limit as it will go. Each one is a full two-pass encode, so this is mostly a cap on time.
+     */
+    val bestMaxAttempts: Int = 7,
+    /**
+     * Best quality mode only: a result at or above this % of the size limit (and not over it) is
+     * accepted. Below it the clip is encoded again with a higher bitrate, unless the encoder
+     * has shown it can't use more bits.
+     */
+    val bestMinFillPct: Double = 99.0,
+    /**
+     * Best quality mode only: every attempt aims for this % of the limit (the first one too). It sits
+     * between [bestMinFillPct] and 100, so a result that lands on target is accepted at once.
+     */
+    val bestAimPct: Double = 99.5,
+    /**
+     * Best quality mode only: libvpx's effort setting (-cpu-used). 0 is the slowest and best, and
+     * each step up is quicker with a little less detail per bit. Quality mode uses 2.
+     */
+    val bestCpuUsed: Int = 1,
+    /**
+     * Best quality mode only: how many frames the encoder blends into each hidden alt-ref frame
+     * (-arnr-maxframes). More frames clean up noise in that reference better, at some cost in time.
+     */
+    val bestArnrMaxFrames: Int = 7,
+    /**
+     * Best quality mode only: how strongly those frames are blended (-arnr-strength, 0 to 6). It only
+     * affects the hidden reference frame, never a frame that is shown. 0 turns the blending off.
+     */
+    val bestArnrStrength: Int = 5,
 ) {
     /** The same values, forced into their allowed ranges. */
     fun sanitized(): Tuning {
@@ -93,6 +124,8 @@ data class Tuning(
         val high = bracketHighQuality.coerceIn(quality, 5.0)
         val ultra = bracketUltraQuality.coerceIn(high, 5.0)
         val sizeExp = bracketSizeExponent.coerceIn(0.0, 1.0)
+        // The aim has to sit inside the accepted window, so a result that hits it is never retried.
+        val minFill = bestMinFillPct.coerceIn(80.0, 100.0)
         return Tuning(
             firstTargetPct = firstTargetPct.coerceIn(80.0, 110.0),
             retryMarginPct = retryMarginPct.coerceIn(80.0, 110.0),
@@ -112,6 +145,12 @@ data class Tuning(
             bracketHighQuality = high,
             bracketUltraQuality = ultra,
             bracketSizeExponent = sizeExp,
+            bestMaxAttempts = bestMaxAttempts.coerceIn(1, 12),
+            bestMinFillPct = minFill,
+            bestAimPct = bestAimPct.coerceIn(minFill, 100.0),
+            bestCpuUsed = bestCpuUsed.coerceIn(0, 3),
+            bestArnrMaxFrames = bestArnrMaxFrames.coerceIn(0, 15),
+            bestArnrStrength = bestArnrStrength.coerceIn(0, 6),
         )
     }
 
@@ -137,6 +176,12 @@ data class Tuning(
             if (bracketHighQuality != d.bracketHighQuality) add("high quality from $bracketHighQuality bpp")
             if (bracketUltraQuality != d.bracketUltraQuality) add("ultra high quality from $bracketUltraQuality bpp")
             if (bracketSizeExponent != d.bracketSizeExponent) add("bracket frame size correction = $bracketSizeExponent")
+            if (bestMaxAttempts != d.bestMaxAttempts) add("Best quality max attempts = $bestMaxAttempts")
+            if (bestMinFillPct != d.bestMinFillPct) add("Best quality accepted from = $bestMinFillPct% of the limit")
+            if (bestAimPct != d.bestAimPct) add("Best quality target = $bestAimPct% of the limit")
+            if (bestCpuUsed != d.bestCpuUsed) add("Best quality effort = cpu-used $bestCpuUsed")
+            if (bestArnrMaxFrames != d.bestArnrMaxFrames) add("Best quality alt-ref blend frames = $bestArnrMaxFrames")
+            if (bestArnrStrength != d.bestArnrStrength) add("Best quality alt-ref blend strength = $bestArnrStrength")
         }
     }
 }
@@ -173,6 +218,12 @@ object TuningStore {
             bracketHighQuality = dbl("bracketHighQualityFrom", d.bracketHighQuality),
             bracketUltraQuality = dbl("bracketUltraQuality", d.bracketUltraQuality),
             bracketSizeExponent = dbl("bracketSizeExponent", d.bracketSizeExponent),
+            bestMaxAttempts = int("bestMaxAttempts", d.bestMaxAttempts),
+            bestMinFillPct = dbl("bestMinFillPct", d.bestMinFillPct),
+            bestAimPct = dbl("bestAimPct", d.bestAimPct),
+            bestCpuUsed = int("bestCpuUsed", d.bestCpuUsed),
+            bestArnrMaxFrames = int("bestArnrMaxFrames", d.bestArnrMaxFrames),
+            bestArnrStrength = int("bestArnrStrength", d.bestArnrStrength),
         ).sanitized()
     }
 
@@ -198,6 +249,12 @@ object TuningStore {
             .putString("bracketHighQualityFrom", s.bracketHighQuality.toString())
             .putString("bracketUltraQuality", s.bracketUltraQuality.toString())
             .putString("bracketSizeExponent", s.bracketSizeExponent.toString())
+            .putString("bestMaxAttempts", s.bestMaxAttempts.toString())
+            .putString("bestMinFillPct", s.bestMinFillPct.toString())
+            .putString("bestAimPct", s.bestAimPct.toString())
+            .putString("bestCpuUsed", s.bestCpuUsed.toString())
+            .putString("bestArnrMaxFrames", s.bestArnrMaxFrames.toString())
+            .putString("bestArnrStrength", s.bestArnrStrength.toString())
             .apply()
         current = s
         return s
