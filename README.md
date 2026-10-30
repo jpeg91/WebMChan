@@ -320,6 +320,7 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 - Android top bar notification icons
 - Precision mode (aim low, aim high, work out coefficient and aim exactly, keep trying until hit the exact target range)
 - Clean up text and warnings
+- Thermal throttling detection and mitigation
 - Background usage permission nag
 - Video preview during conversion
 - Music mode (High bitrate audio, low bitrate video)
