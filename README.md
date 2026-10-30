@@ -69,7 +69,7 @@ See what's happening while it converts: the video being converted has a light ru
 **Menu > About > Advanced settings** lets you change the numbers that steer how a video is fitted into a size limit (targets, attempts, Best quality and so on) without rebuilding the app. The defaults are the recommended values, **Reset to defaults** puts them back, and anything you've changed is listed at the top of the log.
 
 <details>
-  <summary><b>Screenshot</b></summary>
+  <summary><b>Screenshot **OUTDATED)**</b></summary>
 
 <img alt="29962" src="https://github.com/user-attachments/assets/3aa4d794-3456-41cc-a0b1-151bdba11cbb" />
 
