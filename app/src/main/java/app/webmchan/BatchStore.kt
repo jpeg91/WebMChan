@@ -91,8 +91,12 @@ object BatchStore {
                     put("fast", it.fastEncode)
                     put("vp9", it.useVp9)
                     put("fastest", it.fastest)
+                    put("best", it.bestQuality)
                     put("fps", it.targetFps)
                     put("custom", it.isCustom)
+                    put("ak", it.audioKbps)
+                    put("cw", it.customWidth)
+                    put("ch", it.customHeight)
                     put("label", it.targetLabel)
                 }
             )
@@ -105,6 +109,8 @@ object BatchStore {
                     put("w", it.width)
                     put("h", it.height)
                     put("fps", it.fps)
+                    put("fpsReadable", it.fpsReadable)
+                    put("targetedFps", it.targetedFps)
                     put("audio", it.hasAudio)
                     put("bytes", it.fileBytes)
                     put("fmt", it.container)
@@ -124,7 +130,9 @@ object BatchStore {
             info = o.optJSONObject("info")?.let {
                 SourceInfo(
                     it.getDouble("d"), it.getInt("w"), it.getInt("h"), it.getDouble("fps"), it.getBoolean("audio"),
-                    // Absent in files saved by older versions.
+                    // Absent in files saved by older versions (which read back as readable, as before).
+                    fpsReadable = it.optBoolean("fpsReadable", true),
+                    targetedFps = it.optDouble("targetedFps", 0.0),
                     fileBytes = it.optLong("bytes", 0L),
                     container = it.optString("fmt", ""),
                     videoCodec = it.optString("vc", ""),
@@ -160,8 +168,15 @@ object BatchStore {
                         fastEncode = it.optBoolean("fast", false),
                         useVp9 = it.optBoolean("vp9", false),
                         fastest = it.optBoolean("fastest", false),
+                        // Absent in files saved by older versions: not Best quality.
+                        bestQuality = it.optBoolean("best", false),
                         targetFps = it.optInt("fps", Converter.DEFAULT_FPS),
                         isCustom = it.optBoolean("custom", false),
+                        // Absent in files saved by older versions: the old fixed 64 kbps.
+                        audioKbps = it.optInt("ak", Converter.DEFAULT_AUDIO_KBPS),
+                        // Absent in files saved by older versions: no custom resolution.
+                        customWidth = it.optInt("cw", 0),
+                        customHeight = it.optInt("ch", 0),
                         targetLabel = it.optString("label", ""),
                     )
                 }.getOrNull()

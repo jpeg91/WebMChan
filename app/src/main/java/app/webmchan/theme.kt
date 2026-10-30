@@ -1,3 +1,4 @@
+// #theme
 package app.webmchan
 
 import androidx.compose.foundation.Canvas
@@ -8,11 +9,19 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.material3.LocalContentColor
@@ -25,16 +34,28 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import kotlin.math.sin
+import kotlin.math.PI
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathMeasure
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TransformOrigin
@@ -159,7 +180,18 @@ fun P5Background(content: @Composable () -> Unit) {
             .background(P5.Black)
             .drawP5Backdrop(),
     ) {
-        CompositionLocalProvider(LocalContentColor provides P5.White) { content() }
+        // Keeps the content clear of the status bar, the navigation bar and any camera cut-out
+        // (Android 15 draws apps edge to edge), plus a little breathing room top and bottom. The
+        // backdrop above stays full screen. Every page wraps itself in its own P5Background, so
+        // this covers all of them.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
+                .padding(vertical = 8.dp),
+        ) {
+            CompositionLocalProvider(LocalContentColor provides P5.White) { content() }
+        }
     }
 }
 
@@ -217,8 +249,12 @@ fun P5Button(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     kind: P5Kind = P5Kind.Primary,
+    /** A smaller button (shorter, tighter, smaller text) for crowded rows. */
+    compact: Boolean = false,
+    /** Smaller still than [compact]: a short one-line label, for a row of several small buttons. */
+    dense: Boolean = false,
 ) {
-    val shape = remember { SlantShape(9.dp) }
+    val shape = remember { SlantShape(if (dense) 5.dp else if (compact) 6.dp else 9.dp) }
     val fill = when (kind) {
         P5Kind.Primary -> if (enabled) P5.Red else P5.Panel
         P5Kind.Secondary -> P5.Black
@@ -232,13 +268,13 @@ fun P5Button(
     val borderColor = if (enabled) P5.White else P5.Line
     Box(
         modifier
-            .heightIn(min = if (kind == P5Kind.Ghost) 40.dp else 46.dp)
+            .heightIn(min = if (dense) 30.dp else if (compact) 34.dp else if (kind == P5Kind.Ghost) 40.dp else 46.dp)
             .then(
                 if (kind != P5Kind.Ghost && enabled) {
                     Modifier.drawBehindCompat { w, h, px ->
-                        val s = px(9f).coerceAtMost(w / 3f)
+                        val s = px(if (compact) 6f else 9f).coerceAtMost(w / 3f)
                         drawPath(
-                            slantPath(w, h, s, px(4f), px(4f)),
+                            slantPath(w, h, s, px(if (compact) 3f else 4f), px(if (compact) 3f else 4f)),
                             if (kind == P5Kind.Primary) P5.RedDeep else P5.Red.copy(alpha = 0.8f),
                         )
                     }
@@ -246,15 +282,24 @@ fun P5Button(
             )
             .clip(shape)
             .background(fill)
-            .then(if (kind == P5Kind.Ghost) Modifier else Modifier.border(2.dp, borderColor, shape))
+            .then(if (kind == P5Kind.Ghost) Modifier else Modifier.border(if (compact) 1.5.dp else 2.dp, borderColor, shape))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = if (kind == P5Kind.Ghost) 10.dp else 16.dp, vertical = 9.dp),
+            .padding(
+                horizontal = if (dense) 8.dp else if (compact) 6.dp else if (kind == P5Kind.Ghost) 10.dp else 16.dp,
+                vertical = if (dense) 4.dp else if (compact) 5.dp else 9.dp,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             label.uppercase(),
             color = textColor,
-            style = MaterialTheme.typography.labelLarge,
+            style = if (dense) {
+                MaterialTheme.typography.labelLarge.copy(fontSize = 10.sp, lineHeight = 12.sp, letterSpacing = 0.2.sp)
+            } else if (compact) {
+                MaterialTheme.typography.labelLarge.copy(fontSize = 11.sp, lineHeight = 13.sp, letterSpacing = 0.2.sp)
+            } else MaterialTheme.typography.labelLarge,
+            maxLines = if (dense) 1 else Int.MAX_VALUE,
+            softWrap = !dense,
             textAlign = TextAlign.Center,
         )
     }
@@ -262,7 +307,14 @@ fun P5Button(
 
 /** The small square buttons on a card (move up, move down, remove, more, fewer). */
 @Composable
-fun P5SquareButton(label: String, onClick: () -> Unit, enabled: Boolean = true, accent: Boolean = false) {
+fun P5SquareButton(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    accent: Boolean = false,
+    /** The button's outer size; the card header uses a smaller one so the title gets more room. */
+    size: Dp = 42.dp,
+) {
     val shape = remember { SlantShape(6.dp) }
     val color = when {
         !enabled -> P5.Line
@@ -271,7 +323,7 @@ fun P5SquareButton(label: String, onClick: () -> Unit, enabled: Boolean = true, 
     }
     Box(
         Modifier
-            .size(42.dp)
+            .size(size)
             .padding(3.dp)
             .clip(shape)
             .background(if (enabled) P5.Panel else P5.Black)
@@ -280,6 +332,29 @@ fun P5SquareButton(label: String, onClick: () -> Unit, enabled: Boolean = true, 
         contentAlignment = Alignment.Center,
     ) {
         Text(label, color = if (enabled) color else P5.GreyDim, style = MaterialTheme.typography.titleSmall)
+    }
+}
+
+/**
+ * A small slanted label for a status or category (Waiting, Done, a quality bracket). Outlined in
+ * [color]; with [filled] the whole tag is [color] and the text is black.
+ */
+@Composable
+fun P5Tag(text: String, color: Color, modifier: Modifier = Modifier, filled: Boolean = false) {
+    val shape = remember { SlantShape(5.dp) }
+    Box(
+        modifier
+            .clip(shape)
+            .background(if (filled) color else P5.Black)
+            .border(1.5.dp, color, shape)
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text.uppercase(),
+            color = if (filled) (if (color == P5.Red || color == P5.Black) P5.White else P5.Black) else color,
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp),
+        )
     }
 }
 
@@ -322,9 +397,9 @@ fun P5SectionTitle(title: String, modifier: Modifier = Modifier) {
 
 /** The big title at the top of a screen: heavy italic capitals with a red drop shadow. */
 @Composable
-fun P5Title(text: String, modifier: Modifier = Modifier, size: TextUnit = 34.sp) {
+fun P5Title(text: String, modifier: Modifier = Modifier, size: TextUnit = 34.sp, upperCase: Boolean = true) {
     Text(
-        text.uppercase(),
+        if (upperCase) text.uppercase() else text,
         modifier = modifier,
         color = P5.White,
         style = MaterialTheme.typography.headlineMedium.copy(
@@ -335,27 +410,214 @@ fun P5Title(text: String, modifier: Modifier = Modifier, size: TextUnit = 34.sp)
     )
 }
 
-/** A card with two cut corners and a coloured stripe down its left edge. */
+/** What a card being converted is doing, which sets how the light runs round its border. */
+enum class RunLook {
+    /** Starting, copying the video, checking the audio: slow, pale and pulsing. */
+    PREPARING,
+
+    /** Pass 1, the analysis: four short comets, faster, scanning round. */
+    ANALYSING,
+
+    /** Pass 2, the encoding: two red comets. */
+    ENCODING,
+
+    /** Done, saving the file: two white comets, fast. */
+    FINISHING,
+
+    /** Pause Now has been pressed and the encoder is stopping: slowing down, pulsing. */
+    PAUSING,
+}
+
+/**
+ * What the running border needs each frame. Lambdas, so the values are read while drawing and the
+ * card isn't recomposed 60 times a second: [phase] is the first comet's place on the outline (0..1
+ * per lap), [amber] is 1 at the start of a retry and fades to 0.
+ */
+class RunBorder(val phase: () -> Float, val look: () -> RunLook, val amber: () -> Float)
+
+/** A one-off effect on a card: a colour flash laid over it, and a sideways shake. */
+class CardFx {
+    var shakeDp by mutableFloatStateOf(0f)
+    var flash by mutableFloatStateOf(0f)
+    var flashColor by mutableStateOf(P5.White)
+}
+
+/**
+ * A card with two cut corners and a coloured stripe down its left edge. [runBorder] puts the light
+ * running round the border of the card being converted, [fx] plays a flash or shake on it, and
+ * [sweep] (0..1 per pass) draws a soft red band moving down the card's background, for the video
+ * that is next in the queue.
+ */
 @Composable
 fun P5Card(
     modifier: Modifier = Modifier,
     accent: Color = P5.Red,
+    runBorder: RunBorder? = null,
+    fx: CardFx? = null,
+    sweep: (() -> Float)? = null,
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(4.dp),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val shape = remember { CutCornerShape(topStart = 16.dp, bottomEnd = 16.dp) }
     Column(
         modifier
+            .then(if (fx != null) Modifier.graphicsLayer { translationX = fx.shakeDp * density } else Modifier)
             .clip(shape)
             .background(P5.Ink)
             .drawBehindCompat { _, _, px ->
+                if (sweep != null) drawSweep(sweep())
                 drawRect(accent, size = Size(px(6f), size.height))
             }
-            .border(1.5.dp, P5.Line, shape)
+            .border(1.5.dp, if (runBorder != null) P5.RedDeep.copy(alpha = 0.6f) else P5.Line, shape)
+            .then(
+                if (runBorder == null && fx == null) Modifier else Modifier.drawWithContent {
+                    drawContent()
+                    if (runBorder != null) drawRunningBorder(runBorder.phase(), runBorder.look(), runBorder.amber())
+                    if (fx != null && fx.flash > 0f) drawRect(fx.flashColor.copy(alpha = fx.flash.coerceIn(0f, 1f)))
+                }
+            )
             .padding(start = 18.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
         verticalArrangement = verticalArrangement,
         content = content,
     )
+}
+
+/**
+ * A soft red band travelling down the card: faint above, a crisp edge below, so it reads as "going
+ * down". It runs on until its whole faded tail has left the bottom of the card, so the tail slides
+ * out rather than vanishing when the crisp edge arrives.
+ */
+private fun DrawScope.drawSweep(t: Float) {
+    val band = size.height * 0.6f
+    val y = t * (size.height + band)
+    drawRect(
+        brush = Brush.verticalGradient(
+            colors = listOf(Color.Transparent, P5.Red.copy(alpha = 0.22f)),
+            startY = y - band,
+            endY = y,
+        ),
+        topLeft = Offset(0f, y - band),
+        size = Size(size.width, band),
+    )
+}
+
+/**
+ * Comets of light running clockwise round the card's cut-corner outline, each a bright head with a
+ * tail that fades behind it. [phase] is the first head's place on the outline, 0..1 for one lap.
+ * What they look like follows [look] (see [RunLook]); [amber] tints them (and the border) amber,
+ * for the moment a new attempt starts.
+ */
+private fun DrawScope.drawRunningBorder(phase: Float, look: RunLook, amber: Float) {
+    val c = 16.dp.toPx()
+    // Drawn a little inside the card's edge: the card is clipped to its shape, and a line on the
+    // edge itself would lose half its thickness.
+    val i = 2.5.dp.toPx()
+    val w = size.width
+    val h = size.height
+    val outline = Path().apply {
+        moveTo(c, i); lineTo(w - i, i); lineTo(w - i, h - c); lineTo(w - c, h - i)
+        lineTo(i, h - i); lineTo(i, c); close()
+    }
+    val measure = PathMeasure().apply { setPath(outline, false) }
+    val len = measure.length
+    val stroke = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Butt, join = StrokeJoin.Round)
+    if (amber > 0f) drawPath(outline, P5.Amber.copy(alpha = 0.75f * amber), style = Stroke(width = 2.dp.toPx()))
+
+    val count = if (look == RunLook.ANALYSING) 4 else 2
+    val tailScale = when (look) {
+        RunLook.PREPARING -> 0.55f
+        RunLook.ANALYSING -> 0.4f
+        else -> 1f
+    }
+    // A slow pulse for the stages that are waiting rather than working (a whole number of beats
+    // per lap, so it doesn't jump when the lap wraps round).
+    val pulse = when (look) {
+        RunLook.PREPARING, RunLook.PAUSING -> 0.65f + 0.35f * sin(phase * 2f * PI.toFloat() * 8f)
+        else -> 1f
+    }
+    val body = when (look) {
+        RunLook.PREPARING -> P5.Grey
+        RunLook.FINISHING -> P5.White
+        else -> P5.Red
+    }
+    val bright = when (look) {
+        RunLook.PREPARING, RunLook.FINISHING -> P5.White
+        else -> P5.RedBright
+    }
+    fun tint(color: Color, alpha: Float) = lerp(color, P5.Amber, amber).copy(alpha = alpha * pulse)
+    // Longest and faintest first, so the bright head ends up on top; the very tip is white-hot.
+    val tail = listOf(
+        0.34f * tailScale to tint(body, 0.25f),
+        0.23f * tailScale to tint(body, 0.5f),
+        0.14f * tailScale to tint(body, 0.8f),
+        0.07f * tailScale to tint(bright, 1f),
+        0.03f * tailScale to tint(P5.White, 1f),
+    )
+    for (k in 0 until count) {
+        val p = phase + k.toFloat() / count
+        val head = (p - p.toInt()) * len
+        for ((share, color) in tail) {
+            val from = head - share * len
+            val seg = Path()
+            if (from >= 0f) {
+                measure.getSegment(from, head, seg, true)
+            } else {
+                measure.getSegment(len + from, len, seg, true)
+                measure.getSegment(0f, head, seg, true)
+            }
+            drawPath(seg, color, style = stroke)
+        }
+    }
+}
+
+/**
+ * A big readout in the style of the 💯 emoji: heavy red italic digits, tilted, with a white
+ * outline, a hard black shadow and two slanted underlines. [value] null shows dashes, dimmed (for
+ * the stages that have no percentage).
+ */
+@Composable
+fun P5Percent(value: Int?, modifier: Modifier = Modifier) {
+    val digits = value?.coerceIn(0, 100)?.toString() ?: "--"
+    val fill = if (value != null) P5.Red else P5.RedDeep
+    val outline = if (value != null) P5.White else P5.GreyDim
+    val big = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic,
+        fontSize = 38.sp, lineHeight = 40.sp, letterSpacing = (-1).sp,
+    )
+    val small = big.copy(fontSize = 20.sp, lineHeight = 22.sp, letterSpacing = 0.sp)
+    @Composable
+    fun Glyphs(style: TextStyle, color: Color, stroked: Boolean) {
+        val st = if (stroked) style.copy(drawStyle = Stroke(width = 9f, join = StrokeJoin.Round)) else style
+        Text(digits, style = st, color = color)
+    }
+    Column(
+        modifier.graphicsLayer { rotationZ = -6f },
+        horizontalAlignment = Alignment.End,
+    ) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Box {
+                // Hard shadow, white outline, then the red fill on top.
+                Box(Modifier.offset(3.dp, 3.dp)) { Glyphs(big, Color.Black, stroked = true) }
+                Glyphs(big, outline, stroked = true)
+                Glyphs(big, fill, stroked = false)
+            }
+            Box(Modifier.padding(bottom = 4.dp)) {
+                Box(Modifier.offset(2.dp, 2.dp)) { Text("%", style = small.copy(drawStyle = Stroke(width = 7f, join = StrokeJoin.Round)), color = Color.Black) }
+                Text("%", style = small.copy(drawStyle = Stroke(width = 7f, join = StrokeJoin.Round)), color = outline)
+                Text("%", style = small, color = fill)
+            }
+        }
+        // The two underlines, the lower one shorter and pushed right, as on the emoji.
+        Canvas(Modifier.width(76.dp).height(11.dp)) {
+            val bar = 3.dp.toPx()
+            val slant = 5.dp.toPx()
+            drawPath(slantPath(size.width, bar, slant, dx = 3.dp.toPx(), dy = 3.dp.toPx()), Color.Black)
+            drawPath(slantPath(size.width, bar, slant), fill)
+            val y2 = bar + 2.dp.toPx()
+            drawPath(slantPath(size.width * 0.7f, bar, slant, dx = size.width * 0.3f + 3.dp.toPx(), dy = y2 + 3.dp.toPx()), Color.Black)
+            drawPath(slantPath(size.width * 0.7f, bar, slant, dx = size.width * 0.3f, dy = y2), fill)
+        }
+    }
 }
 
 /**

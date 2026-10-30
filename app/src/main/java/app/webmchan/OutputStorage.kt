@@ -1,9 +1,12 @@
+// #outputstorage
 package app.webmchan
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
@@ -168,5 +171,63 @@ object OutputStorage {
         } catch (e: Exception) {
             null
         }
+    }
+
+    // ---- Working with a file that was already saved (Rename / Delete on a Finished card) ----
+
+    /** The file's current name, or null if it can't be read (e.g. the file is gone). */
+    fun fileName(ctx: Context, uri: Uri): String? = try {
+        ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+            ?.takeIf { it.isNotBlank() }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * Turns what the user typed into the part of a file name before ".webm", or null if it can't be
+     * used (empty, or holding characters Android file systems don't allow). A typed ".webm" ending
+     * is dropped, since the extension is always added back.
+     */
+    fun cleanBaseName(input: String): String? {
+        var base = input.trim()
+        if (base.endsWith(".webm", ignoreCase = true)) base = base.dropLast(5).trim()
+        if (base.isEmpty() || base.length > 180) return null
+        if (base.any { it in "/\\:*?\"<>|" || it.isISOControl() }) return null
+        if (base.all { it == '.' }) return null
+        return base
+    }
+
+    /** [uri] and [name] are where the file is now (null on failure, with [error] saying why). */
+    data class RenameResult(val uri: Uri?, val name: String?, val error: String?)
+
+    /** Renames a saved file to [newName] (which includes ".webm"). Works for both save locations. */
+    fun rename(ctx: Context, uri: Uri, newName: String): RenameResult {
+        val failed = RenameResult(null, null, "Couldn't rename the file. Is there already one with that name?")
+        return try {
+            if (DocumentsContract.isDocumentUri(ctx, uri)) {
+                // A file in the folder the user chose. The Uri can change when it is renamed.
+                val newUri = DocumentsContract.renameDocument(ctx.contentResolver, uri, newName) ?: return failed
+                RenameResult(newUri, fileName(ctx, newUri) ?: newName, null)
+            } else {
+                // A file in the default Download/WebMChan/ (MediaStore). The Uri stays the same.
+                val values = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, newName) }
+                if (ctx.contentResolver.update(uri, values, null, null) < 1) return failed
+                RenameResult(uri, fileName(ctx, uri) ?: newName, null)
+            }
+        } catch (_: Exception) {
+            failed
+        }
+    }
+
+    /** Deletes a saved file. false if it couldn't be deleted. */
+    fun delete(ctx: Context, uri: Uri): Boolean = try {
+        if (DocumentsContract.isDocumentUri(ctx, uri)) {
+            DocumentsContract.deleteDocument(ctx.contentResolver, uri)
+        } else {
+            ctx.contentResolver.delete(uri, null, null) > 0
+        }
+    } catch (_: Exception) {
+        false
     }
 }

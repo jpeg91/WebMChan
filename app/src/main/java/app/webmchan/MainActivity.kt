@@ -1,3 +1,4 @@
+// #main
 package app.webmchan
 
 import android.Manifest
@@ -10,6 +11,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.widget.Toast
 import android.os.Build
+import android.os.SystemClock
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -31,6 +33,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -42,6 +45,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -49,6 +53,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,6 +65,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -69,7 +79,10 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlin.math.PI
+import kotlin.math.sin
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
@@ -93,28 +106,43 @@ class MainActivity : ComponentActivity() {
             // The look (black, white and red) lives in Theme.kt. It is the same whatever the
             // phone's own light/dark or wallpaper colours are.
             P5Theme {
+                var showMenu by remember { mutableStateOf(false) }
+                var showLog by remember { mutableStateOf(false) }
                 var showAbout by remember { mutableStateOf(false) }
                 var showAdvanced by remember { mutableStateOf(false) }
-                P5Background {
-                    Box {
-                        // App stays composed underneath, so opening About doesn't lose the scroll
-                        // position or the settings.
-                        App(onAbout = { showAbout = true })
-                        if (showAbout) {
-                            P5Background {
-                                AboutScreen(onBack = { showAbout = false }, onAdvanced = { showAdvanced = true })
-                            }
+                // Every screen, including the main one, wraps itself in its own P5Background, which
+                // also keeps it clear of the status and navigation bars.
+                Box {
+                    // App stays composed underneath, so opening a page doesn't lose the scroll
+                    // position or the settings. The pages stack: Menu, then Log or About on top
+                    // of it (and Advanced on top of About), so back returns to the one before.
+                    P5Background { App(onMenu = { showMenu = true }) }
+                    if (showMenu) {
+                        P5Background {
+                            MenuScreen(
+                                onBack = { showMenu = false },
+                                onLog = { showLog = true },
+                                onAbout = { showAbout = true },
+                            )
                         }
-                        if (showAdvanced) {
-                            P5Background { AdvancedScreen(onBack = { showAdvanced = false }) }
+                    }
+                    if (showLog) {
+                        P5Background { LogScreen(onBack = { showLog = false }) }
+                    }
+                    if (showAbout) {
+                        P5Background {
+                            AboutScreen(onBack = { showAbout = false }, onAdvanced = { showAdvanced = true })
                         }
+                    }
+                    if (showAdvanced) {
+                        P5Background { AdvancedScreen(onBack = { showAdvanced = false }) }
                     }
                 }
             }
         }
     }
 
-    // Sharing again while the app is open arrives here (launchMode singleTop).
+    // Sharing again while the app is open arrives here (launchMode singleTask).
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -195,6 +223,20 @@ private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
             // Fit, not Crop: shows the whole frame, so a portrait clip isn't cut off.
             Image(it, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
         }
+        // A small play mark in the bottom-left corner says the thumbnail can be tapped. ► is a
+        // plain text symbol (not the ▶ emoji), so it stays white-on-black on every device.
+        if (onClick != null) {
+            Text(
+                "►",
+                color = P5.White,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 6.dp, bottom = 5.dp)
+                    .background(Color.Black.copy(alpha = 0.65f), CutCornerShape(3.dp))
+                    .padding(horizontal = 4.dp, vertical = 1.dp),
+            )
+        }
     }
 }
 
@@ -215,10 +257,69 @@ private fun fpsLabel(i: SourceInfo, finished: Boolean): String = when {
     else -> "Cannot read fps. Encoder kept the source rate"
 }
 
+/**
+ * Which stage the running video is at, worked out from the status text the converter reports
+ * ("Attempt 1/4, pass 2/2: encoding ...") and the progress (below 0 = the stage can't say).
+ */
+private fun runStage(status: String, progress: Float): RunLook = when {
+    status.contains("pass 1/2") -> RunLook.ANALYSING
+    status.contains("pass 2/2") -> if (progress >= 1f) RunLook.FINISHING else RunLook.ENCODING
+    status.endsWith("Done") -> RunLook.FINISHING
+    else -> RunLook.PREPARING // Starting, copying the video, checking the audio
+}
+
+/** How fast the light runs round the border at each stage, in laps per second. */
+private fun lapsPerSecond(look: RunLook): Float = when (look) {
+    RunLook.PREPARING -> 1f / 6f
+    RunLook.ANALYSING -> 1f / 4.4f
+    RunLook.ENCODING -> 1f / 3f
+    RunLook.FINISHING -> 1f / 1.2f
+    RunLook.PAUSING -> 1f / 9f
+}
+
+/** Plays a card's one-off effect by hand (a timer, not Compose animation, so it ignores the animation-scale setting). */
+private suspend fun playCardEvent(fx: CardFx, kind: CardEventKind) {
+    val done = kind == CardEventKind.DONE
+    val seconds = if (done) 0.8f else 0.9f
+    fx.flashColor = if (done) P5.White else P5.Amber
+    val start = System.nanoTime()
+    try {
+        while (true) {
+            val t = (System.nanoTime() - start) / 1_000_000_000f
+            if (t >= seconds) break
+            val k = t / seconds
+            if (done) {
+                fx.flash = (1f - k) * (1f - k) * 0.85f
+            } else {
+                fx.flash = (1f - k) * 0.5f
+                // Shakes sideways six times, dying away.
+                fx.shakeDp = sin(t * 2f * PI.toFloat() * 6f) * 12f * (1f - k)
+            }
+            delay(16)
+        }
+    } finally {
+        fx.flash = 0f
+        fx.shakeDp = 0f
+    }
+}
+
+/** The big percentage on the card being converted. Reads the progress itself, so only this redraws as it changes. */
+@Composable
+private fun RunPercent(item: QueueItem) {
+    val stage = runStage(BatchRunner.status, BatchRunner.progress)
+    val value: Int? = if (stage == RunLook.ENCODING || stage == RunLook.FINISHING) {
+        val p = BatchRunner.progress.coerceIn(0f, 1f)
+        // A split video counts all its parts: the ones already saved plus how far this one is.
+        val overall = if (item.partsTotal > 1) (item.partsDone + p) / item.partsTotal else p
+        (overall * 100f).toInt()
+    } else null
+    P5Percent(value)
+}
+
 @Composable
 private fun QueueButton(label: String, enabled: Boolean, onClick: () -> Unit) {
     // The remove button (✕) gets the red accent.
-    P5SquareButton(label, onClick, enabled, accent = label == "✕")
+    P5SquareButton(label, onClick, enabled, accent = label == "✕", size = 38.dp)
 }
 
 @Composable
@@ -244,11 +345,25 @@ private fun QueueRow(
     /** Queue cards offer "Return to holding pen". */
     showReturn: Boolean = false,
     onReturn: () -> Unit = {},
+    /** The video that will be converted next: gets a NEXT tag. */
+    isNext: Boolean = false,
+    /**
+     * Waiting videos while a batch runs: where the soft band moving down the card is (0..1 per
+     * pass). One shared clock for all the cards, so the bands move down together.
+     */
+    sweep: (() -> Float)? = null,
 ) {
     val ctx = LocalContext.current
     val i = item.info
     // Whether the card's extra detail is open (see "Details" at the bottom of the card).
     var expanded by remember { mutableStateOf(false) }
+    // The Rename and Delete file dialogs of a Finished card.
+    val scope = rememberCoroutineScope()
+    var showRename by remember { mutableStateOf(false) }
+    var renameText by remember { mutableStateOf("") }
+    var renameError by remember { mutableStateOf<String?>(null) }
+    var renaming by remember { mutableStateOf(false) }
+    var showDelete by remember { mutableStateOf(false) }
 
     // Tapping the thumbnail plays the video: the converted file on a Finished card, the original
     // on a queue card. Nothing to play if the file is gone or the original couldn't be read.
@@ -267,7 +382,94 @@ private fun QueueRow(
         ItemStatus.CANCELLED -> P5.GreyDim
         ItemStatus.WAITING -> P5.RedDeep
     }
-    P5Card(Modifier.fillMaxWidth(), accent = accent) {
+    // The card being converted has light running round its border, so it stands out from the
+    // queue and shows what stage the work is at (see RunLook). Everything here is driven by hand
+    // with plain timers (like the progress sweep, see pass1Sweep) rather than Compose's animation
+    // system, so it runs even with the phone's animations turned off.
+    val converting = item.status == ItemStatus.CONVERTING
+    // After Pause Now the card stays up here with the light held still, until the batch resumes.
+    val pausedHere = item.id == BatchRunner.pausedItemId
+    val look by remember {
+        derivedStateOf {
+            if (BatchRunner.pauseRequest == PauseRequest.NOW) RunLook.PAUSING
+            else runStage(BatchRunner.status, BatchRunner.progress)
+        }
+    }
+    var runPhase by remember { mutableFloatStateOf(0f) }
+    // Moves only while converting, so when paused it stops where it is and carries on from there.
+    LaunchedEffect(converting) {
+        if (converting) {
+            var last = System.nanoTime()
+            while (isActive) {
+                delay(16)
+                val now = System.nanoTime()
+                runPhase = (runPhase + (now - last) / 1_000_000_000f * lapsPerSecond(look)) % 1f
+                last = now
+            }
+        }
+    }
+    // A new attempt (the last one came out over the size limit) flashes the light amber.
+    val attempt by remember {
+        derivedStateOf { Regex("Attempt (\\d+)/").find(BatchRunner.status)?.groupValues?.get(1)?.toIntOrNull() ?: 0 }
+    }
+    var amber by remember { mutableFloatStateOf(0f) }
+    var lastAttempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(attempt, converting) {
+        if (converting && attempt > 1 && attempt > lastAttempt) {
+            val start = System.nanoTime()
+            try {
+                while (true) {
+                    val t = (System.nanoTime() - start) / 1_300_000_000f
+                    if (t >= 1f) break
+                    amber = 1f - t
+                    delay(16)
+                }
+            } finally {
+                amber = 0f
+            }
+        }
+        if (attempt > 0) lastAttempt = attempt
+    }
+    val runBorder = remember { RunBorder(phase = { runPhase }, look = { look }, amber = { amber }) }
+
+    // A flash when this card shows up as a finished video, a shake when it shows up as a failure.
+    val fx = remember { CardFx() }
+    LaunchedEffect(item.id) {
+        val ev = BatchRunner.cardEvents[item.id] ?: return@LaunchedEffect
+        BatchRunner.cardEvents.remove(item.id)
+        if (SystemClock.elapsedRealtime() - ev.at < 4000L) playCardEvent(fx, ev.kind)
+    }
+
+    val warnColor = MaterialTheme.colorScheme.tertiary
+    P5Card(
+        Modifier.fillMaxWidth(),
+        accent = accent,
+        runBorder = if (converting || pausedHere) runBorder else null,
+        fx = fx,
+        sweep = sweep,
+    ) {
+        // Header: the file name gets the whole width but for the buttons (it wrapped to four lines
+        // when the thumbnail sat beside it too). Long names stop at two lines; the full name is
+        // under Details.
+        Row(verticalAlignment = Alignment.Top) {
+            Text(
+                item.name,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(top = 8.dp, end = 8.dp),
+            )
+            if (showControls) {
+                if (!busy) {
+                    QueueButton("▲", canMoveUp, onUp)
+                    QueueButton("▼", canMoveDown, onDown)
+                }
+                // Removing is allowed during a run, except for the video being converted.
+                QueueButton("✕", item.status != ItemStatus.CONVERTING, onRemove)
+            }
+        }
+
+        // Body: the thumbnail, with what the video is and where it stands beside it.
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (!item.probeFailed) {
                 Thumb(
@@ -280,10 +482,9 @@ private fun QueueRow(
                         }
                     },
                 )
-                Spacer(Modifier.size(10.dp))
+                Spacer(Modifier.size(12.dp))
             }
-            Column(Modifier.weight(1f)) {
-                Text(item.name, style = MaterialTheme.typography.titleSmall)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 when {
                     item.probeFailed -> Text(
                         "Couldn't read this video.",
@@ -293,32 +494,42 @@ private fun QueueRow(
                     i == null -> Text("Reading video…", style = MaterialTheme.typography.bodySmall)
                     else -> {
                         val len = String.format(Locale.US, "%.1f", i.durationSec)
-                        val state = when (item.status) {
-                            ItemStatus.WAITING -> "Waiting"
-                            ItemStatus.CONVERTING -> "Converting…"
-                            ItemStatus.DONE -> "Done"
-                            ItemStatus.FAILED -> "Failed"
-                            ItemStatus.CANCELLED -> "Not converted"
+                        val (state, tagColor) = if (pausedHere) "Paused" to P5.Amber else when (item.status) {
+                            ItemStatus.WAITING -> "Waiting" to P5.Grey
+                            ItemStatus.CONVERTING -> "Converting…" to P5.Red
+                            ItemStatus.DONE -> "Done" to P5.White
+                            ItemStatus.FAILED -> "Failed" to P5.Amber
+                            ItemStatus.CANCELLED -> "Not converted" to P5.GreyDim
                         }
                         Text(
-                            "${i.width}×${i.height}, ${len}s, ${fpsLabel(i, finishedCard)}, ${if (i.hasAudio) "has audio" else "no audio"} · $state",
+                            "${i.width}×${i.height} · ${fpsLabel(i, finishedCard)}",
                             style = MaterialTheme.typography.bodySmall
                         )
+                        Text(
+                            "${len}s · ${if (i.hasAudio) "has audio" else "no audio"}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            P5Tag(
+                                state,
+                                tagColor,
+                                filled = item.status == ItemStatus.CONVERTING || item.status == ItemStatus.DONE,
+                            )
+                            if (isNext) P5Tag("Next ▼", P5.White, filled = true)
+                        }
                     }
                 }
             }
-            if (showControls) {
-                if (!busy) {
-                    QueueButton("▲", canMoveUp, onUp)
-                    QueueButton("▼", canMoveDown, onDown)
-                }
-                // Removing is allowed during a run, except for the video being converted.
-                QueueButton("✕", item.status != ItemStatus.CONVERTING, onRemove)
+            // The percentage of the video being converted, big and red, in the style of 💯.
+            if (converting && i != null && !item.probeFailed) {
+                Spacer(Modifier.size(8.dp))
+                RunPercent(item)
             }
         }
 
-        // What this video is (or was) converted with. Once it's in a run it is fixed; before that
-        // it follows the settings on screen. A finished card shows what it was made for.
+        // What this video is (or was) converted with. Once it's been sent to the queue it is fixed
+        // (return it to the Holding Pen to change it); in the pen it follows the settings on
+        // screen. A finished card shows what it was made for.
         val shownSettings: Settings? = if (finishedCard) item.settings else (item.settings ?: settings)
         if (shownSettings != null && !item.probeFailed) {
             val prefix = when {
@@ -327,8 +538,12 @@ private fun QueueRow(
                 item.settings != null -> "Will convert with"
                 else -> "Current settings"
             }
+            Box(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 2.dp).height(1.dp).background(P5.Line))
             Text(
-                "$prefix: ${settingsWithTarget(shownSettings)}",
+                buildAnnotatedString {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = P5.RedBright)) { append("$prefix: ") }
+                    append(settingsWithTarget(shownSettings))
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -356,14 +571,14 @@ private fun QueueRow(
                         "Will be split into $numParts files to fit the ${maxDuration}s limit ($names)."
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary
+                    color = warnColor
                 )
             }
             if ((minW > 0 || minH > 0) && (i.width < minW || i.height < minH)) {
                 Text(
                     "Below this target's minimum (${minW}×${minH}): it will be scaled up, keeping its aspect ratio.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary
+                    color = warnColor
                 )
             }
 
@@ -374,15 +589,24 @@ private fun QueueRow(
                 if (numParts > 1) append("Each part ${String.format(Locale.US, "%.1f", est.partSec)}s - ")
                 append("${est.height}p at ${est.videoKbps}kbps")
             }
+            val panelShape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp)
             if (showControls) {
                 val locked = busy || item.partsDone > 0
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                        .clip(panelShape)
+                        .background(P5.Panel)
+                        .padding(start = 10.dp, top = 2.dp, bottom = 2.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Column(Modifier.weight(1f)) {
                         Text(
                             if (numParts == 1) "No split" else "$numParts parts",
                             style = MaterialTheme.typography.titleSmall
                         )
-                        Text(estimateText, style = MaterialTheme.typography.bodySmall)
+                        Text(estimateText, style = MaterialTheme.typography.bodySmall, color = P5.Grey)
                     }
                     QueueButton("−", !locked && numParts > minParts) { onExtraParts(numParts - minParts - 1) }
                     QueueButton("+", !locked && numParts < maxParts) { onExtraParts(numParts - minParts + 1) }
@@ -391,13 +615,32 @@ private fun QueueRow(
                 Text(estimateText, style = MaterialTheme.typography.bodySmall)
             }
 
-            // Below the warning bitrate, detail will suffer. Not shown for an invalid custom limit.
-            if (settings.limitBytes >= 256 * 1024L && est.videoKbps < t.warnVideoKbps) {
+            // What kind of video the estimated bitrate suits (bits per pixel, so the frame size and
+            // frame rate count). The poor brackets also say what could improve it, best first and
+            // only what can still be changed; two tips at most. Not shown for an invalid custom limit.
+            if (settings.limitBytes >= 256 * 1024L && est.videoKbps > 0) {
+                val bracket = Converter.qualityBracket(est.qualityBpp, t)
+                val tips = if (bracket.poor) {
+                    val outFps = Converter.effectiveFps(i, settings.targetFps)
+                    buildList {
+                        if (showControls && !(busy || item.partsDone > 0) && numParts < maxParts) add("split into more parts")
+                        if (outFps > 27.0) add("lower the frame rate")
+                        if (est.audioKbps > Converter.MONO_AUDIO_MAX_KBPS &&
+                            est.audioKbps >= Converter.AUDIO_TIP_SHARE * (est.videoKbps + est.audioKbps)
+                        ) add("decrease sound quality")
+                        if (!settings.useVp9) add("try VP9 (slower)")
+                        if (settings.hasCustomSize) add("lower the custom resolution")
+                    }.take(2)
+                } else emptyList()
+                val bracketColor = if (bracket.poor) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Quality bracket", style = MaterialTheme.typography.labelMedium, color = P5.Grey)
+                    P5Tag(bracket.label, if (bracket.poor) P5.Amber else P5.White)
+                }
                 Text(
-                    "High-detail clips (e.g. live action) will look poor at this bitrate." +
-                        if (showControls && numParts < maxParts) " Increased splitting recommended." else "",
+                    bracket.suits + if (tips.isNotEmpty()) "\nTo improve it: ${tips.joinToString(" or ")}." else "",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary
+                    color = bracketColor
                 )
             }
         }
@@ -426,6 +669,7 @@ private fun QueueRow(
             }
         }
         if (expanded) {
+            Text("File: ${item.name}", style = MaterialTheme.typography.bodySmall)
             if (i != null && !item.probeFailed) {
                 val len = String.format(Locale.US, "%.1f", i.durationSec)
                 val audio = if (i.hasAudio) {
@@ -454,12 +698,15 @@ private fun QueueRow(
                 val minRes = if (shownSettings.minWidth > 0 || shownSettings.minHeight > 0) {
                     "${shownSettings.minWidth}×${shownSettings.minHeight}"
                 } else "none"
+                val lengthPart = if (shownSettings.maxDurationSec > 0) "max length ${shownSettings.maxDurationSec} s" else "no length limit"
+                val resPart = customResLabel(shownSettings.customWidth, shownSettings.customHeight)
+                    ?.let { "output size: $it" } ?: "min resolution $minRes"
                 Text(
-                    "Size limit ${formatLimit(shownSettings.limitBytes)} · max length ${shownSettings.maxDurationSec} s · min resolution $minRes",
+                    "Size limit ${formatLimit(shownSettings.limitBytes)} · $lengthPart · $resPart",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
-                    "${if (shownSettings.keepAudio) "Sound on" else "Sound off"} · frame rate up to ${shownSettings.targetFps} fps · " +
+                    "${if (shownSettings.keepAudio) "Sound on, ${Converter.audioLabel(shownSettings.audioKbps)}" else "Sound off"} · frame rate ≤ ${shownSettings.targetFps} fps · " +
                         "${effortName(shownSettings)} · ${if (shownSettings.useVp9) "VP9" else "VP8"}",
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -474,24 +721,151 @@ private fun QueueRow(
             }
         }
 
-        item.savedUri?.let { saved ->
-            P5Button(
-                "Share",
-                onClick = {
-                    val send = Intent(Intent.ACTION_SEND).apply {
-                        type = "video/webm"
-                        putExtra(Intent.EXTRA_STREAM, saved)
-                        // Explicit ClipData so the read grant reliably reaches the receiving app,
-                        // whether saved is a MediaStore Uri or a document Uri from the chosen folder.
-                        clipData = ClipData.newRawUri("webm", saved)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // A finished card's file buttons: Share and Rename, then Delete file and Remove card.
+        // Once the file is gone (deleted here, or outside the app) only Remove card is left.
+        if (finishedCard) {
+            val saved = item.savedUri
+            Column(
+                Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (saved != null) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        P5Button(
+                            "Share",
+                            onClick = {
+                                val send = Intent(Intent.ACTION_SEND).apply {
+                                    type = "video/webm"
+                                    putExtra(Intent.EXTRA_STREAM, saved)
+                                    // Explicit ClipData so the read grant reliably reaches the receiving app,
+                                    // whether saved is a MediaStore Uri or a document Uri from the chosen folder.
+                                    clipData = ClipData.newRawUri("webm", saved)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                ctx.startActivity(Intent.createChooser(send, "Share webm"))
+                            },
+                            kind = P5Kind.Secondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        P5Button(
+                            "Rename",
+                            onClick = {
+                                // Starts from the file's current name, without the .webm ending.
+                                renameText = (OutputStorage.fileName(ctx, saved) ?: "").removeSuffix(".webm")
+                                renameError = null
+                                showRename = true
+                            },
+                            kind = P5Kind.Secondary,
+                            modifier = Modifier.weight(1f),
+                        )
                     }
-                    ctx.startActivity(Intent.createChooser(send, "Share webm"))
-                },
-                kind = P5Kind.Secondary,
-                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
-            )
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    P5Button(
+                        "Add to pen again",
+                        onClick = { BatchRunner.addAgain(ctx, item.id) },
+                        kind = P5Kind.Secondary,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (saved != null) {
+                        P5Button(
+                            "Delete file",
+                            onClick = { showDelete = true },
+                            kind = P5Kind.Secondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    P5Button(
+                        "Remove card",
+                        onClick = { BatchRunner.removeFinished(item.id) },
+                        kind = P5Kind.Secondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
         }
+    }
+
+    if (showRename) {
+        val cleaned = OutputStorage.cleanBaseName(renameText)
+        val rename = {
+            if (cleaned != null && !renaming) {
+                renaming = true
+                scope.launch {
+                    val err = BatchRunner.renameFinished(ctx, item.id, cleaned)
+                    renaming = false
+                    if (err == null) showRename = false else renameError = err
+                }
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { if (!renaming) showRename = false },
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Rename file".uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { renameText = it; renameError = null },
+                        label = { Text("File name") },
+                        suffix = { Text(".webm") },
+                        isError = cleaned == null || renameError != null,
+                        supportingText = {
+                            when {
+                                renameError != null -> Text(renameError!!)
+                                cleaned == null -> Text("Enter a name without / \\ : * ? \" < > |")
+                            }
+                        },
+                        singleLine = true,
+                        shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
+                    )
+                }
+            },
+            confirmButton = {
+                P5Button("Rename", onClick = rename, enabled = cleaned != null && !renaming)
+            },
+            dismissButton = {
+                P5Button("Cancel", onClick = { showRename = false }, enabled = !renaming, kind = P5Kind.Ghost)
+            },
+        )
+    }
+
+    if (showDelete) {
+        val fileLabel = remember(item.savedUri) {
+            item.savedUri?.let { OutputStorage.fileName(ctx, it) } ?: "this file"
+        }
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Delete file".uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Text(
+                    "Delete $fileLabel from your device? This can't be undone. " +
+                        "The card stays in the Finished list until you remove it."
+                )
+            },
+            confirmButton = {
+                P5Button(
+                    "Delete",
+                    onClick = {
+                        showDelete = false
+                        scope.launch {
+                            val err = BatchRunner.deleteFinishedFile(ctx, item.id)
+                            if (err != null) Toast.makeText(ctx, err, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                )
+            },
+            dismissButton = { P5Button("Cancel", onClick = { showDelete = false }, kind = P5Kind.Ghost) },
+        )
     }
 }
 
@@ -630,15 +1004,33 @@ private fun prettyCodec(c: String): String = when (c.lowercase()) {
     else -> c.uppercase()
 }
 
-private fun effortName(s: Settings) = if (s.fastest) "Fastest" else if (s.fastEncode) "Speed" else "Quality"
+private fun effortName(s: Settings) =
+    if (s.bestQuality) "Best quality" else if (s.fastest) "Fastest" else if (s.fastEncode) "Speed" else "Quality"
 
-/** The settings in one short line, e.g. "6 MB · up to 400 s · sound on · up to 30 fps · Quality · VP8". */
+/** The settings in one short line, e.g. "6 MB · ≤ 400 s · ♪ 64 kbps · ≤ 30 fps · Quality · VP8". */
 private fun settingsBrief(s: Settings): String =
-    "${formatLimit(s.limitBytes)} · up to ${s.maxDurationSec} s · ${if (s.keepAudio) "sound on" else "no sound"} · " +
-        "up to ${s.targetFps} fps · ${effortName(s)} · ${if (s.useVp9) "VP9" else "VP8"}"
+    "${formatLimit(s.limitBytes)} · " +
+        (if (s.maxDurationSec > 0) "≤ ${s.maxDurationSec} s · " else "") +
+        (customResLabel(s.customWidth, s.customHeight)?.let { "$it · " } ?: "") +
+        "${soundLabel(s)} · " +
+        "≤ ${s.targetFps} fps · ${effortName(s)} · ${if (s.useVp9) "VP9" else "VP8"}"
+
+/** "no sound" or e.g. "♪ 64 kbps" (a plain text music note, not an emoji; always with the bitrate, so every card reads the same). */
+private fun soundLabel(s: Settings): String = when {
+    !s.keepAudio -> "no sound"
+    else -> "♪ ${Converter.audioLabel(s.audioKbps)}"
+}
+
+/** A Custom resolution in words (e.g. "scaled to fit 640×480"), or null when none is set. */
+private fun customResLabel(w: Int, h: Int): String? = when {
+    w > 0 && h > 0 -> "scaled to fit ${w}×${h}"
+    w > 0 -> "${w} px wide"
+    h > 0 -> "${h} px tall"
+    else -> null
+}
 
 /** The board name (if there is one) followed by [settingsBrief]. */
-private fun settingsWithTarget(s: Settings): String =
+internal fun settingsWithTarget(s: Settings): String =
     (if (s.targetLabel.isNotBlank()) "${s.targetLabel} · " else "") + settingsBrief(s)
 
 /** One line saying what a running batch is being converted with. */
@@ -653,21 +1045,45 @@ private fun EmptyNote(text: String) {
 }
 
 /**
- * The cards of one section, newest at the top. A video in a running batch shows the settings it is
- * being converted with; anything else follows [liveSettings]. "Up" on a card moves it up the screen.
+ * The cards of one section, newest at the top. A video in the queue shows the settings it was sent
+ * with; one in the Holding Pen follows [liveSettings]. "Up" on a card moves it up the screen.
  */
 @Composable
 private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settings) {
     val queue = BatchRunner.queue
+    // Conversion runs from the bottom of the list up, so the next video is the first waiting one
+    // in list order (the one lowest on screen).
+    // While a batch runs, every waiting video has a soft band moving down its background (one
+    // shared clock, so they move together); the next one also has the NEXT tag.
+    val sweeping = section == CardSection.QUEUE && busy && !BatchRunner.paused
+    var sweepPhase by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(sweeping) {
+        if (sweeping) {
+            val start = System.nanoTime()
+            while (isActive) {
+                sweepPhase = ((System.nanoTime() - start) / 2_400_000_000.0).toFloat() % 1f
+                delay(16)
+            }
+        }
+    }
+    val nextId = if (section == CardSection.QUEUE) {
+        queue.firstOrNull {
+            !it.inPen && it.info != null && !it.probeFailed && it.status == ItemStatus.WAITING &&
+                it.id != BatchRunner.pausedItemId
+        }?.id
+    } else null
     for (idx in queue.indices.reversed()) {
         val item = queue[idx]
         val show = when (section) {
             CardSection.PEN -> item.inPen
-            CardSection.QUEUE -> !item.inPen && item.status != ItemStatus.CONVERTING
-            CardSection.CONVERTING -> !item.inPen && item.status == ItemStatus.CONVERTING
+            CardSection.QUEUE -> !item.inPen && item.status != ItemStatus.CONVERTING && item.id != BatchRunner.pausedItemId
+            // Includes the video Pause Now interrupted, which keeps its card here while paused.
+            CardSection.CONVERTING -> !item.inPen && (item.status == ItemStatus.CONVERTING || item.id == BatchRunner.pausedItemId)
         }
         if (show) key(item.id) {
-            val s = if (busy && !item.inPen) {
+            // A queued video shows (and is estimated with) the settings it was sent with; only the
+            // Holding Pen follows the settings on screen.
+            val s = if (!item.inPen) {
                 item.settings?.copy(tuning = liveSettings.tuning) ?: liveSettings
             } else liveSettings
             QueueRow(
@@ -687,13 +1103,17 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
                 onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
                 showReturn = section == CardSection.QUEUE,
                 onReturn = { BatchRunner.returnToPen(item.id) },
+                isNext = item.id == nextId,
+                sweep = if (sweeping && item.status == ItemStatus.WAITING && item.info != null && !item.probeFailed) {
+                    { sweepPhase }
+                } else null,
             )
         }
     }
 }
 
 @Composable
-fun App(onAbout: () -> Unit = {}) {
+fun App(onMenu: () -> Unit = {}) {
     val ctx = LocalContext.current
 
     // The queue, the finished list, progress and the log all live in BatchRunner (not here), so a
@@ -712,6 +1132,7 @@ fun App(onAbout: () -> Unit = {}) {
     val status = BatchRunner.status
     val summary = BatchRunner.summary
     val runTotal = BatchRunner.runTotal
+    val currentParts = BatchRunner.currentParts
     val logLines = BatchRunner.logLines
 
     // Index into TARGETS; TARGETS.size means "Custom".
@@ -719,23 +1140,39 @@ fun App(onAbout: () -> Unit = {}) {
     val prefs = remember { ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE) }
     var targetIdx by remember { mutableIntStateOf(prefs.getInt("ui_target_idx", 0).coerceIn(0, TARGETS.size)) }
     var customMb by remember { mutableStateOf(prefs.getString("ui_custom_mb", "4") ?: "4") }
+    // Custom resolution, in pixels. Empty = not set (automatic).
+    var customW by remember { mutableStateOf(prefs.getString("ui_custom_w", "") ?: "") }
+    var customH by remember { mutableStateOf(prefs.getString("ui_custom_h", "") ?: "") }
     var removeAudio by remember { mutableStateOf(prefs.getBoolean("ui_remove_audio", true)) }
+    // One of Converter.AUDIO_KBPS_OPTIONS; anything else saved falls back to the default.
+    var audioKbps by remember {
+        mutableIntStateOf(
+            prefs.getInt("ui_audio_kbps", Converter.DEFAULT_AUDIO_KBPS)
+                .takeIf { it in Converter.AUDIO_KBPS_OPTIONS } ?: Converter.DEFAULT_AUDIO_KBPS
+        )
+    }
     var fastEncode by remember { mutableStateOf(prefs.getBoolean("ui_fast_encode", false)) }
     var useVp9 by remember { mutableStateOf(prefs.getBoolean("ui_use_vp9", false)) }
     var fastest by remember { mutableStateOf(prefs.getBoolean("ui_fastest", false)) }
+    // Best quality, one of the three exclusive encoding choices (with Quality/Speed and Fastest).
+    var bestQuality by remember { mutableStateOf(prefs.getBoolean("ui_best_quality", false)) }
     // Index into FPS_PRESETS; FPS_PRESETS.size means "Custom".
     var fpsChoice by remember {
         mutableIntStateOf(prefs.getInt("ui_fps_choice", FPS_DEFAULT_INDEX).coerceIn(0, FPS_PRESETS.size))
     }
     var customFps by remember { mutableStateOf(prefs.getString("ui_custom_fps", "30") ?: "30") }
-    LaunchedEffect(targetIdx, customMb, removeAudio, fastEncode, useVp9, fastest, fpsChoice, customFps) {
+    LaunchedEffect(targetIdx, customMb, customW, customH, removeAudio, audioKbps, fastEncode, useVp9, fastest, bestQuality, fpsChoice, customFps) {
         prefs.edit()
             .putInt("ui_target_idx", targetIdx)
             .putString("ui_custom_mb", customMb)
+            .putString("ui_custom_w", customW)
+            .putString("ui_custom_h", customH)
             .putBoolean("ui_remove_audio", removeAudio)
+            .putInt("ui_audio_kbps", audioKbps)
             .putBoolean("ui_fast_encode", fastEncode)
             .putBoolean("ui_use_vp9", useVp9)
             .putBoolean("ui_fastest", fastest)
+            .putBoolean("ui_best_quality", bestQuality)
             .putInt("ui_fps_choice", fpsChoice)
             .putString("ui_custom_fps", customFps)
             .apply()
@@ -746,6 +1183,8 @@ fun App(onAbout: () -> Unit = {}) {
     var audioOpen by remember { mutableStateOf(false) }
     var fpsOpen by remember { mutableStateOf(false) }
     var encodingOpen by remember { mutableStateOf(false) }
+    // The one-time heads-up shown the first time Best quality is picked.
+    var showBestNotice by remember { mutableStateOf(false) }
     var codecOpen by remember { mutableStateOf(false) }
     var saveOpen by remember { mutableStateOf(false) }
 
@@ -768,7 +1207,7 @@ fun App(onAbout: () -> Unit = {}) {
         if (logLines.isNotEmpty()) logListState.scrollToItem(logLines.lastIndex)
     }
 
-    // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 1.2s.
+    // Hand-rolled sweep for pass 1 (see pass1Sweep above). Ping-pongs 0→1→0 every 4s.
     LaunchedEffect(progress < 0f || copyingTotal > 0) {
         if (progress < 0f || copyingTotal > 0) {
             var t = 0L
@@ -861,10 +1300,37 @@ fun App(onAbout: () -> Unit = {}) {
         )
     }
 
+    // Shown once, the first time Best quality is chosen.
+    if (showBestNotice) {
+        val gotIt = {
+            showBestNotice = false
+            prefs.edit().putBoolean("best_notice_seen", true).apply()
+        }
+        AlertDialog(
+            onDismissRequest = gotIt,
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Best quality".uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Text(
+                    "This mode can take a very long time. It encodes each video up to " +
+                        "${TuningStore.current.bestMaxAttempts} times with slower settings, so expect a warm phone " +
+                        "that may slow itself down to cool off, and heavy use of battery and memory.\n\n" +
+                        "Plug the phone in and keep it somewhere cool. Long or high resolution videos are " +
+                        "the heaviest, and VP9 is slower again.\n\n" +
+                        "This notice is only shown once."
+                )
+            },
+            confirmButton = { P5Button("Got it", onClick = gotIt) },
+        )
+    }
+
     val target: Target? = TARGETS.getOrNull(targetIdx)
     val isCustom = target == null
     val limitKb: Int = target?.limitKb ?: ((customMb.toDoubleOrNull() ?: 0.0) * 1024).toInt()
-    val maxDuration: Int = target?.maxDurationSec ?: Converter.DEFAULT_MAX_DURATION_SEC
+    val maxDuration: Int = target?.maxDurationSec ?: Converter.NO_LENGTH_LIMIT
     val minW: Int = target?.minWidth ?: 0
     val minH: Int = target?.minHeight ?: 0
     val audioAllowed: Boolean = target?.audioAllowed ?: true
@@ -875,6 +1341,16 @@ fun App(onAbout: () -> Unit = {}) {
     val isCustomFps = fpsChoice >= FPS_PRESETS.size
     val customFpsValue: Int? = customFps.trim().toIntOrNull()?.takeIf { it in Converter.MIN_FPS..Converter.MAX_FPS }
     val fpsOk = !isCustomFps || customFpsValue != null
+
+    // The Custom resolution. Each side may be left empty; one that is filled in has to be a whole
+    // number in range, or Convert stays disabled until it is fixed.
+    val customWValue: Int? = customW.trim().toIntOrNull()?.takeIf { it in Converter.MIN_CUSTOM_PX..Converter.MAX_CUSTOM_PX }
+    val customHValue: Int? = customH.trim().toIntOrNull()?.takeIf { it in Converter.MIN_CUSTOM_PX..Converter.MAX_CUSTOM_PX }
+    val widthOk = !isCustom || customW.isBlank() || customWValue != null
+    val heightOk = !isCustom || customH.isBlank() || customHValue != null
+    val resOk = widthOk && heightOk
+    val customWidth: Int = if (isCustom) customWValue ?: 0 else 0
+    val customHeight: Int = if (isCustom) customHValue ?: 0 else 0
     val targetFps: Int = if (!isCustomFps) FPS_PRESETS[fpsChoice] else (customFpsValue ?: Converter.DEFAULT_FPS)
 
     // What the next conversion would use. The queue cards work their split estimates out from it,
@@ -890,25 +1366,32 @@ fun App(onAbout: () -> Unit = {}) {
         fastEncode = fastEncode,
         useVp9 = useVp9,
         fastest = fastest,
+        bestQuality = bestQuality,
         targetFps = targetFps,
         tuning = TuningStore.current,
         isCustom = isCustom,
         targetLabel = targetLabel,
+        customWidth = customWidth,
+        customHeight = customHeight,
+        audioKbps = audioKbps,
     )
 
     // What each closed settings group shows as its current choice.
     val limitOk = limitKb >= 256
     val boardsSummaryText = if (target != null) {
         "${target.title}\n${boardsSummary(target)}"
-    } else if (limitOk) {
-        "Custom · $customMb MB limit, no minimum resolution"
-    } else {
+    } else if (!limitOk) {
         "Custom · enter a limit of at least 0.25 MB"
+    } else if (!resOk) {
+        "Custom · enter a resolution from ${Converter.MIN_CUSTOM_PX} to ${Converter.MAX_CUSTOM_PX} px, or leave it empty"
+    } else {
+        "Custom · $customMb MB limit · no length limit · " +
+            (customResLabel(customWidth, customHeight) ?: "resolution picked automatically")
     }
     val audioSummaryText = when {
         !audioAllowed -> "Off · this target doesn't allow sound"
         removeAudio -> "Off · output has no sound"
-        else -> "On · sound is kept"
+        else -> "On · sound is kept at ${Converter.audioLabel(audioKbps)}"
     }
     val fpsSummaryText = when {
         isCustomFps && customFpsValue == null ->
@@ -917,7 +1400,8 @@ fun App(onAbout: () -> Unit = {}) {
         fpsChoice == FPS_DEFAULT_INDEX -> "${FPS_PRESETS[fpsChoice]} fps (default)"
         else -> "${FPS_PRESETS[fpsChoice]} fps"
     }
-    val encodingSummaryText = if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality (default)"
+    val encodingSummaryText =
+        if (bestQuality) "Best quality" else if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality (default)"
     val codecSummaryText = if (useVp9) "VP9" else "VP8 (default)"
 
     // The Holding Pen holds videos you've added until the button below sends them to the queue.
@@ -933,7 +1417,7 @@ fun App(onAbout: () -> Unit = {}) {
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
-                P5Title("WebMChan")
+                P5Title("WebMChan", upperCase = false)
                 Text(
                     "4chan WebM converter".uppercase(),
                     style = MaterialTheme.typography.labelMedium,
@@ -941,7 +1425,7 @@ fun App(onAbout: () -> Unit = {}) {
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            P5Button("About", onClick = onAbout, kind = P5Kind.Secondary)
+            P5Button("Menu", onClick = onMenu, kind = P5Kind.Secondary)
         }
 
         P5Button(
@@ -986,7 +1470,7 @@ fun App(onAbout: () -> Unit = {}) {
             summary = boardsSummaryText,
             expanded = boardsOpen,
             onToggle = { boardsOpen = !boardsOpen },
-            summaryIsError = isCustom && !limitOk,
+            summaryIsError = isCustom && (!limitOk || !resOk),
         ) {
             TARGETS.forEachIndexed { idx, t ->
                 TargetRow(
@@ -1003,7 +1487,7 @@ fun App(onAbout: () -> Unit = {}) {
                 selected = isCustom,
                 enabled = true,
                 title = "Custom",
-                subtitle = "Your own size limit, no minimum resolution",
+                subtitle = "Your own size limit and resolution, with no length limit",
             ) {
                 targetIdx = TARGETS.size
                 removeAudio = false
@@ -1018,6 +1502,43 @@ fun App(onAbout: () -> Unit = {}) {
                     enabled = true,
                     shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
                 )
+                Text(
+                    "Resolution (optional). Fill in one side and the other follows the video's shape. " +
+                        "Fill in both and the picture is scaled to fit inside that size. Either way " +
+                        "the aspect ratio is kept, so nothing is stretched. Leave both empty to let the " +
+                        "app pick a size that suits the limit.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = customW,
+                        onValueChange = { customW = it },
+                        label = { Text("Width (px)") },
+                        isError = !widthOk,
+                        supportingText = {
+                            if (!widthOk) Text("${Converter.MIN_CUSTOM_PX} to ${Converter.MAX_CUSTOM_PX}")
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        enabled = true,
+                        shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = customH,
+                        onValueChange = { customH = it },
+                        label = { Text("Height (px)") },
+                        isError = !heightOk,
+                        supportingText = {
+                            if (!heightOk) Text("${Converter.MIN_CUSTOM_PX} to ${Converter.MAX_CUSTOM_PX}")
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        enabled = true,
+                        shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
 
@@ -1033,7 +1554,7 @@ fun App(onAbout: () -> Unit = {}) {
                         when {
                             !audioAllowed -> "This target doesn't allow sound; the space goes to video quality."
                             removeAudio -> "Sound is off: the output has no sound and the space goes to video quality."
-                            else -> "Sound is on: kept in the output (starts at 64 kbps). Only targets marked \"Audio OK\" allow it."
+                            else -> "Sound is on: kept in the output at the quality chosen below. Only targets marked \"Audio OK\" allow it."
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -1045,6 +1566,43 @@ fun App(onAbout: () -> Unit = {}) {
                     enabled = audioAllowed,
                     colors = p5SwitchColors(),
                 )
+            }
+            // Only while sound is on. Lower rates leave more of the size limit for the picture.
+            if (!effectiveRemoveAudio) {
+                Text(
+                    "Sound quality. A tight size limit may lower it a little automatically; it never goes above the choice here.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                TargetRow(
+                    selected = audioKbps == 16,
+                    enabled = true,
+                    title = "16 kbps (mono)",
+                    subtitle = "Poor quality, mono. Frees the most space for the picture.",
+                ) { audioKbps = 16 }
+                TargetRow(
+                    selected = audioKbps == 32,
+                    enabled = true,
+                    title = "32 kbps",
+                    subtitle = "Noticeably thinner sound. Frees space for the picture.",
+                ) { audioKbps = 32 }
+                TargetRow(
+                    selected = audioKbps == 64,
+                    enabled = true,
+                    title = "64 kbps (default)",
+                    subtitle = "Recommended. Good sound for the space it takes.",
+                ) { audioKbps = 64 }
+                TargetRow(
+                    selected = audioKbps == 128,
+                    enabled = true,
+                    title = "128 kbps",
+                    subtitle = "High quality. Worth it when the size limit is generous.",
+                ) { audioKbps = 128 }
+                TargetRow(
+                    selected = audioKbps == 256,
+                    enabled = true,
+                    title = "256 kbps",
+                    subtitle = "Highest quality. Takes a big share of the size limit.",
+                ) { audioKbps = 256 }
             }
         }
 
@@ -1109,23 +1667,35 @@ fun App(onAbout: () -> Unit = {}) {
             onToggle = { encodingOpen = !encodingOpen },
         ) {
             TargetRow(
-                selected = !fastEncode && !fastest,
+                selected = bestQuality,
+                enabled = true,
+                title = "Best quality",
+                subtitle = "The highest quality that fits, however long it takes. Much slower than Quality: it " +
+                    "encodes again and again until the file is within about 1% of the size limit. " +
+                    "VP9 (under Codec) gives better quality still, but is slower again.",
+            ) {
+                bestQuality = true; fastEncode = false; fastest = false
+                // A heads-up the first time only: this mode runs hot and long.
+                if (!prefs.getBoolean("best_notice_seen", false)) showBestNotice = true
+            }
+            TargetRow(
+                selected = !bestQuality && !fastEncode && !fastest,
                 enabled = true,
                 title = "Quality (default)",
                 subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
-            ) { fastEncode = false; fastest = false }
+            ) { bestQuality = false; fastEncode = false; fastest = false }
             TargetRow(
-                selected = fastEncode && !fastest,
+                selected = !bestQuality && fastEncode && !fastest,
                 enabled = true,
                 title = "Speed",
                 subtitle = "Faster than Quality mode, only slightly softer detail.",
-            ) { fastEncode = true; fastest = false }
+            ) { bestQuality = false; fastEncode = true; fastest = false }
             TargetRow(
-                selected = fastest,
+                selected = !bestQuality && fastest,
                 enabled = true,
                 title = "Fastest",
                 subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
-            ) { fastest = true }
+            ) { bestQuality = false; fastest = true }
         }
 
         CollapsibleSection(
@@ -1188,8 +1758,8 @@ fun App(onAbout: () -> Unit = {}) {
 
         val queueReady = queue.count { !it.inPen && it.info != null && it.status != ItemStatus.CONVERTING }
         val pending = penCount + queueReady
-        val canGo = pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && !busy
-        val penReady = penCount > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && !cancelling
+        val canGo = pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && resOk && !busy
+        val penReady = penCount > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && resOk && !cancelling
 
         // The running batch's progress and controls (or, when it is paused, the Resume controls).
         val progressBlock: @Composable () -> Unit = {
@@ -1228,43 +1798,49 @@ fun App(onAbout: () -> Unit = {}) {
                 )
                 PauseRequest.NONE -> {}
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Pause, skip and cancel share one small row. The buttons keep their own width (short
+            // labels, small type); the row only scrolls on a very narrow screen, so none is cut off.
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 P5Button(
                     "Pause now",
                     onClick = { BatchRunner.pauseNow() },
                     enabled = pauseRequest != PauseRequest.NOW,
                     kind = P5Kind.Secondary,
-                    modifier = Modifier.weight(1f),
+                    dense = true,
                 )
                 P5Button(
-                    if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after this conversion",
+                    if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after",
                     onClick = { BatchRunner.pauseAfter() },
                     enabled = pauseRequest != PauseRequest.NOW,
                     kind = P5Kind.Secondary,
-                    modifier = Modifier.weight(1f),
+                    dense = true,
                 )
-            }
-            if (runTotal > 1) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                // A split video: Skip part drops just the part being encoded and carries on with the
+                // next one. With other videos waiting there is also Skip video (the whole video).
+                if (currentParts > 1) {
                     P5Button(
-                        "Skip current",
-                        onClick = { BatchRunner.skipCurrent() },
+                        "Skip part",
+                        onClick = { BatchRunner.skipPart() },
                         kind = P5Kind.Secondary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    P5Button(
-                        "Cancel all",
-                        onClick = { BatchRunner.cancelAll() },
-                        kind = P5Kind.Secondary,
-                        modifier = Modifier.weight(1f),
+                        dense = true,
                     )
                 }
-            } else {
+                if (runTotal > 1) {
+                    P5Button(
+                        "Skip video",
+                        onClick = { BatchRunner.skipCurrent() },
+                        kind = P5Kind.Secondary,
+                        dense = true,
+                    )
+                }
                 P5Button(
-                    "Cancel",
+                    if (runTotal > 1) "Cancel all" else "Cancel",
                     onClick = { BatchRunner.cancelAll() },
                     kind = P5Kind.Secondary,
-                    modifier = Modifier.fillMaxWidth(),
+                    dense = true,
                 )
             }
             Text(
@@ -1291,16 +1867,7 @@ fun App(onAbout: () -> Unit = {}) {
         P5Button(
             if (pending > 1) "Convert $pending videos" else "Convert",
             onClick = {
-                val settings = Settings(
-                    limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
-                    fastEncode = fastEncode,
-                    useVp9 = useVp9,
-                    fastest = fastest,
-                    targetFps = targetFps,
-                    tuning = TuningStore.current,
-                    isCustom = isCustom,
-                    targetLabel = targetLabel,
-                )
+                val settings = cardSettings
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
                     PackageManager.PERMISSION_GRANTED
@@ -1368,7 +1935,7 @@ fun App(onAbout: () -> Unit = {}) {
                 state = logListState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(220.dp)
+                    .height(150.dp)
                     .clip(CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
                     .background(Color.Black)
                     .border(1.5.dp, P5.Line, CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))

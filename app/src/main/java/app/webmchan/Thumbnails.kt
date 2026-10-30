@@ -1,3 +1,4 @@
+// #thumbnails
 package app.webmchan
 
 import android.content.Context
@@ -101,7 +102,7 @@ object Thumbnails {
             val input = file?.absolutePath ?: FFmpegKitConfig.getSafParameterForRead(ctx, uri!!)
             val session = FFmpegKit.executeWithArguments(
                 arrayOf(
-                    "-y", "-ss", "%.3f".format(Locale.US, timeSec), "-i", input,
+                    "-hide_banner", "-y", "-ss", "%.3f".format(Locale.US, timeSec), "-i", input,
                     "-frames:v", "1", "-an", "-sn", "-dn",
                     "-vf", "scale=w='min($MAX_EDGE,iw)':h=-2",
                     "-q:v", "4", "-update", "1", dest.absolutePath,

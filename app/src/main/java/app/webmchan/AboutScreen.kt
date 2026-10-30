@@ -76,7 +76,7 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         Text(
             "WebMChan, the no fuss 4chan WebM converter for Android.\n\n" +
                 "Pick a video (or a whole batch), choose a board, get .webm files that fit.\n\n" +
-                "Select from a list of boards and their requirement presets (or set your own).\n\n" +
+                "Select from a list of boards and their requirement presets, or set your own: a custom size limit and resolution, with no length limit. The picture is always scaled, never stretched.\n\n" +
                 "Converted videos target the highest possible quality within the board's constraints.\n\n" +
                 "Everything runs locally. The app has no network permission, nothing is uploaded.",
             style = MaterialTheme.typography.bodyMedium
@@ -140,7 +140,7 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         )
 
         Text(
-            "Created by jpeg91\nWith great thanks to:\nEveryone who's tested or reported issues\nMy darling wife, Lauren",
+            "Created by jpeg91\nWith great thanks to:\nEveryone who's tested or reported issues\nMy darling wife, Lauren\n\nMade in England",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
@@ -210,12 +210,17 @@ private fun deviceReport(ctx: Context): DeviceReport {
     if ("arm64-v8a" !in abis) problems.add("This app needs a 64-bit ARM (arm64-v8a) phone; this device doesn't list it.")
     if (!is64) problems.add("The app is running as a 32-bit process, but its video engine is 64-bit only.")
 
+    // Actually try the video engine: a phone can look fine on paper and still be unable to load it.
+    val engineProblem = Converter.engineProblem()
+    if (engineProblem != null) problems.add("The video engine (FFmpeg) can't start on this device:\n$engineProblem")
+
     val lines = listOf(
         "App: WebMChan ${version ?: "(version unknown)"}",
         "Device: ${Build.MANUFACTURER} ${Build.MODEL}",
         "Android: ${Build.VERSION.RELEASE} (API $sdk, app needs $minSdk or newer)",
         "Supported architectures: ${abis.joinToString(", ")}",
         "App process: ${if (is64) "64-bit" else "32-bit"}",
+        "Video engine: ${if (engineProblem == null) "starts fine" else "failed to start"}",
     )
     return DeviceReport(problems.isEmpty(), problems, lines)
 }

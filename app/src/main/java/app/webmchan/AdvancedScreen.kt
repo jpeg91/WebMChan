@@ -1,3 +1,4 @@
+// #advanced
 package app.webmchan
 
 import androidx.activity.compose.BackHandler
@@ -51,18 +52,9 @@ private val FIELDS = listOf(
         "Default 4. Allowed 1 to 8. Encodes tried before giving up on a clip.", true,
     ),
     FieldSpec(
-        "audioAnalysisAttempt", "Audio analysis from attempt",
-        "Default 3. Allowed 2 to 9. From this attempt on, the audio is measured on its own and the " +
-            "video gets exactly what's left. Set it above the maximum attempts to turn it off.", true,
-    ),
-    FieldSpec(
-        "audioKbps", "Audio bitrate (kbps)",
-        "Default 64. Allowed 16 to 192.", true,
-    ),
-    FieldSpec(
         "minAudioKbps", "Lowest audio bitrate (kbps)",
-        "Default 32. Allowed 8 up to the audio bitrate. Audio may drop this low on a tight budget " +
-            "instead of failing the clip.", true,
+        "Default 32. Allowed 8 to 256. Audio may drop this low on a tight budget instead of failing " +
+            "the clip. Never above the audio bitrate chosen under Sound.", true,
     ),
     FieldSpec(
         "minVideoKbps", "Lowest video bitrate (kbps)",
@@ -88,9 +80,86 @@ private val FIELDS = listOf(
             "another part.", false,
     ),
     FieldSpec(
-        "warnVideoKbps", "Low bitrate warning (kbps)",
-        "Default 130. Allowed 20 to 2000. A queued video's card warns that detail will suffer when " +
-            "the estimated video bitrate of its parts is below this. Adding splits raises the estimate.", true,
+        "floorBudgetPct", "Easy clips: frame size budget (% of video bitrate)",
+        "Default 70. Allowed 0 to 100. Simple clips can't use the whole bitrate budget, so they come out " +
+            "far under the size limit. The app predicts the smallest size the encoder can reach at " +
+            "its best quality from the source, and uses the biggest frame size (up to 1080p) whose " +
+            "prediction is at most this % of the budget, if that is bigger than the detail threshold " +
+            "would pick. Lower is more cautious. 0 turns this off. Not used in Fastest mode or with a " +
+            "Custom resolution.", false,
+    ),
+    FieldSpec(
+        "floorFactor", "Easy clips: prediction factor",
+        "Default 3.5. Allowed 1 to 10. Scales the prediction above. Fitted from a few test clips, " +
+            "where it came out between 2.75 and 3.97. Higher predicts bigger files, so smaller frames " +
+            "are picked.", false,
+    ),
+    FieldSpec(
+        "bestMaxAttempts", "Best quality: maximum attempts",
+        "Default 7. Allowed 1 to 12. Best quality keeps re-encoding with a corrected bitrate until the " +
+            "file lands inside the accepted range below. This caps how many full encodes that may take. " +
+            "The fullest result that fits is kept, and a clip that can't use more bits stops early.", true,
+    ),
+    FieldSpec(
+        "bestMinFillPct", "Best quality: accepted from (% of limit)",
+        "Default 99. Allowed 80 to 100. A result at or above this (and not over the limit) is accepted " +
+            "at once. Below it, Best quality encodes again with a higher bitrate.", false,
+    ),
+    FieldSpec(
+        "bestAimPct", "Best quality: target (% of limit)",
+        "Default 99.5. Allowed from the accepted value above up to 100. What every Best quality attempt " +
+            "aims for, the first one included.", false,
+    ),
+    FieldSpec(
+        "bestCpuUsed", "Best quality: encoder effort (cpu-used)",
+        "Default 1. Allowed 0 to 3. 0 is the slowest and gives the most detail per bit; each step up is " +
+            "quicker and slightly softer. Quality mode uses 2.", true,
+    ),
+    FieldSpec(
+        "bestArnrMaxFrames", "Best quality: alt-ref blend frames",
+        "Default 7. Allowed 0 to 15. How many neighbouring frames are blended into each hidden " +
+            "alt-ref frame, which the frames around it then copy from. More cleans up noise in that " +
+            "reference better, for more time.", true,
+    ),
+    FieldSpec(
+        "bestArnrStrength", "Best quality: alt-ref blend strength",
+        "Default 5. Allowed 0 to 6. How strongly those frames are blended. It only affects the hidden " +
+            "reference frame, never a frame that is shown. 0 turns the blending off.", true,
+    ),
+    FieldSpec(
+        "bracketWebAnimation", "Quality bracket: web animation from (bits per pixel)",
+        "Default 0.026 (about 80 kbps at 240p and 30 fps). Below this a queued video's card says " +
+            "\"still image\". The bracket starts have to rise in order; one that doesn't is " +
+            "raised to match the one before it.", false,
+    ),
+    FieldSpec(
+        "bracketProAnimation", "Quality bracket: pro animation from (bits per pixel)",
+        "Default 0.041 (about 126 kbps at 240p and 30 fps).", false,
+    ),
+    FieldSpec(
+        "bracketOldWebVideo", "Quality bracket: old web video from (bits per pixel)",
+        "Default 0.065 (about 200 kbps at 240p and 30 fps).", false,
+    ),
+    FieldSpec(
+        "bracketQuality", "Quality bracket: quality from (bits per pixel)",
+        "Default 0.13 (about 400 kbps at 240p and 30 fps).", false,
+    ),
+    FieldSpec(
+        "bracketHighQuality", "Quality bracket: high quality from (bits per pixel)",
+        "Default 0.28 (about 860 kbps at 240p and 30 fps).", false,
+    ),
+    FieldSpec(
+        "bracketUltraQuality", "Quality bracket: ultra high quality from (bits per pixel)",
+        "Default 0.62 (about 1900 kbps at 240p and 30 fps). Bits per pixel is the video bitrate " +
+            "divided by pixels per second, so a bigger frame or a higher frame rate needs more kbps for " +
+            "the same bracket.", false,
+    ),
+    FieldSpec(
+        "bracketSizeExponent", "Quality bracket: frame size correction (exponent)",
+        "Default 0.5. Allowed 0 to 1. Larger frames get more out of each bit, so before the bracket " +
+            "starts above are applied, the bits per pixel is multiplied by (frame pixels divided by a 240p " +
+            "frame's pixels) to this power. 240p is unchanged. At 0.5 this is roughly the frame height " +
+            "divided by 240, so 720p counts three times over. 0 turns it off.", false,
     ),
 )
 
@@ -98,15 +167,27 @@ private fun Tuning.asText(): Map<String, String> = mapOf(
     "firstTargetPct" to firstTargetPct.toString(),
     "retryMarginPct" to retryMarginPct.toString(),
     "maxAttempts" to maxAttempts.toString(),
-    "audioAnalysisAttempt" to audioAnalysisAttempt.toString(),
-    "audioKbps" to audioKbps.toString(),
     "minAudioKbps" to minAudioKbps.toString(),
     "minVideoKbps" to minVideoKbps.toString(),
     "normalBpp" to normalBpp.toString(),
     "fastestBpp" to fastestBpp.toString(),
     "lengthGraceSec" to lengthGraceSec.toString(),
     "trimToleranceSec" to trimToleranceSec.toString(),
-    "warnVideoKbps" to warnVideoKbps.toString(),
+    "floorBudgetPct" to floorBudgetPct.toString(),
+    "floorFactor" to floorFactor.toString(),
+    "bestMaxAttempts" to bestMaxAttempts.toString(),
+    "bestMinFillPct" to bestMinFillPct.toString(),
+    "bestAimPct" to bestAimPct.toString(),
+    "bestCpuUsed" to bestCpuUsed.toString(),
+    "bestArnrMaxFrames" to bestArnrMaxFrames.toString(),
+    "bestArnrStrength" to bestArnrStrength.toString(),
+    "bracketWebAnimation" to bracketWebAnimation.toString(),
+    "bracketProAnimation" to bracketProAnimation.toString(),
+    "bracketOldWebVideo" to bracketOldWebVideo.toString(),
+    "bracketQuality" to bracketQuality.toString(),
+    "bracketHighQuality" to bracketHighQuality.toString(),
+    "bracketUltraQuality" to bracketUltraQuality.toString(),
+    "bracketSizeExponent" to bracketSizeExponent.toString(),
 )
 
 /**
@@ -128,15 +209,27 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         firstTargetPct = dbl("firstTargetPct", base.firstTargetPct),
         retryMarginPct = dbl("retryMarginPct", base.retryMarginPct),
         maxAttempts = int("maxAttempts", base.maxAttempts),
-        audioKbps = int("audioKbps", base.audioKbps),
         minAudioKbps = int("minAudioKbps", base.minAudioKbps),
         minVideoKbps = int("minVideoKbps", base.minVideoKbps),
         normalBpp = dbl("normalBpp", base.normalBpp),
         fastestBpp = dbl("fastestBpp", base.fastestBpp),
         lengthGraceSec = dbl("lengthGraceSec", base.lengthGraceSec),
         trimToleranceSec = dbl("trimToleranceSec", base.trimToleranceSec),
-        audioAnalysisAttempt = int("audioAnalysisAttempt", base.audioAnalysisAttempt),
-        warnVideoKbps = int("warnVideoKbps", base.warnVideoKbps),
+        floorBudgetPct = dbl("floorBudgetPct", base.floorBudgetPct),
+        floorFactor = dbl("floorFactor", base.floorFactor),
+        bestMaxAttempts = int("bestMaxAttempts", base.bestMaxAttempts),
+        bestMinFillPct = dbl("bestMinFillPct", base.bestMinFillPct),
+        bestAimPct = dbl("bestAimPct", base.bestAimPct),
+        bestCpuUsed = int("bestCpuUsed", base.bestCpuUsed),
+        bestArnrMaxFrames = int("bestArnrMaxFrames", base.bestArnrMaxFrames),
+        bestArnrStrength = int("bestArnrStrength", base.bestArnrStrength),
+        bracketWebAnimation = dbl("bracketWebAnimation", base.bracketWebAnimation),
+        bracketProAnimation = dbl("bracketProAnimation", base.bracketProAnimation),
+        bracketOldWebVideo = dbl("bracketOldWebVideo", base.bracketOldWebVideo),
+        bracketQuality = dbl("bracketQuality", base.bracketQuality),
+        bracketHighQuality = dbl("bracketHighQuality", base.bracketHighQuality),
+        bracketUltraQuality = dbl("bracketUltraQuality", base.bracketUltraQuality),
+        bracketSizeExponent = dbl("bracketSizeExponent", base.bracketSizeExponent),
     )
 }
 
