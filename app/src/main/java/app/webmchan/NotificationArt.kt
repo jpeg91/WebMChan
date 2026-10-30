@@ -1,211 +1,161 @@
 package app.webmchan
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.app.Service
 import android.content.Context
-import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.IBinder
-import android.os.PowerManager
-import android.view.View
-import android.widget.RemoteViews
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.Typeface
+import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.toArgb
-import androidx.core.app.NotificationCompat
+import kotlin.math.ceil
 
 /**
- * Keeps the app alive while a batch converts, so it carries on when the screen is locked or the
- * app is closed. It does no conversion itself: [BatchRunner] does that. This service only
- *  - runs in the foreground (which gives the process priority) with a progress notification,
- *  - holds a partial wake lock so the CPU isn't throttled while the screen is off, and
- *  - handles the notification's Cancel button.
+ * Pictures for the notification, drawn with the same colours and shapes as the app's own widgets
+ * (see theme.kt), because a notification can't use Compose and RemoteViews can't outline text or
+ * draw slanted shapes. They are small bitmaps, redrawn each time the notification updates (about
+ * once a second).
+ *  - [percent] is the red 💯-style counter ([P5Percent]).
+ *  - [progressBar] is the slanted candy-striped bar ([P5Progress]).
  */
-class ConvertService : Service() {
-    private var wakeLock: PowerManager.WakeLock? = null
+internal object NotificationArt {
+    /** The heavy italic face the app's type uses (FontFamily.SansSerif, Black, italic). */
+    private val heavy: Typeface by lazy { Typeface.create(Typeface.SANS_SERIF, 900, true) }
 
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_CANCEL) {
-            BatchRunner.cancelAll()
-            return START_NOT_STICKY
+    private fun textPaint(sizeDp: Float, density: Float, argb: Int, strokeDp: Float): Paint =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = heavy
+            textSize = sizeDp * density
+            color = argb
+            style = if (strokeDp > 0f) Paint.Style.STROKE else Paint.Style.FILL
+            strokeWidth = strokeDp * density
+            strokeJoin = Paint.Join.ROUND
+            letterSpacing = -0.03f
         }
 
-        // Must be called promptly after startForegroundService().
-        startForeground(
-            NOTIF_PROGRESS,
-            buildProgress(this, "Converting", "Starting…", null),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-        )
+    /**
+     * The big percentage: heavy red italic digits tilted a little, a white outline, a hard black
+     * shadow and two slanted underlines. [value] null shows dashes, dimmed (the first pass has no
+     * percentage), exactly as [P5Percent] does.
+     */
+    fun percent(ctx: Context, value: Int?): Bitmap {
+        val d = ctx.resources.displayMetrics.density
+        val digits = value?.coerceIn(0, 100)?.toString() ?: "--"
+        val fill = (if (value != null) P5.Red else P5.RedDeep).toArgb()
+        val outline = (if (value != null) P5.White else P5.GreyDim).toArgb()
 
-        if (wakeLock == null) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "webmchan:convert").apply {
-                setReferenceCounted(false)
-                acquire(WAKE_LOCK_TIMEOUT_MS)
+        val bigSize = 26f
+        val smallSize = 14f
+        val bigStroke = 2.6f
+        val smallStroke = 2f
+
+        val digitsW = textPaint(bigSize, d, fill, 0f).measureText(digits)
+        val pctW = textPaint(smallSize, d, fill, 0f).measureText("%")
+        val bounds = Rect()
+        textPaint(bigSize, d, fill, 0f).getTextBounds("0", 0, 1, bounds)
+        val capH = bounds.height().toFloat()
+
+        val padX = 5f * d
+        val padY = 5f * d
+        val gap = 1f * d
+        val shadow = 1.5f * d
+        val barH = 2f * d
+        val barGap = 1.5f * d
+        val underW = 52f * d
+
+        val contentW = digitsW + gap + pctW
+        val rowW = maxOf(contentW, underW)
+        val baseline = padY + capH
+        val underTop = baseline + 3f * d
+
+        val w = ceil(rowW + 2 * padX + shadow).toInt()
+        val h = ceil(underTop + 2 * barH + barGap + shadow + padY).toInt()
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.rotate(-6f, w / 2f, h / 2f)
+
+        // Right aligned, like the Column in P5Percent.
+        val right = padX + rowW
+        val digitsX = right - contentW
+        val pctX = digitsX + digitsW + gap
+        val pctBaseline = baseline - 2f * d
+
+        // Hard shadow, white outline, then the red fill on top.
+        c.drawText(digits, digitsX + shadow, baseline + shadow, textPaint(bigSize, d, Color.BLACK, bigStroke))
+        c.drawText(digits, digitsX, baseline, textPaint(bigSize, d, outline, bigStroke))
+        c.drawText(digits, digitsX, baseline, textPaint(bigSize, d, fill, 0f))
+        c.drawText("%", pctX + shadow, pctBaseline + shadow, textPaint(smallSize, d, Color.BLACK, smallStroke))
+        c.drawText("%", pctX, pctBaseline, textPaint(smallSize, d, outline, smallStroke))
+        c.drawText("%", pctX, pctBaseline, textPaint(smallSize, d, fill, 0f))
+
+        // The two underlines, the lower one shorter and pushed right.
+        val slant = 3.4f * d
+        val barPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        fun bar(width: Float, x: Float, y: Float) {
+            barPaint.color = Color.BLACK
+            c.drawPath(slantPath(width, barH, slant, x + shadow, y + shadow).asAndroidPath(), barPaint)
+            barPaint.color = fill
+            c.drawPath(slantPath(width, barH, slant, x, y).asAndroidPath(), barPaint)
+        }
+        bar(underW, right - underW, underTop)
+        bar(underW * 0.7f, right - underW * 0.7f, underTop + barH + barGap)
+        return bmp
+    }
+
+    /**
+     * The slanted progress bar: black panel, red candy stripes up to [fraction] (0..1), white
+     * outline, like [P5Progress]. [fraction] null (no percentage yet) shows the panel with dim
+     * stripes all the way across.
+     */
+    fun progressBar(ctx: Context, fraction: Float?): Bitmap {
+        val d = ctx.resources.displayMetrics.density
+        // The notification is about as wide as the screen, minus its margins; the ImageView stretches
+        // the picture to fit, so being a little off only changes the slant very slightly.
+        val w = (ctx.resources.displayMetrics.widthPixels - 56f * d).toInt()
+            .coerceIn((200f * d).toInt(), (600f * d).toInt())
+        val h = (14f * d).toInt()
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+
+        val inset = 1f * d
+        val shape = slantPath(w - 2 * inset, h - 2 * inset, 7f * d, inset, inset).asAndroidPath()
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.style = Paint.Style.FILL
+        paint.color = P5.Panel.toArgb()
+        c.drawPath(shape, paint)
+
+        fun stripes(color: Int) {
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 4f * d
+            paint.color = color
+            val step = 13f * d
+            var x = -h.toFloat()
+            while (x < w) {
+                c.drawLine(x, h.toFloat(), x + h, 0f, paint)
+                x += step
             }
         }
 
-        // The batch may already have finished by the time we got here.
-        if (!BatchRunner.busy) stopSelf()
-        return START_NOT_STICKY
-    }
-
-    // Android 15+ ends "data sync" services after about 6 hours; stop cleanly instead of crashing.
-    override fun onTimeout(startId: Int, fgsType: Int) {
-        BatchRunner.cancelAll()
-        stopSelf()
-    }
-
-    override fun onDestroy() {
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
-        super.onDestroy()
-    }
-
-    companion object {
-        const val ACTION_CANCEL = "app.webmchan.action.CANCEL"
-
-        private const val CHANNEL_PROGRESS = "convert_progress"
-        private const val CHANNEL_DONE = "convert_done"
-        private const val NOTIF_PROGRESS = 1
-        private const val NOTIF_DONE = 2
-        private const val NOTIF_PAUSED = 3
-        private const val WAKE_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000L
-
-        private fun ensureChannels(ctx: Context) {
-            val nm = ctx.getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_PROGRESS, "Conversion progress", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Shows progress while videos are converting"
-                }
-            )
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_DONE, "Conversion finished", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                    description = "Tells you when a batch has finished"
-                }
-            )
+        c.save()
+        c.clipPath(shape)
+        if (fraction == null) {
+            stripes(P5.RedDeep.copy(alpha = 0.55f).toArgb())
+        } else if (fraction > 0f) {
+            c.save()
+            c.clipRect(0f, 0f, w * fraction.coerceIn(0f, 1f), h.toFloat())
+            paint.style = Paint.Style.FILL
+            paint.color = P5.Red.toArgb()
+            c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), paint)
+            stripes(P5.RedDeep.toArgb())
+            c.restore()
         }
+        c.restore()
 
-        private fun openAppIntent(ctx: Context): PendingIntent {
-            // The launcher intent brings the existing app task to the front instead of
-            // starting a second copy of the screen.
-            val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName) ?: Intent()
-            return PendingIntent.getActivity(
-                ctx, 0, launch,
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-        }
-
-        /**
-         * The two custom views every notification uses, in the app's look (black, red stripe, heavy
-         * italic capitals): the collapsed one shows the title and the first line of [text], the
-         * expanded one all of it. With [showPercent] they also carry the big red percentage (dashes
-         * when [percent] is null), and the expanded one the progress bar.
-         */
-        private fun styledViews(
-            ctx: Context, title: String, text: String, showPercent: Boolean, percent: Int?,
-        ): Pair<RemoteViews, RemoteViews> {
-            val small = RemoteViews(ctx.packageName, R.layout.notification_progress_small)
-            val big = RemoteViews(ctx.packageName, R.layout.notification_progress_big)
-            small.setTextViewText(R.id.notif_title, title)
-            small.setTextViewText(R.id.notif_text, text.lineSequence().firstOrNull() ?: text)
-            big.setTextViewText(R.id.notif_title, title)
-            big.setTextViewText(R.id.notif_text, text)
-            if (showPercent) {
-                val counter = NotificationArt.percent(ctx, percent)
-                val spoken = if (percent != null) "$percent percent" else "In progress"
-                for (v in listOf(small, big)) {
-                    v.setImageViewBitmap(R.id.notif_percent, counter)
-                    v.setContentDescription(R.id.notif_percent, spoken)
-                }
-                big.setImageViewBitmap(R.id.notif_bar, NotificationArt.progressBar(ctx, percent?.let { it / 100f }))
-                big.setContentDescription(R.id.notif_bar, spoken)
-            } else {
-                small.setViewVisibility(R.id.notif_percent, View.GONE)
-                big.setViewVisibility(R.id.notif_percent, View.GONE)
-                big.setViewVisibility(R.id.notif_bar, View.GONE)
-            }
-            return small to big
-        }
-
-        /** [percent] null = indeterminate. */
-        fun buildProgress(ctx: Context, title: String, text: String, percent: Int?): Notification {
-            ensureChannels(ctx)
-            val cancel = PendingIntent.getService(
-                ctx, 1,
-                Intent(ctx, ConvertService::class.java).setAction(ACTION_CANCEL),
-                PendingIntent.FLAG_IMMUTABLE
-            )
-            val (small, big) = styledViews(ctx, title, text, showPercent = true, percent = percent)
-            return NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
-                .setSmallIcon(android.R.drawable.stat_sys_download)
-                // Still set, for what can't show the custom views (accessibility, lock screen, wearables).
-                .setContentTitle(title)
-                .setContentText(text.lineSequence().firstOrNull() ?: text)
-                .setStyle(NotificationCompat.DecoratedCustomViewStyle())
-                .setCustomContentView(small)
-                .setCustomBigContentView(big)
-                // Black all the way round, header included (Android honours this for the
-                // notification of a foreground service).
-                .setColor(P5.Black.toArgb())
-                .setColorized(true)
-                .setContentIntent(openAppIntent(ctx))
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .addAction(0, "Cancel", cancel)
-                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-                .build()
-        }
-
-        fun postProgress(ctx: Context, title: String, text: String, percent: Int?) {
-            val nm = ctx.getSystemService(NotificationManager::class.java)
-            nm.notify(NOTIF_PROGRESS, buildProgress(ctx, title, text, percent))
-        }
-
-        /** A quiet, ordinary (not ongoing) notification while a batch is paused. */
-        fun postPaused(ctx: Context, text: String) {
-            ensureChannels(ctx)
-            val (small, big) = styledViews(ctx, "WebMChan: paused", text, showPercent = false, percent = null)
-            val n = NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
-                .setSmallIcon(android.R.drawable.ic_media_pause)
-                .setContentTitle("WebMChan: paused")
-                .setContentText(text)
-                .setStyle(NotificationCompat.DecoratedCustomViewStyle())
-                .setCustomContentView(small)
-                .setCustomBigContentView(big)
-                .setColor(P5.Red.toArgb())
-                .setContentIntent(openAppIntent(ctx))
-                .setOnlyAlertOnce(true)
-                .build()
-            ctx.getSystemService(NotificationManager::class.java).notify(NOTIF_PAUSED, n)
-        }
-
-        fun clearPaused(ctx: Context) {
-            ctx.getSystemService(NotificationManager::class.java).cancel(NOTIF_PAUSED)
-        }
-
-        fun clearProgress(ctx: Context) {
-            ctx.getSystemService(NotificationManager::class.java).cancel(NOTIF_PROGRESS)
-        }
-
-        fun postFinished(ctx: Context, text: String) {
-            ensureChannels(ctx)
-            val (small, big) = styledViews(ctx, "WebMChan", text, showPercent = false, percent = null)
-            val n = NotificationCompat.Builder(ctx, CHANNEL_DONE)
-                .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setContentTitle("WebMChan")
-                .setContentText(text)
-                .setStyle(NotificationCompat.DecoratedCustomViewStyle())
-                .setCustomContentView(small)
-                .setCustomBigContentView(big)
-                .setColor(P5.Red.toArgb())
-                .setContentIntent(openAppIntent(ctx))
-                .setAutoCancel(true)
-                .build()
-            ctx.getSystemService(NotificationManager::class.java).notify(NOTIF_DONE, n)
-        }
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1.5f * d
+        paint.color = P5.White.toArgb()
+        c.drawPath(shape, paint)
+        return bmp
     }
 }
