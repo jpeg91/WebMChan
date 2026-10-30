@@ -16,7 +16,7 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 
 **[Download the Latest Release](https://github.com/jpeg91/WebMChan/releases/latest)**
 
-**Note: the rest of this readme is currently outdated and does not reflect the current release v0.8.50.**
+**Note: the rest of this readme is outdated and does not reflect the current release v0.8.50.**
 
 ## What it does
 
