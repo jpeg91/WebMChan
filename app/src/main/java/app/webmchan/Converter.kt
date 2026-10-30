@@ -15,6 +15,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.security.MessageDigest
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
@@ -769,10 +770,18 @@ object Converter {
         /** Length of this clip. null = the old behaviour: min(source length, the effective limit). Set by
          *  the caller for a split part, so each part gets an exact slice regardless of the limit. */
         clipDurationSec: Double? = null,
+        /**
+         * Which video this is (its address), so the pass-1 analysis can be kept and reused by any later
+         * conversion of the same video (see [Pass1Files]). Blank = the analysis is thrown away when this
+         * conversion ends.
+         */
+        sourceId: String = "",
         onLog: (line: String) -> Unit,
         onProgress: (fraction: Float, status: String) -> Unit, // fraction < 0 = indeterminate
     ): ConvertResult = withContext(Dispatchers.IO) {
         vpxTimestampNoteShown.set(false)
+        // The analysis files this conversion last used (see [Pass1Files]).
+        var usedPass1: Pass1Files? = null
         FFmpegKitConfig.enableLogCallback(logSink(onLog))
         try {
             val remaining = (src.durationSec - startSec).coerceAtLeast(0.0)
@@ -789,7 +798,7 @@ object Converter {
             val reduceFps = src.fps > fpsCap + 0.5
 
             val out = File(ctx.cacheDir, "out.webm")
-            val passLog = File(ctx.cacheDir, "ffpass").absolutePath
+            val sourceKey = "${sourceId.ifBlank { "tmp:" + input.name }}|${src.fileBytes}"
 
             // BEST QUALITY. Instead of stopping at the first file that fits, keep encoding with a
             // corrected bitrate until a file lands between [Tuning.bestMinFillPct] and 100% of the
@@ -807,11 +816,6 @@ object Converter {
             // the pick across a size boundary would make the attempts incomparable.
             var lockedHeight = 0
             val tries = ArrayList<BestTry>()
-            // What the pass-1 stats file (ffpass) was made for: the filters, codec, start and length.
-            // Pass 1 only analyses the picture, so its stats don't depend on the bitrate being aimed for,
-            // and a later attempt with the same key can go straight to pass 2 on the same stats.
-            // null = no usable stats yet (so the first attempt of every clip always runs pass 1).
-            var pass1Key: String? = null
 
             /** Puts the kept result back as out.webm (where the caller expects it) and reports it. */
             fun finishBest(attemptsUsed: Int): ConvertResult {
@@ -1000,6 +1004,17 @@ object Converter {
                     }
                 }.joinToString(",").ifEmpty { "null" }
 
+                // Pass 1 only analyses the picture, so what it finds doesn't depend on the bitrate being
+                // aimed for. The analysis is therefore named after the video and everything that shapes
+                // the picture it sees (filters, codec, start, length, encoder effort), and any attempt or
+                // later conversion that asks for the same picture goes straight to pass 2 on it.
+                val pictureKey = "$filters|vp9=${settings.useVp9}|start=${"%.3f".format(java.util.Locale.US, startSec)}" +
+                    "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}"
+                val pass1Key = "$sourceKey\n$pictureKey"
+                val pass1 = pass1FilesFor(ctx, pass1Key)
+                usedPass1 = pass1
+                activePass1 = pass1.name
+
                 val common = listOf("-hide_banner", "-y") +
                     // Input seeking: fast (keyframe-based demux seek), and still frame-accurate
                     // because we're re-encoding rather than stream-copying.
@@ -1022,7 +1037,7 @@ object Converter {
                     listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
                 } else emptyList()) + bestArgs + listOf(
-                    "-passlogfile", passLog,
+                    "-passlogfile", pass1.prefix,
                 )
 
                 // Pass 2 only: libvpx's analysis pass (pass 1) reports no frames or time.
@@ -1067,15 +1082,16 @@ object Converter {
                         )
                     }
                 }
-                val thisPass1Key = "$filters|vp9=${settings.useVp9}|start=$startSec|len=$duration"
-                if (pass1Key == thisPass1Key) {
-                    onLog("-- pass 1/2: skipped, the analysis from the earlier attempt is the same picture (only the bitrate changed) and is reused")
+                if (pass1.isValidFor(pass1Key)) {
+                    onLog("-- pass 1/2: skipped, the analysis already made for this video at these picture settings is reused (only the bitrate changed)")
                 } else {
                     onLog("-- pass 1/2: analysis only. ffmpeg usually reports no progress here.")
                     FFmpegKitConfig.enableStatisticsCallback { }
                     onProgress(-1f, "Attempt $attempt/$maxAttempts, pass 1/2: analysing (${height}p, ${vKbps} kbps)")
-                    // The stats file is rewritten by pass 1, so until it succeeds it can't be trusted.
-                    pass1Key = null
+                    // Pass 1 rewrites the stats, so until it succeeds they can't be trusted (a cancel part-way
+                    // leaves a half-written file with no "ok" mark). The "src" mark says whose it is.
+                    pass1.invalidate()
+                    try { pass1.src.writeText(sourceId.ifBlank { "tmp" }) } catch (_: Exception) { }
                     val p1 = FFmpegKit.executeWithArguments(
                         (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
                     )
@@ -1088,7 +1104,7 @@ object Converter {
                         }
                         return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
                     }
-                    pass1Key = thisPass1Key
+                    pass1.markValid(pass1Key)
                 }
 
                 onLog("-- pass 2/2: encoding")
@@ -1247,6 +1263,65 @@ object Converter {
             // Detach so later ffprobe/ffmpeg calls don't write into a finished run's log.
             FFmpegKitConfig.enableLogCallback { }
             FFmpegKitConfig.enableStatisticsCallback { }
+            activePass1 = null
+            // Without a known video the analysis can't be reused, so it isn't kept.
+            if (sourceId.isBlank()) usedPass1?.deleteAll()
+        }
+    }
+
+    // ---- Kept pass-1 analysis ----
+
+    /**
+     * One saved pass-1 analysis: the encoder's stats file ("<name>-0.log", which libvpx writes and reads
+     * itself through -passlogfile), plus two small marks. "<name>.src" holds the video's address and is
+     * written before pass 1 starts, so cleanup knows whose file this is even while it is being made.
+     * "<name>.ok" holds the full key and is written only once pass 1 has finished, so a stats file
+     * without it (a cancel or crash part-way) is never trusted.
+     */
+    private class Pass1Files(dir: File, val name: String) {
+        val prefix: String = File(dir, name).absolutePath
+        val log = File(dir, "$name-0.log")
+        val src = File(dir, "$name.src")
+        val ok = File(dir, "$name.ok")
+
+        fun isValidFor(key: String): Boolean = try {
+            ok.exists() && log.length() > 0L && ok.readText() == key
+        } catch (_: Exception) {
+            false
+        }
+
+        fun invalidate() { ok.delete(); log.delete() }
+        fun markValid(key: String) { try { ok.writeText(key) } catch (_: Exception) { } }
+        fun deleteAll() { ok.delete(); log.delete(); src.delete() }
+    }
+
+    private const val PASS1_DIR = "pass1"
+
+    /** The name of the analysis being used by the running conversion, so cleanup never deletes it. */
+    @Volatile
+    private var activePass1: String? = null
+
+    private fun pass1FilesFor(ctx: Context, key: String): Pass1Files {
+        val dir = File(ctx.filesDir, PASS1_DIR).apply { mkdirs() }
+        val digest = MessageDigest.getInstance("SHA-1").digest(key.toByteArray(Charsets.UTF_8))
+        val name = digest.joinToString("") { "%02x".format(it) }.take(24)
+        return Pass1Files(dir, name)
+    }
+
+    /**
+     * Deletes every kept analysis whose video is no longer on any card ([keepSources] is the addresses
+     * of the videos still in the Holding Pen, the queue or Finished), and any analysis with no owner
+     * mark. The one the running conversion is using is never touched.
+     */
+    fun pruneAnalysis(ctx: Context, keepSources: Set<String>) {
+        val dir = File(ctx.filesDir, PASS1_DIR)
+        val files = dir.listFiles() ?: return
+        val active = activePass1
+        val byName = files.groupBy { it.name.substringBefore('.').removeSuffix("-0") }
+        for ((name, group) in byName) {
+            if (name == active) continue
+            val owner = try { File(dir, "$name.src").takeIf { it.exists() }?.readText() } catch (_: Exception) { null }
+            if (owner == null || owner !in keepSources) group.forEach { it.delete() }
         }
     }
 
