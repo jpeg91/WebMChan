@@ -1,3 +1,4 @@
+
 // #batchrunner
 package app.webmchan
 
@@ -298,7 +299,7 @@ object BatchRunner {
         // The Log page's saved conversions (read off the main thread: they can be big).
         scope.launch(Dispatchers.IO) { conversionLogs.addAll(ConversionLogStore.load(appCtx)) }
 
-        val loaded = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); return }
+        val loaded = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); pruneAnalysis(); return }
         ids.set(maxOf(ids.get(), loaded.lastId))
         // Every queued video has to carry its own settings. One saved by an older version has none,
         // so it goes back to the Holding Pen, where it follows the settings on screen until it is
@@ -357,6 +358,7 @@ object BatchRunner {
             notice = notice?.let { "$it\n\n$note" } ?: note
         }
         cleanOrphanCopies(appCtx)
+        pruneAnalysis()
         scope.launch { verifyRestored(appCtx) }
     }
 
@@ -543,7 +545,7 @@ object BatchRunner {
 
     /** Removes copies no queue item points at (left by a crash, or a removal that didn't finish). */
     private fun cleanOrphanCopies(ctx: Context) {
-        val keep = queue.mapNotNull { q -> q.uri.takeIf { it.scheme == "file" }?.path?.let { File(it).parentFile?.canonicalPath } }.toSet()
+        val keep = (queue + finished).mapNotNull { q -> q.uri.takeIf { it.scheme == "file" }?.path?.let { File(it).parentFile?.canonicalPath } }.toSet()
         sharedDir(ctx).listFiles()?.forEach { if (it.canonicalPath !in keep) it.deleteRecursively() }
     }
 
@@ -560,9 +562,20 @@ object BatchRunner {
      * times, so call this after the card has been taken out of [queue].
      */
     private fun releaseSource(ctx: Context, uri: Uri) {
-        if (queue.any { it.uri == uri }) return
+        // A Finished card keeps its source too, so "Add to pen again" still has a video to add.
+        if (queue.any { it.uri == uri } || finished.any { it.uri == uri }) return
         releaseAccess(ctx, uri)
         deleteOwnCopy(ctx, uri)
+    }
+
+    /**
+     * Deletes the kept pass-1 analysis (see [Converter.pruneAnalysis]) of every video that no card in
+     * the Holding Pen, the queue or Finished uses any more.
+     */
+    private fun pruneAnalysis() {
+        val ctx = appContext ?: return
+        val keep = (queue.map { it.uri.toString() } + finished.map { it.uri.toString() }).toSet()
+        scope.launch(Dispatchers.IO) { Converter.pruneAnalysis(ctx, keep) }
     }
 
     // ---- Editing the queue (the UI disables these while a batch is running) ----
@@ -655,6 +668,7 @@ object BatchRunner {
             releaseSource(it, item.uri)
             Thumbnails.delete(it, item.id)
         }
+        pruneAnalysis()
         persist()
     }
 
@@ -669,6 +683,7 @@ object BatchRunner {
                 Thumbnails.delete(ctx, it.id)
             }
         }
+        pruneAnalysis()
         summary = null
         persist()
     }
@@ -719,14 +734,31 @@ object BatchRunner {
     fun removeFinished(id: Long) {
         val at = finished.indexOfFirst { it.id == id }
         if (at < 0) return
-        finished.removeAt(at)
-        appContext?.let { Thumbnails.delete(it, id) }
+        val gone = finished.removeAt(at)
+        appContext?.let {
+            Thumbnails.delete(it, id)
+            releaseSource(it, gone.uri) // the Finished card was holding its source
+        }
+        pruneAnalysis()
         persist()
     }
 
+    /**
+     * "Add to pen again" on a Finished card: adds the card's source video to the Holding Pen as a new
+     * card (to convert it again, say with other settings). If the video's analysis was kept, the new
+     * card's conversion reuses it. If the source can't be read any more, the new card says so as usual.
+     */
+    fun addAgain(ctx: Context, finishedId: Long) {
+        val item = finished.firstOrNull { it.id == finishedId } ?: return
+        addVideos(ctx, listOf(item.uri))
+    }
+
     fun clearFinished() {
-        appContext?.let { ctx -> finished.forEach { Thumbnails.delete(ctx, it.id) } }
+        val removed = finished.toList()
+        appContext?.let { ctx -> removed.forEach { Thumbnails.delete(ctx, it.id) } }
         finished.clear()
+        appContext?.let { ctx -> removed.map { it.uri }.distinct().forEach { releaseSource(ctx, it) } }
+        pruneAnalysis()
         persist()
     }
 
@@ -898,6 +930,7 @@ object BatchRunner {
                 Thumbnails.delete(ctx, it.id)
             }
         }
+        pruneAnalysis()
         persist()
     }
 
@@ -1135,6 +1168,7 @@ object BatchRunner {
                         val res = Converter.convert(
                             ctx, staged!!, src, settings,
                             startSec = startSec, clipDurationSec = clipDur,
+                            sourceId = item.uri.toString(),
                             onLog = { line -> logBuffer.add(line) { logLines = it } },
                         ) { p, s ->
                             progress = p
@@ -1304,6 +1338,7 @@ object BatchRunner {
                             // The source video isn't needed any more, nor its thumbnail.
                             releaseSource(ctx, item.uri)
                             Thumbnails.delete(ctx, item.id)
+                            pruneAnalysis()
                             okCount++
                         }
                     }
