@@ -16,6 +16,8 @@ Everything runs locally. The app has no network permission, nothing is uploaded.
 
 **[Download the Latest Release](https://github.com/jpeg91/WebMChan/releases/latest)**
 
+**Note: the rest of this readme is currently outdated and does not reflect the current release v0.8.50.**
+
 ## What it does
 
 ### Board presets
@@ -61,7 +63,7 @@ See what's happening while it converts, and copy the log if you need to report a
 **About > Advanced settings** lets you change the numbers that steer how a video is fitted into a size limit (targets, attempts, audio bitrate and so on) without rebuilding the app. The defaults are the recommended values, **Reset to defaults** puts them back, and anything you've changed is listed at the top of the log.
 
 <details>
-  <summary><b>Screenshot</b></summary>
+  <summary><b>Screenshot**(OUTDATED)**</b></summary>
 
 <img alt="29962" src="https://github.com/user-attachments/assets/3aa4d794-3456-41cc-a0b1-151bdba11cbb" />
 
