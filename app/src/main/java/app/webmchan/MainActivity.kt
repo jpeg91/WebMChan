@@ -761,6 +761,14 @@ private fun QueueRow(
                     }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    P5Button(
+                        "Add to pen again",
+                        onClick = { BatchRunner.addAgain(ctx, item.id) },
+                        kind = P5Kind.Secondary,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (saved != null) {
                         P5Button(
                             "Delete file",
