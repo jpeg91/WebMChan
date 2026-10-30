@@ -10,6 +10,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.os.PowerManager
+import android.view.View
+import android.widget.RemoteViews
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.app.NotificationCompat
 
 /**
@@ -96,6 +99,38 @@ class ConvertService : Service() {
             )
         }
 
+        /**
+         * The two custom views every notification uses, in the app's look (black, red stripe, heavy
+         * italic capitals): the collapsed one shows the title and the first line of [text], the
+         * expanded one all of it. With [showPercent] they also carry the big red percentage (dashes
+         * when [percent] is null), and the expanded one the progress bar.
+         */
+        private fun styledViews(
+            ctx: Context, title: String, text: String, showPercent: Boolean, percent: Int?,
+        ): Pair<RemoteViews, RemoteViews> {
+            val small = RemoteViews(ctx.packageName, R.layout.notification_progress_small)
+            val big = RemoteViews(ctx.packageName, R.layout.notification_progress_big)
+            small.setTextViewText(R.id.notif_title, title)
+            small.setTextViewText(R.id.notif_text, text.lineSequence().firstOrNull() ?: text)
+            big.setTextViewText(R.id.notif_title, title)
+            big.setTextViewText(R.id.notif_text, text)
+            if (showPercent) {
+                val counter = NotificationArt.percent(ctx, percent)
+                val spoken = if (percent != null) "$percent percent" else "In progress"
+                for (v in listOf(small, big)) {
+                    v.setImageViewBitmap(R.id.notif_percent, counter)
+                    v.setContentDescription(R.id.notif_percent, spoken)
+                }
+                big.setImageViewBitmap(R.id.notif_bar, NotificationArt.progressBar(ctx, percent?.let { it / 100f }))
+                big.setContentDescription(R.id.notif_bar, spoken)
+            } else {
+                small.setViewVisibility(R.id.notif_percent, View.GONE)
+                big.setViewVisibility(R.id.notif_percent, View.GONE)
+                big.setViewVisibility(R.id.notif_bar, View.GONE)
+            }
+            return small to big
+        }
+
         /** [percent] null = indeterminate. */
         fun buildProgress(ctx: Context, title: String, text: String, percent: Int?): Notification {
             ensureChannels(ctx)
@@ -104,15 +139,22 @@ class ConvertService : Service() {
                 Intent(ctx, ConvertService::class.java).setAction(ACTION_CANCEL),
                 PendingIntent.FLAG_IMMUTABLE
             )
+            val (small, big) = styledViews(ctx, title, text, showPercent = true, percent = percent)
             return NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
+                // Still set, for what can't show the custom views (accessibility, lock screen, wearables).
                 .setContentTitle(title)
                 .setContentText(text.lineSequence().firstOrNull() ?: text)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+                .setCustomContentView(small)
+                .setCustomBigContentView(big)
+                // Black all the way round, header included (Android honours this for the
+                // notification of a foreground service).
+                .setColor(P5.Black.toArgb())
+                .setColorized(true)
                 .setContentIntent(openAppIntent(ctx))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .setProgress(100, percent ?: 0, percent == null)
                 .addAction(0, "Cancel", cancel)
                 .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 .build()
@@ -126,10 +168,15 @@ class ConvertService : Service() {
         /** A quiet, ordinary (not ongoing) notification while a batch is paused. */
         fun postPaused(ctx: Context, text: String) {
             ensureChannels(ctx)
+            val (small, big) = styledViews(ctx, "WebMChan: paused", text, showPercent = false, percent = null)
             val n = NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
                 .setSmallIcon(android.R.drawable.ic_media_pause)
                 .setContentTitle("WebMChan: paused")
                 .setContentText(text)
+                .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+                .setCustomContentView(small)
+                .setCustomBigContentView(big)
+                .setColor(P5.Red.toArgb())
                 .setContentIntent(openAppIntent(ctx))
                 .setOnlyAlertOnce(true)
                 .build()
@@ -146,10 +193,15 @@ class ConvertService : Service() {
 
         fun postFinished(ctx: Context, text: String) {
             ensureChannels(ctx)
+            val (small, big) = styledViews(ctx, "WebMChan", text, showPercent = false, percent = null)
             val n = NotificationCompat.Builder(ctx, CHANNEL_DONE)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setContentTitle("WebMChan")
                 .setContentText(text)
+                .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+                .setCustomContentView(small)
+                .setCustomBigContentView(big)
+                .setColor(P5.Red.toArgb())
                 .setContentIntent(openAppIntent(ctx))
                 .setAutoCancel(true)
                 .build()
