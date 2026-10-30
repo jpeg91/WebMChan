@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The notification's backdrop: solid black with two small red wedges in the top right corner, like
+  the corner wedges on the app's screens (P5Background in theme.kt). It stretches to fit the view.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="100dp"
+    android:height="100dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <path
+        android:fillColor="#FF080808"
+        android:pathData="M0,0L100,0L100,100L0,100Z" />
+    <path
+        android:fillColor="#FF7A000B"
+        android:pathData="M90,0L100,0L100,60Z" />
+    <path
+        android:fillColor="#FFE60012"
+        android:pathData="M95,0L100,0L100,32Z" />
+</vector>
