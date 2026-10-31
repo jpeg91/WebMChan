@@ -73,9 +73,8 @@ See what's happening while it converts: the video being converted has a light ru
 <details>
   <summary><b>Screenshot **(OUTDATED)**</b></summary>
 
-<img alt="29962" src="https://github.com/user-attachments/assets/3aa4d794-3456-41cc-a0b1-151bdba11cbb" />
-
-<img alt="29963" src="https://github.com/user-attachments/assets/e5d84473-9d55-4733-adaf-0ca250913601" />
+<img alt="30621" src="https://github.com/user-attachments/assets/6b9c65a8-d171-4159-bedc-3de1753fa594" />
+<img alt="30620" src="https://github.com/user-attachments/assets/f587280e-1ec5-4d1e-ae0b-e60514149c10" />
 
 
 </details>
