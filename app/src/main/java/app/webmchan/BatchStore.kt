@@ -65,7 +65,7 @@ object BatchStore {
         return out
     }
 
-    private fun toJson(i: QueueItem): JSONObject = JSONObject().apply {
+    internal fun toJson(i: QueueItem): JSONObject = JSONObject().apply {
         put("id", i.id)
         put("uri", i.uri.toString())
         put("name", i.name)
@@ -122,7 +122,7 @@ object BatchStore {
         }
     }
 
-    private fun fromJson(o: JSONObject): QueueItem? = try {
+    internal fun fromJson(o: JSONObject): QueueItem? = try {
         QueueItem(
             id = o.getLong("id"),
             uri = Uri.parse(o.getString("uri")),

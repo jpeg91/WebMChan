@@ -107,6 +107,7 @@ class MainActivity : ComponentActivity() {
             // phone's own light/dark or wallpaper colours are.
             P5Theme {
                 var showMenu by remember { mutableStateOf(false) }
+                var showHistory by remember { mutableStateOf(false) }
                 var showLog by remember { mutableStateOf(false) }
                 var showAbout by remember { mutableStateOf(false) }
                 var showAdvanced by remember { mutableStateOf(false) }
@@ -114,17 +115,21 @@ class MainActivity : ComponentActivity() {
                 // also keeps it clear of the status and navigation bars.
                 Box {
                     // App stays composed underneath, so opening a page doesn't lose the scroll
-                    // position or the settings. The pages stack: Menu, then Log or About on top
-                    // of it (and Advanced on top of About), so back returns to the one before.
+                    // position or the settings. The pages stack: Menu, then History, Log or About on
+                    // top of it (and Advanced on top of About), so back returns to the one before.
                     P5Background { App(onMenu = { showMenu = true }) }
                     if (showMenu) {
                         P5Background {
                             MenuScreen(
                                 onBack = { showMenu = false },
+                                onHistory = { showHistory = true },
                                 onLog = { showLog = true },
                                 onAbout = { showAbout = true },
                             )
                         }
+                    }
+                    if (showHistory) {
+                        P5Background { HistoryScreen(onBack = { showHistory = false }) }
                     }
                     if (showLog) {
                         P5Background { LogScreen(onBack = { showLog = false }) }
@@ -323,7 +328,7 @@ private fun QueueButton(label: String, enabled: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun QueueRow(
+internal fun QueueRow(
     item: QueueItem,
     busy: Boolean,
     maxDuration: Int,
@@ -352,6 +357,10 @@ private fun QueueRow(
      * pass). One shared clock for all the cards, so the bands move down together.
      */
     sweep: (() -> Float)? = null,
+    /** A card on the History page: its Remove button takes it out of History, not out of Finished. */
+    inHistory: Boolean = false,
+    /** History cards only: whether the source video can still be read (see [BatchRunner.historySourceOk]). */
+    sourceAvailable: Boolean = true,
 ) {
     val ctx = LocalContext.current
     val i = item.info
@@ -760,12 +769,22 @@ private fun QueueRow(
                         )
                     }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    P5Button(
-                        "Add to pen again",
-                        onClick = { BatchRunner.addAgain(ctx, item.id) },
-                        kind = P5Kind.Secondary,
-                        modifier = Modifier.fillMaxWidth(),
+                if (sourceAvailable) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        P5Button(
+                            "Add to pen again",
+                            onClick = { BatchRunner.addAgain(ctx, item.id) },
+                            kind = P5Kind.Secondary,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                } else {
+                    // A shared video's copy is deleted once no queue or Finished card uses it.
+                    Text(
+                        if (item.uri.scheme == "file") "Shared into app: Source lost"
+                        else "Source video not available any more",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -778,8 +797,8 @@ private fun QueueRow(
                         )
                     }
                     P5Button(
-                        "Remove card",
-                        onClick = { BatchRunner.removeFinished(item.id) },
+                        if (inHistory) "Remove from history" else "Remove card",
+                        onClick = { if (inHistory) BatchRunner.removeFromHistory(item.id) else BatchRunner.removeFinished(item.id) },
                         kind = P5Kind.Secondary,
                         modifier = Modifier.weight(1f),
                     )
@@ -849,7 +868,8 @@ private fun QueueRow(
             text = {
                 Text(
                     "Delete $fileLabel from your device? This can't be undone. " +
-                        "The card stays in the Finished list until you remove it."
+                        if (inHistory) "The card stays in History until you remove it."
+                        else "The card stays in the Finished list until you remove it."
                 )
             },
             confirmButton = {

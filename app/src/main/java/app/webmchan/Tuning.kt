@@ -16,6 +16,13 @@ import androidx.compose.runtime.setValue
  */
 data class Tuning(
     /**
+     * The most CPU threads the decoder and the encoder may each use. 0 (the default) puts no limit
+     * on them, so ffmpeg uses every core. Fewer threads means less heat and less memory in use at
+     * once, at the cost of a slower conversion. For phones that Android stops under a heavy load
+     * (Best quality on long or large videos) even with unrestricted battery use allowed.
+     */
+    val maxThreads: Int = 0,
+    /**
      * First attempt aims for this % of the size limit. The rest is safety margin. Can be taken
      * up to 110% for testing (a file over the limit then counts as too big and is retried).
      */
@@ -127,6 +134,7 @@ data class Tuning(
         // The aim has to sit inside the accepted window, so a result that hits it is never retried.
         val minFill = bestMinFillPct.coerceIn(80.0, 100.0)
         return Tuning(
+            maxThreads = maxThreads.coerceIn(0, 64),
             firstTargetPct = firstTargetPct.coerceIn(80.0, 110.0),
             retryMarginPct = retryMarginPct.coerceIn(80.0, 110.0),
             maxAttempts = maxAttempts.coerceIn(1, 8),
@@ -158,6 +166,7 @@ data class Tuning(
     fun changesFromDefault(): List<String> {
         val d = Tuning()
         return buildList {
+            if (maxThreads != d.maxThreads) add("thread cap = $maxThreads")
             if (firstTargetPct != d.firstTargetPct) add("first attempt target = $firstTargetPct%")
             if (retryMarginPct != d.retryMarginPct) add("retry target = $retryMarginPct%")
             if (maxAttempts != d.maxAttempts) add("max attempts = $maxAttempts")
@@ -200,6 +209,7 @@ object TuningStore {
         fun dbl(key: String, def: Double) = p.getString(key, null)?.toDoubleOrNull() ?: def
         fun int(key: String, def: Int) = p.getString(key, null)?.toIntOrNull() ?: def
         current = Tuning(
+            maxThreads = int("maxThreads", d.maxThreads),
             firstTargetPct = dbl("firstTargetPct", d.firstTargetPct),
             retryMarginPct = dbl("retryMarginPct", d.retryMarginPct),
             maxAttempts = int("maxAttempts", d.maxAttempts),
@@ -231,6 +241,7 @@ object TuningStore {
     fun save(ctx: Context, t: Tuning): Tuning {
         val s = t.sanitized()
         ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString("maxThreads", s.maxThreads.toString())
             .putString("firstTargetPct", s.firstTargetPct.toString())
             .putString("retryMarginPct", s.retryMarginPct.toString())
             .putString("maxAttempts", s.maxAttempts.toString())

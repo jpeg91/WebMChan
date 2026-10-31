@@ -37,6 +37,15 @@ private data class FieldSpec(
 
 private val FIELDS = listOf(
     FieldSpec(
+        "maxThreads", "Thread cap (0 = no limit)",
+        "Default 0 (no limit). Allowed 0 to 64. The most CPU threads the decoder and the encoder may " +
+            "each use, in both passes. With no limit, ffmpeg uses every core of the phone. Fewer " +
+            "threads means less heat and less memory in use at once, but a slower conversion. Use " +
+            "this if you've allowed unrestricted battery use for WebMChan but Android still stops " +
+            "the app under a heavy load (Best quality on a long or large video, for example). Try 4, " +
+            "then 2 if it still happens. A number above your phone's core count changes nothing.", true,
+    ),
+    FieldSpec(
         "firstTargetPct", "First attempt target (% of limit)",
         "Default 99. Allowed 80 to 110. How full the first encode aims to make the file. " +
             "The rest is margin against overshooting. Above 100 the file is expected to go over " +
@@ -164,6 +173,7 @@ private val FIELDS = listOf(
 )
 
 private fun Tuning.asText(): Map<String, String> = mapOf(
+    "maxThreads" to maxThreads.toString(),
     "firstTargetPct" to firstTargetPct.toString(),
     "retryMarginPct" to retryMarginPct.toString(),
     "maxAttempts" to maxAttempts.toString(),
@@ -206,6 +216,7 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         return v ?: def
     }
     return Tuning(
+        maxThreads = int("maxThreads", base.maxThreads),
         firstTargetPct = dbl("firstTargetPct", base.firstTargetPct),
         retryMarginPct = dbl("retryMarginPct", base.retryMarginPct),
         maxAttempts = int("maxAttempts", base.maxAttempts),

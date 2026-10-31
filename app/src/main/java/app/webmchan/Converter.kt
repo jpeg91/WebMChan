@@ -1015,10 +1015,15 @@ object Converter {
                 usedPass1 = pass1
                 activePass1 = pass1.name
 
+                // The Advanced thread cap (0 = no limit, ffmpeg's own choice). Given once before the
+                // input, where it limits the decoder, and once after it, where it limits the encoder.
+                val threadArgs = if (t.maxThreads > 0) listOf("-threads", t.maxThreads.toString()) else emptyList()
+
                 val common = listOf("-hide_banner", "-y") +
                     // Input seeking: fast (keyframe-based demux seek), and still frame-accurate
                     // because we're re-encoding rather than stream-copying.
                     (if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()) +
+                    threadArgs +
                     listOf(
                         "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, duration),
                         "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
@@ -1036,7 +1041,7 @@ object Converter {
                     ) + (if (settings.useVp9) {
                     listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
-                } else emptyList()) + bestArgs + listOf(
+                } else emptyList()) + bestArgs + threadArgs + listOf(
                     "-passlogfile", pass1.prefix,
                 )
 

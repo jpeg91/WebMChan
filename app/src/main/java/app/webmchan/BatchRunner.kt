@@ -173,6 +173,19 @@ object BatchRunner {
     /** Videos converted and saved. Stays until the user clears it. */
     val finished = mutableStateListOf<QueueItem>()
 
+    /**
+     * Every card a finished conversion has made, oldest first, for the History page. A card is added
+     * here when it lands in [finished] and stays when it is removed from there; only History's own
+     * "Remove from history" takes it out. Saved on its own (see [HistoryStore]).
+     */
+    val history = mutableStateListOf<QueueItem>()
+
+    /**
+     * Whether a History card's source video can still be read, so "Add to pen again" has something
+     * to add. Filled in in the background, so a card not in here yet counts as readable. Not saved.
+     */
+    val historySourceOk = mutableStateMapOf<Long, Boolean>()
+
     var busy by mutableStateOf(false)
         private set
 
@@ -299,7 +312,15 @@ object BatchRunner {
         // The Log page's saved conversions (read off the main thread: they can be big).
         scope.launch(Dispatchers.IO) { conversionLogs.addAll(ConversionLogStore.load(appCtx)) }
 
-        val loaded = BatchStore.load(appCtx) ?: run { cleanOrphanCopies(appCtx); pruneAnalysis(); return }
+        // The History page's saved cards.
+        history.addAll(HistoryStore.load(appCtx))
+
+        val loaded = BatchStore.load(appCtx) ?: run {
+            cleanOrphanCopies(appCtx)
+            pruneAnalysis()
+            scope.launch { verifyHistory(appCtx) }
+            return
+        }
         ids.set(maxOf(ids.get(), loaded.lastId))
         // Every queued video has to carry its own settings. One saved by an older version has none,
         // so it goes back to the Holding Pen, where it follows the settings on screen until it is
@@ -345,6 +366,16 @@ object BatchRunner {
             }
         )
         finished.addAll(state.finished)
+        // A Finished card History doesn't have yet (made before History existed, or a save that didn't
+        // finish) gets its entry now.
+        val inHistory = history.map { it.id }.toSet()
+        val missing = finished.filter { it.id !in inHistory }
+        if (missing.isNotEmpty()) {
+            val all = (history + missing).sortedBy { it.id }
+            history.clear()
+            history.addAll(all)
+            persistHistory()
+        }
         if (interrupted) {
             busy = true
             paused = true
@@ -360,6 +391,7 @@ object BatchRunner {
         cleanOrphanCopies(appCtx)
         pruneAnalysis()
         scope.launch { verifyRestored(appCtx) }
+        scope.launch { verifyHistory(appCtx) }
     }
 
     /** Writes the current lists to storage (in the background). */
@@ -370,6 +402,13 @@ object BatchRunner {
         val lastId = ids.get()
         val running = busy
         writer.execute { BatchStore.save(ctx, q, f, lastId, running) }
+    }
+
+    /** Writes the History list to storage (in the background). */
+    private fun persistHistory() {
+        val ctx = appContext ?: return
+        val h = history.toList()
+        writer.execute { HistoryStore.save(ctx, h) }
     }
 
     private fun canOpen(ctx: Context, uri: Uri): Boolean = try {
@@ -449,10 +488,57 @@ object BatchRunner {
                 setThumb(ctx, id, saved, null, info.durationSec, finished)
             }
 
-            Thumbnails.pruneExcept(ctx, (queue + finished).map { it.id }.toSet())
+            Thumbnails.pruneExcept(ctx, (queue + finished + history).map { it.id }.toSet())
         } finally {
             probing--
             persist()
+        }
+    }
+
+    /** A shared video's copy in app storage is a plain file; anything else is opened through the system. */
+    private fun sourceReadable(ctx: Context, uri: Uri): Boolean =
+        if (uri.scheme == "file") uri.path?.let { File(it).exists() } ?: false else canOpen(ctx, uri)
+
+    /**
+     * After a restore, in the background: checks that each History card's saved file and source video
+     * can still be read (a file may have been deleted or moved outside the app, an SD card removed,
+     * or Android may have dropped an old lasting read grant), and makes a thumbnail for a card that
+     * has none. Kept apart from [verifyRestored] so a long History never holds Convert up.
+     */
+    private suspend fun verifyHistory(ctx: Context) {
+        for (id in history.map { it.id }) {
+            val item = history.firstOrNull { it.id == id } ?: continue
+            val saved = item.savedUri
+            if (saved != null) {
+                val ok = withContext(Dispatchers.IO) { canOpen(ctx, saved) }
+                val at = history.indexOfFirst { it.id == id }
+                if (!ok && at >= 0) {
+                    history[at] = history[at].copy(
+                        savedUri = null,
+                        detail = (item.detail?.let { "$it\n" } ?: "") + "The saved file isn't available any more.",
+                    )
+                    persistHistory()
+                }
+            }
+            historySourceOk[id] = withContext(Dispatchers.IO) { sourceReadable(ctx, item.uri) }
+        }
+        for (id in history.map { it.id }) {
+            val item = history.firstOrNull { it.id == id } ?: continue
+            val saved = item.savedUri ?: continue
+            val info = item.info ?: continue
+            if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
+            setThumb(ctx, id, saved, null, info.durationSec, history)
+        }
+        persistHistory()
+    }
+
+    /** Re-checks the source of every History card that uses [uri] (after a shared video's copy was deleted, say). */
+    private fun refreshHistorySource(ctx: Context, uri: Uri) {
+        val ids = history.filter { it.uri == uri }.map { it.id }
+        if (ids.isEmpty()) return
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { sourceReadable(ctx, uri) }
+            ids.forEach { historySourceOk[it] = ok }
         }
     }
 
@@ -564,8 +650,13 @@ object BatchRunner {
     private fun releaseSource(ctx: Context, uri: Uri) {
         // A Finished card keeps its source too, so "Add to pen again" still has a video to add.
         if (queue.any { it.uri == uri } || finished.any { it.uri == uri }) return
+        // A History card keeps the lasting read grant on a picked video, so it can still be added again.
+        // It never keeps a shared video's copy in app storage: that goes with the last queue or
+        // Finished card that uses it, and the History card then says the source is lost.
+        if (uri.scheme != "file" && history.any { it.uri == uri }) return
         releaseAccess(ctx, uri)
         deleteOwnCopy(ctx, uri)
+        refreshHistorySource(ctx, uri)
     }
 
     /**
@@ -694,17 +785,14 @@ object BatchRunner {
      */
     suspend fun renameFinished(ctx: Context, id: Long, newBase: String): String? {
         val base = OutputStorage.cleanBaseName(newBase) ?: return "That name can't be used."
-        val saved = finished.firstOrNull { it.id == id }?.savedUri ?: return "This video's file isn't available."
+        val saved = cardSavedUri(id) ?: return "This video's file isn't available."
         val oldName = withContext(Dispatchers.IO) { OutputStorage.fileName(ctx, saved) }
         val res = withContext(Dispatchers.IO) { OutputStorage.rename(ctx, saved, "$base.webm") }
         if (res.uri == null) return res.error
-        val at = finished.indexOfFirst { it.id == id }
-        if (at >= 0) {
-            val cur = finished[at]
+        updateCards(id) { cur ->
             // The card's text names the saved file ("Saved to ..."), so bring that up to date too.
             val detail = if (oldName != null && res.name != null) cur.detail?.replace(oldName, res.name) else cur.detail
-            finished[at] = cur.copy(savedUri = res.uri, detail = detail)
-            persist()
+            cur.copy(savedUri = res.uri, detail = detail)
         }
         return null
     }
@@ -714,20 +802,31 @@ object BatchRunner {
      * buttons) until it is removed. Returns null when it worked, otherwise a message to show.
      */
     suspend fun deleteFinishedFile(ctx: Context, id: Long): String? {
-        val saved = finished.firstOrNull { it.id == id }?.savedUri ?: return "This video's file isn't available."
+        val saved = cardSavedUri(id) ?: return "This video's file isn't available."
         // A file that is already gone counts as deleted.
         val gone = withContext(Dispatchers.IO) { OutputStorage.delete(ctx, saved) || !canOpen(ctx, saved) }
         if (!gone) return "Couldn't delete the file."
-        val at = finished.indexOfFirst { it.id == id }
-        if (at >= 0) {
-            val cur = finished[at]
-            finished[at] = cur.copy(
+        updateCards(id) { cur ->
+            cur.copy(
                 savedUri = null,
                 detail = (cur.detail?.let { "$it\n" } ?: "") + "The saved file was deleted.",
             )
-            persist()
         }
         return null
+    }
+
+    /** The saved file of card [id], from the Finished list or, if it was removed from there, from History. */
+    private fun cardSavedUri(id: Long): Uri? =
+        (finished.firstOrNull { it.id == id } ?: history.firstOrNull { it.id == id })?.savedUri
+
+    /** Applies [change] to card [id] wherever it is (the Finished list, History, or both) and saves. */
+    private fun updateCards(id: Long, change: (QueueItem) -> QueueItem) {
+        val f = finished.indexOfFirst { it.id == id }
+        if (f >= 0) finished[f] = change(finished[f])
+        val h = history.indexOfFirst { it.id == id }
+        if (h >= 0) history[h] = change(history[h])
+        persist()
+        persistHistory()
     }
 
     /** Takes one card out of the Finished list. Never touches the saved file. */
@@ -736,7 +835,8 @@ object BatchRunner {
         if (at < 0) return
         val gone = finished.removeAt(at)
         appContext?.let {
-            Thumbnails.delete(it, id)
+            // The card stays in History, which keeps its thumbnail.
+            if (history.none { h -> h.id == id }) Thumbnails.delete(it, id)
             releaseSource(it, gone.uri) // the Finished card was holding its source
         }
         pruneAnalysis()
@@ -749,17 +849,33 @@ object BatchRunner {
      * card's conversion reuses it. If the source can't be read any more, the new card says so as usual.
      */
     fun addAgain(ctx: Context, finishedId: Long) {
-        val item = finished.firstOrNull { it.id == finishedId } ?: return
+        val item = finished.firstOrNull { it.id == finishedId } ?: history.firstOrNull { it.id == finishedId } ?: return
         addVideos(ctx, listOf(item.uri))
     }
 
     fun clearFinished() {
         val removed = finished.toList()
-        appContext?.let { ctx -> removed.forEach { Thumbnails.delete(ctx, it.id) } }
+        appContext?.let { ctx ->
+            removed.forEach { r -> if (history.none { h -> h.id == r.id }) Thumbnails.delete(ctx, r.id) }
+        }
         finished.clear()
         appContext?.let { ctx -> removed.map { it.uri }.distinct().forEach { releaseSource(ctx, it) } }
         pruneAnalysis()
         persist()
+    }
+
+    /** Takes one card out of History, for good. Never touches the saved file. */
+    fun removeFromHistory(id: Long) {
+        val at = history.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val gone = history.removeAt(at)
+        historySourceOk.remove(id)
+        appContext?.let {
+            // The thumbnail goes too, unless the card is still on the main screen.
+            if (finished.none { f -> f.id == id }) Thumbnails.delete(it, id)
+            releaseSource(it, gone.uri) // History may have been holding its source's read grant
+        }
+        persistHistory()
     }
 
     // ---- Running ----
@@ -1239,7 +1355,7 @@ object BatchRunner {
                                 // Each part gets its own card in Finished (a single-part conversion
                                 // is unchanged: one card, same as before).
                                 noteCardEvent(cardId, CardEventKind.DONE) // before the card exists, so it finds it
-                                finished.add(
+                                val doneCard =
                                     QueueItem(
                                         id = cardId,
                                         uri = item.uri,
@@ -1252,7 +1368,10 @@ object BatchRunner {
                                         // What this file was made for, shown on its Finished card.
                                         settings = settings,
                                     )
-                                )
+                                finished.add(doneCard)
+                                // History keeps it even after it is removed from Finished.
+                                history.add(doneCard)
+                                persistHistory()
                                 partsSaved++
                                 lastPartTried = part
                                 // Remember how far this video got (see QueueItem.partsDone).

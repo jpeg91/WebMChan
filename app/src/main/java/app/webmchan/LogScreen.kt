@@ -38,9 +38,9 @@ import androidx.compose.ui.unit.sp
 import java.text.DateFormat
 import java.util.Date
 
-/** The Menu page: where the Logs and About pages are reached from. */
+/** The Menu page: where the History, Logs and About pages are reached from. */
 @Composable
-fun MenuScreen(onBack: () -> Unit, onLog: () -> Unit, onAbout: () -> Unit) {
+fun MenuScreen(onBack: () -> Unit, onHistory: () -> Unit, onLog: () -> Unit, onAbout: () -> Unit) {
     // The system back gesture/button closes this page instead of leaving the app.
     BackHandler(onBack = onBack)
 
@@ -53,6 +53,7 @@ fun MenuScreen(onBack: () -> Unit, onLog: () -> Unit, onAbout: () -> Unit) {
     ) {
         P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
         P5Title("Menu")
+        P5Button("History", onClick = onHistory, modifier = Modifier.fillMaxWidth())
         P5Button("Logs", onClick = onLog, modifier = Modifier.fillMaxWidth())
         P5Button("About", onClick = onAbout, kind = P5Kind.Secondary, modifier = Modifier.fillMaxWidth())
     }
