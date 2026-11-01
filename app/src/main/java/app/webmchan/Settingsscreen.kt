@@ -1,3 +1,4 @@
+// #Settingsscreen
 package app.webmchan
 
 import android.content.Context
@@ -36,9 +37,16 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
         "Shows the big percentage (or the hourglass) and the progress bar in the notification while " +
             "converting. Off leaves just the title and the step.",
     ),
+    STATUS_BAR_ICON(
+        "statusBarIcon", true, "Status bar indicator",
+        "A small monochrome icon at the top of the screen while WebMChan is working: an hourglass " +
+            "during analysis, the percentage while encoding, plus paused, failed and finished icons. On " +
+            "Android 16 and up it also adds a short note beside it (video 1/2, Retry, Failed, Done) if " +
+            "Live Updates are allowed for the app.",
+    ),
     NOTIFICATION_FINISHED(
         "notificationFinished", true, "Finished notification",
-        "Tells you when a run has finished, if the app isn't on screen.",
+        "Tells you when a run has finished, if the app isn't on screen. With this off, the finished tick still shows in the status bar, quietly, if the status bar indicator is on.",
     ),
     NOTIFICATION_FAILURE(
         "notificationFailure", false, "Notify on each failure",
@@ -105,7 +113,8 @@ fun SettingsScreen(onBack: () -> Unit) {
         group("Look", AppToggle.ANIMATIONS_OFF)
         group(
             "Notifications",
-            AppToggle.NOTIFICATION_PROGRESS, AppToggle.NOTIFICATION_FINISHED, AppToggle.NOTIFICATION_FAILURE,
+            AppToggle.NOTIFICATION_PROGRESS, AppToggle.STATUS_BAR_ICON,
+            AppToggle.NOTIFICATION_FINISHED, AppToggle.NOTIFICATION_FAILURE,
         )
         group("While converting", AppToggle.KEEP_SCREEN_ON)
         group(
