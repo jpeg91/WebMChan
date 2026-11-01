@@ -9,7 +9,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.view.View
@@ -74,11 +73,9 @@ class ConvertService : Service() {
         private const val CHANNEL_PROGRESS = "convert_progress"
         private const val CHANNEL_DONE = "convert_done"
         private const val CHANNEL_QUIET = "convert_done_quiet"
-        private const val CHANNEL_LIVE = "convert_live"
         private const val NOTIF_PROGRESS = 1
         private const val NOTIF_DONE = 2
         private const val NOTIF_PAUSED = 3
-        private const val NOTIF_LIVE = 4
         private const val FIRST_FAILED_ID = 1000
         private const val WAKE_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000L
 
@@ -97,11 +94,6 @@ class ConvertService : Service() {
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_QUIET, "Finished (quiet)", NotificationManager.IMPORTANCE_LOW).apply {
                     description = "Just the tick in the status bar when a batch has finished, with no sound or pop-up"
-                }
-            )
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_LIVE, "Live updates", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Android 16 and up: a short note in the status bar (video 1/2, retrying, failed, done)"
                 }
             )
         }
@@ -215,8 +207,6 @@ class ConvertService : Service() {
 
         fun clearPaused(ctx: Context) {
             ctx.getSystemService(NotificationManager::class.java).cancel(NOTIF_PAUSED)
-            // The Live Update that said "Paused" goes with it.
-            clearLive(ctx)
         }
 
         fun clearProgress(ctx: Context) {
@@ -274,72 +264,6 @@ class ConvertService : Service() {
                 }
             } catch (_: Exception) {
             }
-        }
-
-        // ---- Live Updates (Android 16 and up) ----
-        // A second, plain notification that Android can show as a short note in the status bar: which
-        // video it is on, retrying, failed, done. It only adds context to the main notification
-        // (which keeps its own look: a notification with custom views can't be promoted), and is
-        // skipped quietly on older Android, if the user has turned Live Updates off for the app, or if
-        // anything about it isn't supported. The calls are made by name because the app is built
-        // against Android 15's SDK.
-
-        private fun canPromote(ctx: Context): Boolean {
-            if (Build.VERSION.SDK_INT < 36) return false
-            return try {
-                val nm = ctx.getSystemService(NotificationManager::class.java)
-                nm.javaClass.getMethod("canPostPromotedNotifications").invoke(nm) as? Boolean ?: false
-            } catch (_: Throwable) {
-                false
-            }
-        }
-
-        /**
-         * Shows [chip] (under 7 characters) in the status bar, with [title] and [text] in the shade.
-         */
-        fun postLive(ctx: Context, chip: String?, title: String, text: String, icon: StatusIcon, percent: Int?) {
-            if (!AppSettings.get(AppToggle.STATUS_BAR_ICON) || !canPromote(ctx)) return
-            try {
-                ensureChannels(ctx)
-                val b = Notification.Builder(ctx, CHANNEL_LIVE)
-                    .setSmallIcon(android.graphics.drawable.Icon.createWithBitmap(NotificationArt.statusIcon(ctx, icon, percent)))
-                    .setContentTitle(title)
-                    .setContentText(text)
-                    .setOngoing(true)
-                    .setOnlyAlertOnce(true)
-                    .setContentIntent(openAppIntent(ctx))
-                val m = Notification.Builder::class.java
-                m.getMethod("setRequestPromotedOngoing", Boolean::class.javaPrimitiveType).invoke(b, true)
-                if (chip != null) {
-                    m.methods.firstOrNull { it.name == "setShortCriticalText" && it.parameterTypes.size == 1 }?.invoke(b, chip)
-                }
-                ctx.getSystemService(NotificationManager::class.java).notify(NOTIF_LIVE, b.build())
-            } catch (_: Throwable) {
-                // Not supported here: the main notification and the status bar icon still work.
-            }
-        }
-
-        fun clearLive(ctx: Context) {
-            ctx.getSystemService(NotificationManager::class.java).cancel(NOTIF_LIVE)
-        }
-
-        /**
-         * The Live Update for the progress update [pos] ("Video 1 of 2, part 2/3") and [step]: video
-         * n/N when there is more than one, else part n/N, and "Retry" from the second attempt.
-         */
-        fun postLiveProgress(ctx: Context, pos: String, name: String, step: String, percent: Int?) {
-            val video = Regex("Video (\\d+) of (\\d+)").find(pos)?.groupValues
-            val part = Regex("part (\\d+)/(\\d+)").find(pos)?.groupValues
-            val attempt = Regex("Attempt (\\d+)/(\\d+)").find(step)?.groupValues
-            val retrying = attempt != null && (attempt[1].toIntOrNull() ?: 1) > 1
-            val chip = when {
-                retrying -> "Retry"
-                video != null && video[2] != "1" -> "${video[1]}/${video[2]}"
-                part != null -> "${part[1]}/${part[2]}"
-                else -> null
-            }
-            val title = if (retrying) "Retrying: attempt ${attempt!![1]} of ${attempt[2]}" else "Converting: $pos"
-            postLive(ctx, chip, title, name, StatusIcon.WORKING, percent)
         }
     }
 }
