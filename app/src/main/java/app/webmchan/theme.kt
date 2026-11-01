@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -571,15 +572,67 @@ private fun DrawScope.drawRunningBorder(phase: Float, look: RunLook, amber: Floa
 }
 
 /**
+ * The pixel-art hourglass shown in place of the percentage while there is no percentage yet (the
+ * analysis pass, preparing the video). A tiny Windows 95 style cursor: white glass outline, red
+ * sand. Shared by the card ([P5Percent]) and the notification ([NotificationArt.percent]), so both
+ * draw exactly the same picture. Pixels are (column, row) in a [SIZE] x [SIZE] grid.
+ */
+object P5Hourglass {
+    const val SIZE = 11
+    /** Frames in one loop: the sand runs down, and the next loop starts upside down (it looks the same). */
+    const val FRAMES = 16
+
+    private val glass = listOf(
+        "WWWWWWWWWWW",
+        ".W.......W.",
+        "..W.....W..",
+        "...W...W...",
+        "....W.W....",
+        "....W.W....",
+        "....W.W....",
+        "...W...W...",
+        "..W.....W..",
+        ".W.......W.",
+        "WWWWWWWWWWW",
+    )
+
+    /** The glass outline. */
+    val outline: List<Pair<Int, Int>> = glass.flatMapIndexed { row, line ->
+        line.mapIndexedNotNull { col, ch -> if (ch == 'W') col to row else null }
+    }
+
+    /**
+     * The sand for [frame]: the top row of the upper bulb empties into the bottom row of the lower
+     * one three times over, with a grain falling through the neck while it runs.
+     */
+    fun sand(frame: Int): List<Pair<Int, Int>> {
+        val k = frame.mod(FRAMES)
+        val stage = minOf(k / 5, 3)
+        val out = ArrayList<Pair<Int, Int>>()
+        fun row(r: Int, from: Int, to: Int) { for (c in from..to) out.add(c to r) }
+        if (stage < 1) row(1, 2, 8)
+        if (stage < 2) row(2, 3, 7)
+        if (stage < 3) row(3, 4, 6)
+        if (stage >= 1) row(9, 2, 8)
+        if (stage >= 2) row(8, 3, 7)
+        if (stage >= 3) row(7, 4, 6)
+        if (k < 15) out.add(5 to 4 + k % 3)
+        return out
+    }
+}
+
+/**
  * A big readout in the style of the 💯 emoji: heavy red italic digits, tilted, with a white
- * outline, a hard black shadow and two slanted underlines. [value] null shows dashes, dimmed (for
- * the stages that have no percentage).
+ * outline, a hard black shadow and two slanted underlines. With no [value] (a stage that has no
+ * percentage) the digits are replaced by an animated pixel hourglass ([P5Hourglass]) in the same
+ * place and style; [frozen] holds it still (while paused). The hourglass is stepped by a plain
+ * timer, not Compose's animation system, so it runs even with the phone's animations turned off.
  */
 @Composable
-fun P5Percent(value: Int?, modifier: Modifier = Modifier) {
-    val digits = value?.coerceIn(0, 100)?.toString() ?: "--"
-    val fill = if (value != null) P5.Red else P5.RedDeep
-    val outline = if (value != null) P5.White else P5.GreyDim
+fun P5Percent(value: Int?, modifier: Modifier = Modifier, frozen: Boolean = false) {
+    val digits = value?.coerceIn(0, 100)?.toString()
+    val fill = P5.Red
+    val outline = P5.White
     val big = TextStyle(
         fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic,
         fontSize = 38.sp, lineHeight = 40.sp, letterSpacing = (-1).sp,
@@ -588,13 +641,36 @@ fun P5Percent(value: Int?, modifier: Modifier = Modifier) {
     @Composable
     fun Glyphs(style: TextStyle, color: Color, stroked: Boolean) {
         val st = if (stroked) style.copy(drawStyle = Stroke(width = 9f, join = StrokeJoin.Round)) else style
-        Text(digits, style = st, color = color)
+        Text(digits ?: "", style = st, color = color)
+    }
+    var frame by remember { mutableIntStateOf(0) }
+    if (digits == null) {
+        androidx.compose.runtime.LaunchedEffect(frozen) {
+            while (!frozen) {
+                kotlinx.coroutines.delay(125)
+                frame = (frame + 1) % P5Hourglass.FRAMES
+            }
+        }
     }
     Column(
         modifier.graphicsLayer { rotationZ = -6f },
         horizontalAlignment = Alignment.End,
     ) {
-        Row(verticalAlignment = Alignment.Bottom) {
+        if (digits == null) {
+            Canvas(Modifier.size(38.5.dp)) {
+                val cell = size.width / P5Hourglass.SIZE
+                val shadow = 3.dp.toPx()
+                val sand = P5Hourglass.sand(frame)
+                fun px(c: Int, r: Int, color: Color, dx: Float = 0f) {
+                    drawRect(color, Offset(c * cell + dx, r * cell + dx), Size(cell, cell))
+                }
+                // Hard shadow, then the white glass, then the red sand on top.
+                for ((c, r) in P5Hourglass.outline) px(c, r, Color.Black, shadow)
+                for ((c, r) in sand) px(c, r, Color.Black, shadow)
+                for ((c, r) in P5Hourglass.outline) px(c, r, outline)
+                for ((c, r) in sand) px(c, r, fill)
+            }
+        } else Row(verticalAlignment = Alignment.Bottom) {
             Box {
                 // Hard shadow, white outline, then the red fill on top.
                 Box(Modifier.offset(3.dp, 3.dp)) { Glyphs(big, Color.Black, stroked = true) }
