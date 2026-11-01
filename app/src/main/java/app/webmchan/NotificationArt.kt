@@ -1,3 +1,4 @@
+// #Notificationart
 package app.webmchan
 
 import android.content.Context
@@ -21,7 +22,96 @@ import kotlin.math.ceil
  *    there is no percentage yet.
  *  - [progressBar] is the slanted candy-striped bar ([P5Progress]).
  */
+/** The pictures the status bar can show for the app (see [NotificationArt.statusIcon]). */
+enum class StatusIcon { WORKING, PAUSED, DONE, FAILED }
+
 internal object NotificationArt {
+    // ---- Status bar icons ----
+    // Android only uses the shape of a status bar icon (opaque or not) and tints it itself, so these
+    // are plain white pixels on transparent. Drawn in the same pixel style as the hourglass.
+
+    /** A 3 x 5 pixel digit font (1 = pixel). */
+    private val DIGITS = mapOf(
+        '0' to "111101101101111", '1' to "010110010010111", '2' to "111001111100111",
+        '3' to "111001111001111", '4' to "101101111001001", '5' to "111100111001111",
+        '6' to "111100111101111", '7' to "111001001001001", '8' to "111101111101111",
+        '9' to "111101111001111",
+    )
+
+    private fun rows(vararg lines: String): List<Pair<Int, Int>> =
+        lines.flatMapIndexed { r, line -> line.mapIndexedNotNull { c, ch -> if (ch == 'X') c to r else null } }
+
+    private val TICK = rows(
+        ".........XX",
+        "........XXX",
+        ".......XXX.",
+        "XX....XXX..",
+        "XXX..XXX...",
+        ".XXXXXX....",
+        "..XXXX.....",
+        "...XX......",
+    )
+    private val PAUSE = rows(
+        ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.",
+        ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.",
+    )
+    private val BANG = rows(
+        "....XXX....", "....XXX....", "....XXX....", "....XXX....", "....XXX....", "....XXX....",
+        "...........", "....XXX....", "....XXX....",
+    )
+
+    /**
+     * The status bar icon, 24 dp square. WORKING is the pixel hourglass while there is no [percent],
+     * otherwise the percent as two blocky digits (up to 99); the others are a pause sign, a tick
+     * and an exclamation mark. The hourglass's frame comes from the clock, or stays at the first
+     * frame when animations are off.
+     */
+    fun statusIcon(ctx: Context, kind: StatusIcon, percent: Int? = null): Bitmap {
+        val size = (24f * ctx.resources.displayMetrics.density).toInt().coerceAtLeast(24)
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val paint = Paint().apply { color = Color.WHITE } // not anti-aliased: hard pixels
+        fun grid(cells: List<Pair<Int, Int>>, cols: Int, rowCount: Int) {
+            val cell = (size / maxOf(cols, rowCount)).coerceAtLeast(1)
+            val ox = (size - cols * cell) / 2
+            val oy = (size - rowCount * cell) / 2
+            for ((col, row) in cells) {
+                val x = (ox + col * cell).toFloat()
+                val y = (oy + row * cell).toFloat()
+                c.drawRect(x, y, x + cell, y + cell, paint)
+            }
+        }
+        when (kind) {
+            StatusIcon.WORKING -> if (percent == null) {
+                val frame = if (AppSettings.get(AppToggle.ANIMATIONS_OFF)) 0
+                    else ((SystemClock.elapsedRealtime() / 500L) * 2L).toInt() % P5Hourglass.FRAMES
+                grid(P5Hourglass.outline + P5Hourglass.sand(frame), P5Hourglass.SIZE, P5Hourglass.SIZE)
+            } else {
+                val text = percent.coerceIn(0, 99).toString()
+                val n = text.length
+                val ch = size * 0.86f / 5f
+                val cw = minOf(size / (n * 3f + (n - 1)), ch * 0.9f)
+                val totalW = (n * 3 + (n - 1)) * cw
+                val left = (size - totalW) / 2f
+                val top = (size - 5 * ch) / 2f
+                for ((k, digit) in text.withIndex()) {
+                    val bits = DIGITS[digit] ?: continue
+                    val x0 = left + k * 4 * cw
+                    for (i in bits.indices) {
+                        if (bits[i] != '1') continue
+                        val x = x0 + (i % 3) * cw
+                        val y = top + (i / 3) * ch
+                        c.drawRect(x, y, x + cw, y + ch, paint)
+                    }
+                }
+            }
+            StatusIcon.PAUSED -> grid(PAUSE, 11, 9)
+            StatusIcon.DONE -> grid(TICK, 11, 8)
+            StatusIcon.FAILED -> grid(BANG, 11, 9)
+        }
+        return bmp
+    }
+
     /** The heavy italic face the app's type uses (FontFamily.SansSerif, Black, italic). */
     private val heavy: Typeface by lazy { Typeface.create(Typeface.SANS_SERIF, 900, true) }
 
