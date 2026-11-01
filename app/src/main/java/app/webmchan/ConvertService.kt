@@ -134,12 +134,14 @@ class ConvertService : Service() {
         /** [percent] null = indeterminate. */
         fun buildProgress(ctx: Context, title: String, text: String, percent: Int?): Notification {
             ensureChannels(ctx)
+            AppSettings.init(ctx)
             val cancel = PendingIntent.getService(
                 ctx, 1,
                 Intent(ctx, ConvertService::class.java).setAction(ACTION_CANCEL),
                 PendingIntent.FLAG_IMMUTABLE
             )
-            val (small, big) = styledViews(ctx, title, text, showPercent = true, percent = percent)
+            // The Settings page can turn the percentage (or hourglass) and the bar off.
+            val (small, big) = styledViews(ctx, title, text, showPercent = AppSettings.get(AppToggle.NOTIFICATION_PROGRESS), percent = percent)
             return NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 // Still set, for what can't show the custom views (accessibility, lock screen, wearables).
@@ -189,6 +191,26 @@ class ConvertService : Service() {
 
         fun clearProgress(ctx: Context) {
             ctx.getSystemService(NotificationManager::class.java).cancel(NOTIF_PROGRESS)
+        }
+
+        /** A video failed: its own notification (on the same channel as Finished), left until opened or swiped away. */
+        fun postFailed(ctx: Context, id: Long, name: String, message: String) {
+            ensureChannels(ctx)
+            val text = "$name\n${message.lineSequence().firstOrNull { it.isNotBlank() } ?: "Failed."}"
+            val (small, big) = styledViews(ctx, "WebMChan: failed", text, showPercent = false, percent = null)
+            val n = NotificationCompat.Builder(ctx, CHANNEL_DONE)
+                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setContentTitle("WebMChan: failed")
+                .setContentText(text.lineSequence().first())
+                .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+                .setCustomContentView(small)
+                .setCustomBigContentView(big)
+                .setColor(P5.Amber.toArgb())
+                .setContentIntent(openAppIntent(ctx))
+                .setAutoCancel(true)
+                .build()
+            // One notification per failed video (the id is folded into a small range of ids that don't clash with the others).
+            ctx.getSystemService(NotificationManager::class.java).notify(1000 + (id % 1000).toInt(), n)
         }
 
         fun postFinished(ctx: Context, text: String) {
