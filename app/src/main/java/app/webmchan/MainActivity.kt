@@ -189,8 +189,18 @@ class MainActivity : ComponentActivity() {
 
 /** Opens [uri] in whatever video player the phone offers (its default, or a chooser). */
 private fun playVideo(ctx: Context, uri: Uri, mime: String) {
+    // A shared video's copy in app storage has a file:// address, which Android won't pass to another
+    // app; the FileProvider turns it into a temporary content:// link to the same file (no copy made).
+    val shareable = if (uri.scheme == "file") {
+        try {
+            androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", java.io.File(uri.path ?: ""))
+        } catch (_: Exception) {
+            Toast.makeText(ctx, "Couldn't open this video.", Toast.LENGTH_SHORT).show()
+            return
+        }
+    } else uri
     val view = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, mime)
+        setDataAndType(shareable, mime)
         // The player isn't us, so it needs a read grant for this particular file.
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
@@ -313,10 +323,8 @@ private suspend fun playCardEvent(fx: CardFx, kind: CardEventKind) {
 private fun RunPercent(item: QueueItem) {
     val stage = runStage(BatchRunner.status, BatchRunner.progress)
     val value: Int? = if (stage == RunLook.ENCODING || stage == RunLook.FINISHING) {
-        val p = BatchRunner.progress.coerceIn(0f, 1f)
-        // A split video counts all its parts: the ones already saved plus how far this one is.
-        val overall = if (item.partsTotal > 1) (item.partsDone + p) / item.partsTotal else p
-        (overall * 100f).toInt()
+        // Just the part being encoded (a split video starts again from 0% for each part).
+        (BatchRunner.progress.coerceIn(0f, 1f) * 100f).toInt()
     } else null
     P5Percent(value)
 }
@@ -469,7 +477,8 @@ internal fun QueueRow(
                 modifier = Modifier.weight(1f).padding(top = 8.dp, end = 8.dp),
             )
             if (showControls) {
-                if (!busy) {
+                // While a batch runs, a video still waiting its turn can be moved; the one being converted can't.
+                if (!busy || (item.status == ItemStatus.WAITING && item.id != BatchRunner.pausedItemId)) {
                     QueueButton("▲", canMoveUp, onUp)
                     QueueButton("▼", canMoveDown, onDown)
                 }
@@ -624,34 +633,6 @@ internal fun QueueRow(
                 Text(estimateText, style = MaterialTheme.typography.bodySmall)
             }
 
-            // What kind of video the estimated bitrate suits (bits per pixel, so the frame size and
-            // frame rate count). The poor brackets also say what could improve it, best first and
-            // only what can still be changed; two tips at most. Not shown for an invalid custom limit.
-            if (settings.limitBytes >= 256 * 1024L && est.videoKbps > 0) {
-                val bracket = Converter.qualityBracket(est.qualityBpp, t)
-                val tips = if (bracket.poor) {
-                    val outFps = Converter.effectiveFps(i, settings.targetFps)
-                    buildList {
-                        if (showControls && !(busy || item.partsDone > 0) && numParts < maxParts) add("split into more parts")
-                        if (outFps > 27.0) add("lower the frame rate")
-                        if (est.audioKbps > Converter.MONO_AUDIO_MAX_KBPS &&
-                            est.audioKbps >= Converter.AUDIO_TIP_SHARE * (est.videoKbps + est.audioKbps)
-                        ) add("decrease sound quality")
-                        if (!settings.useVp9) add("try VP9 (slower)")
-                        if (settings.hasCustomSize) add("lower the custom resolution")
-                    }.take(2)
-                } else emptyList()
-                val bracketColor = if (bracket.poor) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Quality bracket", style = MaterialTheme.typography.labelMedium, color = P5.Grey)
-                    P5Tag(bracket.label, if (bracket.poor) P5.Amber else P5.White)
-                }
-                Text(
-                    bracket.suits + if (tips.isNotEmpty()) "\nTo improve it: ${tips.joinToString(" or ")}." else "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = bracketColor
-                )
-            }
         }
 
         // Not the video being converted, a split video with parts already saved, or (during a run)
@@ -678,6 +659,40 @@ internal fun QueueRow(
             }
         }
         if (expanded) {
+            // What kind of video the estimated bitrate suits (bits per pixel, so the frame size and
+            // frame rate count). The poor brackets also say what could improve it, best first and
+            // only what can still be changed; two tips at most. Not shown for an invalid custom limit.
+            if (i != null && item.status != ItemStatus.DONE && settings.limitBytes >= 256 * 1024L) {
+                val t = settings.tuning
+                val maxParts = Converter.maxPartCount(i.durationSec, maxDuration, t)
+                val est = Converter.estimate(i, settings, item.extraParts)
+                val numParts = est.parts
+                if (est.videoKbps > 0) {
+                    val bracket = Converter.qualityBracket(est.qualityBpp, t)
+                    val tips = if (bracket.poor) {
+                        val outFps = Converter.effectiveFps(i, settings.targetFps)
+                        buildList {
+                            if (showControls && !(busy || item.partsDone > 0) && numParts < maxParts) add("split into more parts")
+                            if (outFps > 27.0) add("lower the frame rate")
+                            if (est.audioKbps > Converter.MONO_AUDIO_MAX_KBPS &&
+                                est.audioKbps >= Converter.AUDIO_TIP_SHARE * (est.videoKbps + est.audioKbps)
+                            ) add("decrease sound quality")
+                            if (!settings.useVp9) add("try VP9 (slower)")
+                            if (settings.hasCustomSize) add("lower the custom resolution")
+                        }.take(2)
+                    } else emptyList()
+                    val bracketColor = if (bracket.poor) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Quality bracket", style = MaterialTheme.typography.labelMedium, color = P5.Grey)
+                        P5Tag(bracket.label, if (bracket.poor) P5.Amber else P5.White)
+                    }
+                    Text(
+                        bracket.suits + if (tips.isNotEmpty()) "\nTo improve it: ${tips.joinToString(" or ")}." else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = bracketColor
+                    )
+                }
+            }
             Text("File: ${item.name}", style = MaterialTheme.typography.bodySmall)
             if (i != null && !item.probeFailed) {
                 val len = String.format(Locale.US, "%.1f", i.durationSec)
