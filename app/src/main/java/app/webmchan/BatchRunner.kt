@@ -1,4 +1,3 @@
-
 // #batchrunner
 package app.webmchan
 
@@ -704,13 +703,24 @@ object BatchRunner {
         }
     }
 
-    /** The nearest video in [delta]'s direction that is in the same list (Holding Pen or batch), or null. */
+    /**
+     * Whether a queue (not Holding Pen) video can be moved: it is ready and still waiting its turn.
+     * The one being converted, or held by Pause Now, stays where it is.
+     */
+    private fun queueMovable(q: QueueItem): Boolean =
+        q.status == ItemStatus.WAITING && q.info != null && !q.probeFailed && q.id != pausedItemId
+
+    /**
+     * The nearest video in [delta]'s direction that is in the same list (Holding Pen or batch), or
+     * null. In the queue only waiting videos count, so the one being converted is stepped over.
+     */
     private fun neighbour(index: Int, delta: Int): Int? {
         if (index !in queue.indices) return null
         val pen = queue[index].inPen
+        if (!pen && !queueMovable(queue[index])) return null
         var i = index + delta
         while (i in queue.indices) {
-            if (queue[i].inPen == pen) return i
+            if (queue[i].inPen == pen && (pen || queueMovable(queue[i]))) return i
             i += delta
         }
         return null
@@ -723,6 +733,15 @@ object BatchRunner {
         val t = queue[index]
         queue[index] = queue[to]
         queue[to] = t
+        // A running batch converts in the order of runList, so swap the two there as well.
+        if (!t.inPen) {
+            val a = runList.indexOf(t.id)
+            val b = runList.indexOf(queue[index].id)
+            if (a >= 0 && b >= 0) {
+                runList[a] = queue[index].id
+                runList[b] = t.id
+            }
+        }
         persist()
     }
 
@@ -792,7 +811,8 @@ object BatchRunner {
         updateCards(id) { cur ->
             // The card's text names the saved file ("Saved to ..."), so bring that up to date too.
             val detail = if (oldName != null && res.name != null) cur.detail?.replace(oldName, res.name) else cur.detail
-            cur.copy(savedUri = res.uri, detail = detail)
+            // The card's title follows the file's new name too.
+            cur.copy(savedUri = res.uri, detail = detail, name = res.name ?: "$base.webm")
         }
         return null
     }
