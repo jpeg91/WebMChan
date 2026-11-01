@@ -292,9 +292,6 @@ object BatchRunner {
     /** The settings the batch in progress was started (or last topped up) with: what a shared video joining it gets. */
     private var runSettings: Settings? = null
 
-    /** Until this time (elapsedRealtime) progress updates leave the status bar's Live Update alone, so "Failed" can be read. */
-    private var liveHoldUntil = 0L
-
     // ---- Saving and restoring (so the lists survive the app being closed or killed) ----
 
     private var appContext: Context? = null
@@ -1177,7 +1174,6 @@ object BatchRunner {
         }
         ConvertService.clearProgress(ctx)
         ConvertService.postPaused(ctx, "Open WebMChan and press Resume to carry on.")
-        ConvertService.postLive(ctx, "Paused", "Paused", "Open WebMChan and press Resume to carry on.", StatusIcon.PAUSED, null)
         persist()
         while (paused && !cancelAllFlag.get()) delay(200)
         if (!cancelAllFlag.get()) logBuffer.add("=== Resumed ===") { logLines = it }
@@ -1508,13 +1504,6 @@ object BatchRunner {
                             backToPen(now)
                             failCount++
                             if (AppSettings.get(AppToggle.NOTIFICATION_FAILURE)) ConvertService.postFailed(ctx, id, item.name, itemFailMsg.orEmpty())
-                            // The status bar says so too (Android 16 and up), and holds it a few seconds.
-                            liveHoldUntil = SystemClock.elapsedRealtime() + 5000
-                            ConvertService.postLive(
-                                ctx, "Failed", "Failed: ${item.name}",
-                                itemFailMsg.orEmpty().lineSequence().firstOrNull { it.isNotBlank() } ?: "Failed.",
-                                StatusIcon.FAILED, null,
-                            )
                         }
                         partsSkipped > 0 && partsSaved == 0 -> {
                             // Every part was skipped, so there is nothing to show in Finished. Keep the
@@ -1598,17 +1587,10 @@ object BatchRunner {
             ConvertService.clearProgress(ctx)
             ConvertService.clearPaused(ctx)
             runSettings = null
-            liveHoldUntil = 0L
             // The finished tick always shows when the status bar indicator is on: as the usual Finished
             // notification if that is on and the app is off screen, otherwise as a quiet one.
             if (!uiVisible && AppSettings.get(AppToggle.NOTIFICATION_FINISHED)) ConvertService.postFinished(ctx, text)
             else if (AppSettings.get(AppToggle.STATUS_BAR_ICON)) ConvertService.postFinished(ctx, text, quiet = true)
-            // Android 16 and up: "Done" beside the icon for a few seconds.
-            ConvertService.postLive(ctx, "Done", "All finished", text, StatusIcon.DONE, null)
-            scope.launch {
-                delay(10_000)
-                if (!busy) ConvertService.clearLive(ctx)
-            }
         }
     }
 
@@ -1653,6 +1635,5 @@ object BatchRunner {
         val p = progress
         val percent = if (p < 0f) null else (p * 100).toInt().coerceIn(0, 100)
         ConvertService.postProgress(ctx, "Converting: $pos", "$name\n$step", percent)
-        if (now >= liveHoldUntil) ConvertService.postLiveProgress(ctx, pos, name, step, percent)
     }
 }
