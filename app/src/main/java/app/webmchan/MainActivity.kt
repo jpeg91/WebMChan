@@ -326,7 +326,8 @@ private fun RunPercent(item: QueueItem) {
         // Just the part being encoded (a split video starts again from 0% for each part).
         (BatchRunner.progress.coerceIn(0f, 1f) * 100f).toInt()
     } else null
-    P5Percent(value)
+    // The hourglass (no percentage yet) stands still while the video is paused.
+    P5Percent(value, frozen = BatchRunner.pausedItemId == item.id)
 }
 
 @Composable
