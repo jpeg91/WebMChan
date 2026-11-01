@@ -192,6 +192,8 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         BatchRunner.uiVisible = true
+        // Opening the app is seeing the last run's finished and failed notifications.
+        ConvertService.clearResults(this)
     }
 
     override fun onStop() {
