@@ -286,6 +286,9 @@ object BatchRunner {
     private val logBuffer = LogBuffer()
     private var lastNotifyMs = 0L
 
+    /** The last progress notification's text, so the hourglass can be redrawn while nothing new is reported (see runBatch). */
+    private var lastNote: Triple<String, String, String>? = null
+
     // ---- Saving and restoring (so the lists survive the app being closed or killed) ----
 
     private var appContext: Context? = null
@@ -1173,6 +1176,17 @@ object BatchRunner {
         var processed = 0 // videos actually started so far, for the "Video n of N" label
         var n = -1
         loopAlive = true
+        // Pass 1 reports nothing for a long while, so the notification would never update and its
+        // hourglass would stand still. While there is no percentage, redraw it every half second.
+        val hourglassTicker = scope.launch {
+            while (true) {
+                delay(500)
+                val note = lastNote ?: continue
+                if (busy && !paused && pauseRequest != PauseRequest.NOW && progress < 0f) {
+                    notifyProgress(ctx, note.first, note.second, note.third, force = true)
+                }
+            }
+        }
         try {
             while (true) {
                 n++
@@ -1511,6 +1525,8 @@ object BatchRunner {
                 }
             }
         } finally {
+            hourglassTicker.cancel()
+            lastNote = null
             // The run is over. Whatever is left in the queue keeps the settings it was sent with.
             val text = buildString {
                 append("Finished: $okCount done")
@@ -1575,6 +1591,7 @@ object BatchRunner {
     /** Updates the ongoing notification, at most about once a second. */
     private fun notifyProgress(ctx: Context, pos: String, name: String, step: String, force: Boolean) {
         if (!busy) return
+        lastNote = Triple(pos, name, step)
         val now = SystemClock.elapsedRealtime()
         if (!force && now - lastNotifyMs < 1000) return
         lastNotifyMs = now
