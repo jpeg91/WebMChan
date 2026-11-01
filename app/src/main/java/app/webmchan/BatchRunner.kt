@@ -289,6 +289,9 @@ object BatchRunner {
     /** The last progress notification's text, so the hourglass can be redrawn while nothing new is reported (see runBatch). */
     private var lastNote: Triple<String, String, String>? = null
 
+    /** The settings the batch in progress was started (or last topped up) with: what a shared video joining it gets. */
+    private var runSettings: Settings? = null
+
     // ---- Saving and restoring (so the lists survive the app being closed or killed) ----
 
     private var appContext: Context? = null
@@ -304,6 +307,7 @@ object BatchRunner {
     fun restore(ctx: Context) {
         val appCtx = ctx.applicationContext
         appContext = appCtx
+        AppSettings.init(appCtx)
         if (restored) return
         restored = true
 
@@ -597,7 +601,7 @@ object BatchRunner {
                     copyingDone++
                 }
             } finally {
-                if (copies.isNotEmpty()) addVideos(appCtx, copies)
+                if (copies.isNotEmpty()) addVideos(appCtx, copies, fromShare = true)
                 copyingTotal -= shared.size
                 if (copyingTotal <= 0) {
                     copyingTotal = 0
@@ -673,7 +677,7 @@ object BatchRunner {
 
     // ---- Editing the queue (the UI disables these while a batch is running) ----
 
-    fun addVideos(ctx: Context, picked: List<Uri>) {
+    fun addVideos(ctx: Context, picked: List<Uri>, fromShare: Boolean = false) {
         val appCtx = ctx.applicationContext
         appContext = appCtx
         // The same video may be added any number of times (e.g. to convert it again with different
@@ -698,12 +702,30 @@ object BatchRunner {
                         if (err != null) queue[at] = queue[at].copy(status = ItemStatus.FAILED, detail = err)
                     }
                     if (i != null) setThumb(appCtx, item.id, item.uri, null, i.durationSec, queue)
+                    if (i != null && fromShare) joinRunningBatch(item.id)
                 }
             } finally {
                 probing--
                 persist()
             }
         }
+    }
+
+    /**
+     * A shared video, once it has been read, goes straight into the batch in progress if Settings says so
+     * (with that batch's settings). With nothing running it stays in the Holding Pen, as every new video does.
+     */
+    private fun joinRunningBatch(id: Long) {
+        if (!AppSettings.get(AppToggle.SHARE_TO_RUNNING_BATCH) || !busy || cancelling) return
+        val s = runSettings ?: queue.firstNotNullOfOrNull { if (!it.inPen) it.settings else null } ?: return
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val item = queue[at]
+        if (!item.inPen || item.info == null || item.probeFailed) return
+        queue.removeAt(at)
+        queue.add(item.copy(inPen = false, settings = s, status = ItemStatus.WAITING, detail = null))
+        pickUpNewVideos()
+        persist()
     }
 
     /**
@@ -913,6 +935,10 @@ object BatchRunner {
         val todo = queue.filter { !it.inPen && it.info != null }.map { it.id }
         if (todo.isEmpty()) return
 
+        // A new run starts with an empty Finished list, if Settings says so (History keeps the cards).
+        if (AppSettings.get(AppToggle.AUTO_CLEAR_FINISHED)) clearFinished()
+        runSettings = settings
+
         summary = null
         runTotal = todo.size
         runList.clear()
@@ -1020,6 +1046,7 @@ object BatchRunner {
     fun addPenToRun(settings: Settings) {
         if (!busy) return
         if (movePenToQueue(settings).isEmpty()) return
+        runSettings = settings
         pickUpNewVideos()
         persist()
     }
@@ -1182,7 +1209,9 @@ object BatchRunner {
             while (true) {
                 delay(500)
                 val note = lastNote ?: continue
-                if (busy && !paused && pauseRequest != PauseRequest.NOW && progress < 0f) {
+                if (busy && !paused && pauseRequest != PauseRequest.NOW && progress < 0f &&
+                    AppSettings.get(AppToggle.NOTIFICATION_PROGRESS) && !AppSettings.get(AppToggle.ANIMATIONS_OFF)
+                ) {
                     notifyProgress(ctx, note.first, note.second, note.third, force = true)
                 }
             }
@@ -1471,6 +1500,7 @@ object BatchRunner {
                             queue[now] = queue[now].copy(status = ItemStatus.FAILED, detail = note)
                             backToPen(now)
                             failCount++
+                            if (AppSettings.get(AppToggle.NOTIFICATION_FAILURE)) ConvertService.postFailed(ctx, id, item.name, itemFailMsg.orEmpty())
                         }
                         partsSkipped > 0 && partsSaved == 0 -> {
                             // Every part was skipped, so there is nothing to show in Finished. Keep the
@@ -1553,7 +1583,8 @@ object BatchRunner {
             }
             ConvertService.clearProgress(ctx)
             ConvertService.clearPaused(ctx)
-            if (!uiVisible) ConvertService.postFinished(ctx, text)
+            runSettings = null
+            if (!uiVisible && AppSettings.get(AppToggle.NOTIFICATION_FINISHED)) ConvertService.postFinished(ctx, text)
         }
     }
 
