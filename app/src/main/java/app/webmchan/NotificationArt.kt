@@ -89,7 +89,9 @@ internal object NotificationArt {
 
         if (hourglass) {
             // Hard shadow, white glass, then the red sand, in the place the digits would take.
-            val frame = ((SystemClock.elapsedRealtime() / 500L) * 2L).toInt() % P5Hourglass.FRAMES
+            // Still when the Settings page has animations off.
+            val frame = if (AppSettings.get(AppToggle.ANIMATIONS_OFF)) 0
+                else ((SystemClock.elapsedRealtime() / 500L) * 2L).toInt() % P5Hourglass.FRAMES
             val sand = P5Hourglass.sand(frame)
             val top = baseline - capH
             val px = Paint() // no anti-aliasing: these are hard pixels
