@@ -40,9 +40,7 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
     STATUS_BAR_ICON(
         "statusBarIcon", true, "Status bar indicator",
         "A small monochrome icon at the top of the screen while WebMChan is working: an hourglass " +
-            "during analysis, the percentage while encoding, plus paused, failed and finished icons. On " +
-            "Android 16 and up it also adds a short note beside it (video 1/2, Retry, Failed, Done) if " +
-            "Live Updates are allowed for the app.",
+            "during analysis, the percentage while encoding, plus paused, failed and finished icons.",
     ),
     NOTIFICATION_FINISHED(
         "notificationFinished", true, "Finished notification",
