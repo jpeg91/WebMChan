@@ -97,6 +97,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Bring back the queue and Finished list from last time (does nothing if already loaded).
         BatchRunner.restore(applicationContext)
+        // The on/off switches from the Settings page.
+        AppSettings.init(applicationContext)
         // The fitting numbers from About > Advanced (defaults unless changed).
         TuningStore.load(applicationContext)
         // Videos shared to us from another app. Skipped when the system recreates the activity,
@@ -108,9 +110,16 @@ class MainActivity : ComponentActivity() {
             P5Theme {
                 var showMenu by remember { mutableStateOf(false) }
                 var showHistory by remember { mutableStateOf(false) }
+                var showSettings by remember { mutableStateOf(false) }
                 var showLog by remember { mutableStateOf(false) }
                 var showAbout by remember { mutableStateOf(false) }
                 var showAdvanced by remember { mutableStateOf(false) }
+                // Keeps the screen on while a run is going (and the app is open), if the Settings page says so.
+                val keepOn = AppSettings.get(AppToggle.KEEP_SCREEN_ON) && BatchRunner.busy && !BatchRunner.paused
+                androidx.compose.runtime.DisposableEffect(keepOn) {
+                    if (keepOn) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    onDispose { window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+                }
                 // Every screen, including the main one, wraps itself in its own P5Background, which
                 // also keeps it clear of the status and navigation bars.
                 Box {
@@ -123,6 +132,7 @@ class MainActivity : ComponentActivity() {
                             MenuScreen(
                                 onBack = { showMenu = false },
                                 onHistory = { showHistory = true },
+                                onSettings = { showSettings = true },
                                 onLog = { showLog = true },
                                 onAbout = { showAbout = true },
                             )
@@ -130,6 +140,9 @@ class MainActivity : ComponentActivity() {
                     }
                     if (showHistory) {
                         P5Background { HistoryScreen(onBack = { showHistory = false }) }
+                    }
+                    if (showSettings) {
+                        P5Background { SettingsScreen(onBack = { showSettings = false }) }
                     }
                     if (showLog) {
                         P5Background { LogScreen(onBack = { showLog = false }) }
@@ -327,7 +340,7 @@ private fun RunPercent(item: QueueItem) {
         (BatchRunner.progress.coerceIn(0f, 1f) * 100f).toInt()
     } else null
     // The hourglass (no percentage yet) stands still while the video is paused.
-    P5Percent(value, frozen = BatchRunner.pausedItemId == item.id)
+    P5Percent(value, frozen = BatchRunner.pausedItemId == item.id || AppSettings.get(AppToggle.ANIMATIONS_OFF))
 }
 
 @Composable
@@ -382,6 +395,8 @@ internal fun QueueRow(
     var renameError by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
+    var showRemove by remember { mutableStateOf(false) }
+    val removeCard = { if (inHistory) BatchRunner.removeFromHistory(item.id) else BatchRunner.removeFinished(item.id) }
 
     // Tapping the thumbnail plays the video: the converted file on a Finished card, the original
     // on a queue card. Nothing to play if the file is gone or the original couldn't be read.
@@ -415,8 +430,10 @@ internal fun QueueRow(
     }
     var runPhase by remember { mutableFloatStateOf(0f) }
     // Moves only while converting, so when paused it stops where it is and carries on from there.
-    LaunchedEffect(converting) {
-        if (converting) {
+    // The Settings page's "Animations off": no running light, no flash or shake, a still hourglass.
+    val still = AppSettings.get(AppToggle.ANIMATIONS_OFF)
+    LaunchedEffect(converting, still) {
+        if (converting && !still) {
             var last = System.nanoTime()
             while (isActive) {
                 delay(16)
@@ -432,8 +449,8 @@ internal fun QueueRow(
     }
     var amber by remember { mutableFloatStateOf(0f) }
     var lastAttempt by remember { mutableIntStateOf(0) }
-    LaunchedEffect(attempt, converting) {
-        if (converting && attempt > 1 && attempt > lastAttempt) {
+    LaunchedEffect(attempt, converting, still) {
+        if (converting && !still && attempt > 1 && attempt > lastAttempt) {
             val start = System.nanoTime()
             try {
                 while (true) {
@@ -455,14 +472,14 @@ internal fun QueueRow(
     LaunchedEffect(item.id) {
         val ev = BatchRunner.cardEvents[item.id] ?: return@LaunchedEffect
         BatchRunner.cardEvents.remove(item.id)
-        if (SystemClock.elapsedRealtime() - ev.at < 4000L) playCardEvent(fx, ev.kind)
+        if (!still && SystemClock.elapsedRealtime() - ev.at < 4000L) playCardEvent(fx, ev.kind)
     }
 
     val warnColor = MaterialTheme.colorScheme.tertiary
     P5Card(
         Modifier.fillMaxWidth(),
         accent = accent,
-        runBorder = if (converting || pausedHere) runBorder else null,
+        runBorder = if ((converting || pausedHere) && !still) runBorder else null,
         fx = fx,
         sweep = sweep,
     ) {
@@ -807,14 +824,20 @@ internal fun QueueRow(
                     if (saved != null) {
                         P5Button(
                             "Delete file",
-                            onClick = { showDelete = true },
+                            onClick = {
+                                if (AppSettings.get(AppToggle.CONFIRM_DESTRUCTIVE)) showDelete = true
+                                else scope.launch {
+                                    val err = BatchRunner.deleteFinishedFile(ctx, item.id)
+                                    if (err != null) Toast.makeText(ctx, err, Toast.LENGTH_SHORT).show()
+                                }
+                            },
                             kind = P5Kind.Secondary,
                             modifier = Modifier.weight(1f),
                         )
                     }
                     P5Button(
                         if (inHistory) "Remove from history" else "Remove card",
-                        onClick = { if (inHistory) BatchRunner.removeFromHistory(item.id) else BatchRunner.removeFinished(item.id) },
+                        onClick = { if (AppSettings.get(AppToggle.CONFIRM_DESTRUCTIVE)) showRemove = true else removeCard() },
                         kind = P5Kind.Secondary,
                         modifier = Modifier.weight(1f),
                     )
@@ -901,6 +924,20 @@ internal fun QueueRow(
                 )
             },
             dismissButton = { P5Button("Cancel", onClick = { showDelete = false }, kind = P5Kind.Ghost) },
+        )
+    }
+
+    if (showRemove) {
+        AlertDialog(
+            onDismissRequest = { showRemove = false },
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text((if (inHistory) "Remove from history" else "Remove card").uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = { Text("The saved video isn't touched.") },
+            confirmButton = { P5Button("Remove", onClick = { showRemove = false; removeCard() }) },
+            dismissButton = { P5Button("Cancel", onClick = { showRemove = false }, kind = P5Kind.Ghost) },
         )
     }
 }
@@ -1091,7 +1128,7 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
     // in list order (the one lowest on screen).
     // While a batch runs, every waiting video has a soft band moving down its background (one
     // shared clock, so they move together); the next one also has the NEXT tag.
-    val sweeping = section == CardSection.QUEUE && busy && !BatchRunner.paused
+    val sweeping = section == CardSection.QUEUE && busy && !BatchRunner.paused && !AppSettings.get(AppToggle.ANIMATIONS_OFF)
     var sweepPhase by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(sweeping) {
         if (sweeping) {
@@ -1160,6 +1197,21 @@ fun App(onMenu: () -> Unit = {}) {
     val probing = BatchRunner.probing
     val copyingTotal = BatchRunner.copyingTotal
     val cancelling = BatchRunner.cancelling
+    // Cancel / Cancel all asks first, unless Settings says not to (see AppToggle.CONFIRM_DESTRUCTIVE).
+    var showCancelConfirm by remember { mutableStateOf(false) }
+    if (showCancelConfirm) {
+        AlertDialog(
+            onDismissRequest = { showCancelConfirm = false },
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Cancel conversion".uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = { Text("Stop converting? The video being converted stops and the rest of the run is dropped. Parts already saved are kept.") },
+            confirmButton = { P5Button("Cancel it", onClick = { showCancelConfirm = false; BatchRunner.cancelAll() }) },
+            dismissButton = { P5Button("Keep going", onClick = { showCancelConfirm = false }, kind = P5Kind.Ghost) },
+        )
+    }
     val paused = BatchRunner.paused
     val pauseRequest = BatchRunner.pauseRequest
     val notice = BatchRunner.notice
@@ -1874,7 +1926,7 @@ fun App(onMenu: () -> Unit = {}) {
                 }
                 P5Button(
                     if (runTotal > 1) "Cancel all" else "Cancel",
-                    onClick = { BatchRunner.cancelAll() },
+                    onClick = { if (AppSettings.get(AppToggle.CONFIRM_DESTRUCTIVE)) showCancelConfirm = true else BatchRunner.cancelAll() },
                     kind = P5Kind.Secondary,
                     dense = true,
                 )
