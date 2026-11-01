@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.Typeface
+import android.os.SystemClock
 import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.toArgb
 import kotlin.math.ceil
@@ -16,7 +17,8 @@ import kotlin.math.ceil
  * (see theme.kt), because a notification can't use Compose and RemoteViews can't outline text or
  * draw slanted shapes. They are small bitmaps, redrawn each time the notification updates (about
  * once a second).
- *  - [percent] is the red 💯-style counter ([P5Percent]).
+ *  - [percent] is the red 💯-style counter ([P5Percent]), or the pixel hourglass ([P5Hourglass]) while
+ *    there is no percentage yet.
  *  - [progressBar] is the slanted candy-striped bar ([P5Progress]).
  */
 internal object NotificationArt {
@@ -36,29 +38,33 @@ internal object NotificationArt {
 
     /**
      * The big percentage: heavy red italic digits tilted a little, a white outline, a hard black
-     * shadow and two slanted underlines. [value] null shows dashes, dimmed (the first pass has no
-     * percentage), exactly as [P5Percent] does.
+     * shadow and two slanted underlines. [value] null (no percentage yet) shows the animated
+     * hourglass instead, exactly as [P5Percent] does; its frame comes from the clock, so each
+     * update of the notification shows the next step.
      */
     fun percent(ctx: Context, value: Int?): Bitmap {
         val d = ctx.resources.displayMetrics.density
-        val digits = value?.coerceIn(0, 100)?.toString() ?: "--"
-        val fill = (if (value != null) P5.Red else P5.RedDeep).toArgb()
-        val outline = (if (value != null) P5.White else P5.GreyDim).toArgb()
+        val hourglass = value == null
+        val digits = value?.coerceIn(0, 100)?.toString() ?: ""
+        val fill = P5.Red.toArgb()
+        val outline = P5.White.toArgb()
 
         val bigSize = 26f
         val smallSize = 14f
         val bigStroke = 2.6f
         val smallStroke = 2f
 
-        val digitsW = textPaint(bigSize, d, fill, 0f).measureText(digits)
-        val pctW = textPaint(smallSize, d, fill, 0f).measureText("%")
         val bounds = Rect()
         textPaint(bigSize, d, fill, 0f).getTextBounds("0", 0, 1, bounds)
         val capH = bounds.height().toFloat()
+        // The hourglass is as tall as the digits would be, and as wide as it is tall.
+        val cell = capH / P5Hourglass.SIZE
+        val digitsW = if (hourglass) capH else textPaint(bigSize, d, fill, 0f).measureText(digits)
+        val pctW = if (hourglass) 0f else textPaint(smallSize, d, fill, 0f).measureText("%")
 
         val padX = 5f * d
         val padY = 5f * d
-        val gap = 1f * d
+        val gap = if (hourglass) 0f else 1f * d
         val shadow = 1.5f * d
         val barH = 2f * d
         val barGap = 1.5f * d
@@ -81,13 +87,33 @@ internal object NotificationArt {
         val pctX = digitsX + digitsW + gap
         val pctBaseline = baseline - 2f * d
 
-        // Hard shadow, white outline, then the red fill on top.
-        c.drawText(digits, digitsX + shadow, baseline + shadow, textPaint(bigSize, d, Color.BLACK, bigStroke))
-        c.drawText(digits, digitsX, baseline, textPaint(bigSize, d, outline, bigStroke))
-        c.drawText(digits, digitsX, baseline, textPaint(bigSize, d, fill, 0f))
-        c.drawText("%", pctX + shadow, pctBaseline + shadow, textPaint(smallSize, d, Color.BLACK, smallStroke))
-        c.drawText("%", pctX, pctBaseline, textPaint(smallSize, d, outline, smallStroke))
-        c.drawText("%", pctX, pctBaseline, textPaint(smallSize, d, fill, 0f))
+        if (hourglass) {
+            // Hard shadow, white glass, then the red sand, in the place the digits would take.
+            val frame = ((SystemClock.elapsedRealtime() / 500L) * 2L).toInt() % P5Hourglass.FRAMES
+            val sand = P5Hourglass.sand(frame)
+            val top = baseline - capH
+            val px = Paint() // no anti-aliasing: these are hard pixels
+            fun draw(cells: List<Pair<Int, Int>>, argb: Int, dx: Float) {
+                px.color = argb
+                for ((col, row) in cells) {
+                    val x = digitsX + col * cell + dx
+                    val y = top + row * cell + dx
+                    c.drawRect(x, y, x + cell, y + cell, px)
+                }
+            }
+            draw(P5Hourglass.outline, Color.BLACK, shadow)
+            draw(sand, Color.BLACK, shadow)
+            draw(P5Hourglass.outline, outline, 0f)
+            draw(sand, fill, 0f)
+        } else {
+            // Hard shadow, white outline, then the red fill on top.
+            c.drawText(digits, digitsX + shadow, baseline + shadow, textPaint(bigSize, d, Color.BLACK, bigStroke))
+            c.drawText(digits, digitsX, baseline, textPaint(bigSize, d, outline, bigStroke))
+            c.drawText(digits, digitsX, baseline, textPaint(bigSize, d, fill, 0f))
+            c.drawText("%", pctX + shadow, pctBaseline + shadow, textPaint(smallSize, d, Color.BLACK, smallStroke))
+            c.drawText("%", pctX, pctBaseline, textPaint(smallSize, d, outline, smallStroke))
+            c.drawText("%", pctX, pctBaseline, textPaint(smallSize, d, fill, 0f))
+        }
 
         // The two underlines, the lower one shorter and pushed right.
         val slant = 3.4f * d
