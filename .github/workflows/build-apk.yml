@@ -1,4 +1,3 @@
-
 name: Build WebMChan APK
 
 on:
@@ -37,6 +36,10 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+
+      # The editor's cut and crop logic (EditSpecTest). If a test fails, the job stops here and no APK is built.
+      - name: Run unit tests
+        run: gradle --no-daemon testDebugUnitTest
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
