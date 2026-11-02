@@ -6,6 +6,9 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.SystemClock
@@ -28,9 +31,10 @@ enum class StatusIcon { WORKING, PAUSED, DONE, FAILED }
 internal object NotificationArt {
     // ---- Status bar icons ----
     // Android only uses the shape of a status bar icon (opaque or not) and tints it itself, so these
-    // are plain white pixels on transparent. Drawn in the same pixel style as the hourglass.
+    // are plain white shapes on transparent, with a fainter white for the glass of the hourglass.
+    // Drawn on a 72 x 72 grid scaled to the icon (24 dp), in the app's slanted style.
 
-    /** A 3 x 5 pixel digit font (1 = pixel). */
+    /** A 3 x 5 digit font (1 = block), drawn slanted. */
     private val DIGITS = mapOf(
         '0' to "111101101101111", '1' to "010110010010111", '2' to "111001111100111",
         '3' to "111001111001111", '4' to "101101111001001", '5' to "111100111001111",
@@ -38,76 +42,118 @@ internal object NotificationArt {
         '9' to "111101111001111",
     )
 
-    private fun rows(vararg lines: String): List<Pair<Int, Int>> =
-        lines.flatMapIndexed { r, line -> line.mapIndexedNotNull { c, ch -> if (ch == 'X') c to r else null } }
-
-    private val TICK = rows(
-        ".........XX",
-        "........XXX",
-        ".......XXX.",
-        "XX....XXX..",
-        "XXX..XXX...",
-        ".XXXXXX....",
-        "..XXXX.....",
-        "...XX......",
-    )
-    private val PAUSE = rows(
-        ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.",
-        ".XXX...XXX.", ".XXX...XXX.", ".XXX...XXX.",
-    )
-    private val BANG = rows(
-        "....XXX....", "....XXX....", "....XXX....", "....XXX....", "....XXX....", "....XXX....",
-        "...........", "....XXX....", "....XXX....",
-    )
-
     /**
-     * The status bar icon, 24 dp square. WORKING is the pixel hourglass while there is no [percent],
-     * otherwise the percent as two blocky digits (up to 99); the others are a pause sign, a tick
-     * and an exclamation mark. The hourglass's frame comes from the clock, or stays at the first
-     * frame when animations are off.
+     * The status bar icon, 24 dp square. WORKING is the hourglass while there is no [percent],
+     * otherwise the percent as two big slanted digits (up to 99) over a slanted underline, like the
+     * readout on the card. PAUSED, DONE and FAILED are slanted pause bars, a tick and a starburst
+     * with an exclamation mark. The hourglass's sand level comes from the clock, or stays full when
+     * animations are off.
      */
     fun statusIcon(ctx: Context, kind: StatusIcon, percent: Int? = null): Bitmap {
         val size = (24f * ctx.resources.displayMetrics.density).toInt().coerceAtLeast(24)
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
-        val paint = Paint().apply { color = Color.WHITE } // not anti-aliased: hard pixels
-        fun grid(cells: List<Pair<Int, Int>>, cols: Int, rowCount: Int) {
-            val cell = (size / maxOf(cols, rowCount)).coerceAtLeast(1)
-            val ox = (size - cols * cell) / 2
-            val oy = (size - rowCount * cell) / 2
-            for ((col, row) in cells) {
-                val x = (ox + col * cell).toFloat()
-                val y = (oy + row * cell).toFloat()
-                c.drawRect(x, y, x + cell, y + cell, paint)
-            }
+        c.scale(size / 72f, size / 72f)
+        val solid = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        val faint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 255, 255, 255) }
+        fun poly(paint: Paint, vararg xy: Float) {
+            val path = Path()
+            path.moveTo(xy[0], xy[1])
+            for (i in 2 until xy.size step 2) path.lineTo(xy[i], xy[i + 1])
+            path.close()
+            c.drawPath(path, paint)
         }
         when (kind) {
             StatusIcon.WORKING -> if (percent == null) {
+                // 16 frames: the sand runs from the top bulb to the bottom one, then it starts again.
                 val frame = if (AppSettings.get(AppToggle.ANIMATIONS_OFF)) 0
                     else ((SystemClock.elapsedRealtime() / 500L) * 2L).toInt() % P5Hourglass.FRAMES
-                grid(P5Hourglass.outline + P5Hourglass.sand(frame), P5Hourglass.SIZE, P5Hourglass.SIZE)
+                val left = if (frame >= 15) 0f else 1f - frame / 15f // how much sand is still in the top
+                val cx = 36f
+                fun half(y: Float) = if (y < 36f) 20f - (y - 9f) / 27f * 17f else 3f + (y - 36f) / 27f * 17f
+                // The glass, faintly, then the sand and a thin stream.
+                poly(faint, cx - 20, 9f, cx + 20, 9f, cx + 3, 36f, cx + 20, 63f, cx - 20, 63f, cx - 3, 36f)
+                if (left > 0.02f) {
+                    val y = 9f + (1f - left) * 25f
+                    poly(solid, cx - half(y) + 2.5f, y, cx + half(y) - 2.5f, y, cx + 1.5f, 35f, cx - 1.5f, 35f)
+                }
+                val low = 1f - left
+                if (low > 0.02f) {
+                    val y = 62f - low * 25f
+                    poly(solid, cx - half(y) + 2.5f, y, cx + half(y) - 2.5f, y, cx + 17.5f, 62f, cx - 17.5f, 62f)
+                    if (left > 0.02f) poly(solid, cx - 1.2f, 36f, cx + 1.2f, 36f, cx + 1.2f, y, cx - 1.2f, y)
+                }
+                // The slanted caps and the glass's edges.
+                poly(solid, cx - 27, 2f, cx + 27, 2f, cx + 24, 9f, cx - 30, 9f)
+                poly(solid, cx - 27, 63f, cx + 27, 63f, cx + 24, 70f, cx - 30, 70f)
+                val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 3.2f; strokeJoin = Paint.Join.MITER
+                }
+                val l = Path().apply { moveTo(cx - 19f, 9f); lineTo(cx - 3f, 36f); lineTo(cx - 19f, 63f) }
+                val r = Path().apply { moveTo(cx + 19f, 9f); lineTo(cx + 3f, 36f); lineTo(cx + 19f, 63f) }
+                c.drawPath(l, edge)
+                c.drawPath(r, edge)
             } else {
+                // Big slanted digits over one slanted underline, using as much of the icon as they can.
                 val text = percent.coerceIn(0, 99).toString()
                 val n = text.length
-                val ch = size * 0.86f / 5f
-                val cw = minOf(size / (n * 3f + (n - 1)), ch * 0.9f)
-                val totalW = (n * 3 + (n - 1)) * cw
-                val left = (size - totalW) / 2f
-                val top = (size - 5 * ch) / 2f
+                val slant = 0.22f
+                val top = 3.5f
+                val height = 50f
+                val rowH = height / 5f
+                val cw = if (n == 1) 12f else 8.8f
+                val gap = cw * 0.6f
+                val textW = n * 3 * cw + (n - 1) * gap
+                val lean = height * slant
+                val left = (72f - (textW + lean)) / 2f
+                val bottom = top + height
+                val path = Path()
                 for ((k, digit) in text.withIndex()) {
                     val bits = DIGITS[digit] ?: continue
-                    val x0 = left + k * 4 * cw
+                    val x0 = left + k * (3 * cw + gap)
                     for (i in bits.indices) {
                         if (bits[i] != '1') continue
                         val x = x0 + (i % 3) * cw
-                        val y = top + (i / 3) * ch
-                        c.drawRect(x, y, x + cw, y + ch, paint)
+                        val y0 = top + (i / 3) * rowH
+                        val y1 = y0 + rowH + 0.3f // a touch of overlap, so no seams show
+                        val s0 = (bottom - y0) * slant
+                        val s1 = (bottom - y1) * slant
+                        path.moveTo(x + s0, y0)
+                        path.lineTo(x + cw + s0 + 0.3f, y0)
+                        path.lineTo(x + cw + s1 + 0.3f, y1)
+                        path.lineTo(x + s1, y1)
+                        path.close()
                     }
                 }
+                c.drawPath(path, solid)
+                val u0 = bottom + 5f
+                val u1 = u0 + 8f
+                poly(solid, left + 6f, u0, left + textW + lean, u0, left + textW + lean - 6f, u1, left, u1)
             }
-            StatusIcon.PAUSED -> grid(PAUSE, 11, 9)
-            StatusIcon.DONE -> grid(TICK, 11, 8)
-            StatusIcon.FAILED -> grid(BANG, 11, 9)
+            StatusIcon.PAUSED -> {
+                poly(solid, 18.5f, 4f, 35.5f, 4f, 27.5f, 68f, 10.5f, 68f)
+                poly(solid, 44.5f, 4f, 61.5f, 4f, 53.5f, 68f, 36.5f, 68f)
+            }
+            StatusIcon.DONE -> {
+                poly(solid, 5f, 40f, 16f, 30f, 31f, 47f, 31f, 59f)
+                poly(solid, 26f, 59f, 34f, 48f, 70f, 8f, 70f, 22f)
+            }
+            StatusIcon.FAILED -> {
+                // A jagged starburst with the exclamation mark cut out of it.
+                val burst = Path()
+                for (i in 0 until 16) {
+                    val radius = if (i % 2 == 0) 35f else 22f
+                    val angle = Math.PI * 2 * i / 16 - Math.PI / 2 + 0.1
+                    val x = 36f + radius * Math.cos(angle).toFloat()
+                    val y = 36f + radius * Math.sin(angle).toFloat()
+                    if (i == 0) burst.moveTo(x, y) else burst.lineTo(x, y)
+                }
+                burst.close()
+                c.drawPath(burst, solid)
+                val cut = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
+                poly(cut, 31f, 15f, 41f, 15f, 39f, 43f, 33f, 43f)
+                poly(cut, 32f, 48f, 40f, 48f, 40f, 56f, 32f, 56f)
+            }
         }
         return bmp
     }
