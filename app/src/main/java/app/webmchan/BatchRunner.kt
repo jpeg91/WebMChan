@@ -77,6 +77,13 @@ data class QueueItem(
      * screen moves everything ready from the pen to the queue (starting the batch if none is running).
      */
     val inPen: Boolean = false,
+    /**
+     * The edit made in the editor (cuts and crop), or null for none. It belongs to this card: the
+     * source video is never changed, and the conversion reads the edit. Only a card in the Holding
+     * Pen can be edited; it stays through the queue and comes back with the card if it is returned to
+     * the pen. A fresh card made from the same video starts without one.
+     */
+    val edit: EditSpec? = null,
 )
 
 /**
@@ -444,7 +451,8 @@ object BatchRunner {
                         status = ItemStatus.FAILED,
                         detail = "This video isn't accessible any more. Remove it and add it again.",
                     )
-                } else if (item.info == null) {
+                } else if (item.info == null || item.info.probeVersion < SourceInfo.PROBE_VERSION) {
+                    // Never probed, or probed by an older version that read a sideways video's size the wrong way round.
                     toProbe.add(id)
                 }
             }
@@ -454,8 +462,10 @@ object BatchRunner {
                 val err = if (i == null) Converter.lastProbeError else null
                 val at = queue.indexOfFirst { it.id == id }
                 if (at >= 0) {
-                    queue[at] = queue[at].copy(info = i, probeFailed = i == null)
-                    if (err != null) queue[at] = queue[at].copy(status = ItemStatus.FAILED, detail = err)
+                    // A video that was read fine before and can't be now keeps what it had.
+                    val keepOld = i == null && item.info != null
+                    queue[at] = queue[at].copy(info = i ?: item.info, probeFailed = i == null && !keepOld)
+                    if (err != null && !keepOld) queue[at] = queue[at].copy(status = ItemStatus.FAILED, detail = err)
                 }
             }
 
@@ -673,6 +683,38 @@ object BatchRunner {
         val ctx = appContext ?: return
         val keep = (queue.map { it.uri.toString() } + finished.map { it.uri.toString() }).toSet()
         scope.launch(Dispatchers.IO) { Converter.pruneAnalysis(ctx, keep) }
+    }
+
+    // ---- The video editor ----
+
+    /** The card open in the editor (see EditorScreen), or -1 when it isn't open. Not saved. */
+    var editingId by mutableLongStateOf(-1L)
+        private set
+
+    /**
+     * The settings the Holding Pen is currently following, kept up to date by the main screen so the
+     * editor can show what an edit would do to the conversion. null before the main screen has drawn.
+     */
+    var liveSettings by mutableStateOf<Settings?>(null)
+
+    /** Opens the editor for a card in the Holding Pen. Nothing else can be edited. */
+    fun openEditor(id: Long) {
+        val item = queue.firstOrNull { it.id == id } ?: return
+        if (!item.inPen || item.info == null || item.probeFailed) return
+        editingId = id
+    }
+
+    fun closeEditor() {
+        editingId = -1L
+    }
+
+    /** Saves (or, with null, removes) the edit on a Holding Pen card. */
+    fun setEdit(id: Long, edit: EditSpec?) {
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0 || !queue[at].inPen) return
+        if (queue[at].edit == edit) return
+        queue[at] = queue[at].copy(edit = edit)
+        persist()
     }
 
     // ---- Editing the queue (the UI disables these while a batch is running) ----
@@ -1231,7 +1273,10 @@ object BatchRunner {
                 val idx = queue.indexOfFirst { it.id == id }
                 if (idx < 0) continue
                 val item = queue[idx]
-                val src = item.info ?: continue
+                val sourceInfo = item.info ?: continue
+                // An edited video is planned, split and converted as the video the edit makes: its
+                // length and (cropped) size stand in for the source's everywhere below.
+                val src = item.edit?.effectiveInfo(sourceInfo) ?: sourceInfo
                 // This video's own settings (the Advanced tuning always comes from the run).
                 val settings = item.settings?.copy(tuning = startSettings.tuning) ?: startSettings
 
@@ -1350,6 +1395,7 @@ object BatchRunner {
                         val res = Converter.convert(
                             ctx, staged!!, src, settings,
                             startSec = startSec, clipDurationSec = clipDur,
+                            edit = item.edit,
                             sourceId = item.uri.toString(),
                             onLog = { line -> logBuffer.add(line) { logLines = it } },
                         ) { p, s ->
@@ -1603,7 +1649,8 @@ object BatchRunner {
             String.format(Locale.US, "%.2f", src.fps).trimEnd('0').trimEnd('.') + " fps"
         } else "fps unreadable"
         val sourceLine = "${src.width}×${src.height}, ${String.format(Locale.US, "%.1f", src.durationSec)}s, " +
-            "$fpsText, ${if (src.hasAudio) "has audio" else "no audio"}"
+            "$fpsText, ${if (src.hasAudio) "has audio" else "no audio"}" +
+            (item.edit?.let { " (edited: ${it.describe()})" } ?: "")
         conversionLogs.add(
             ConversionLog(
                 id = item.id,

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Keep converting with the screen off or the app closed (see ConvertService). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -7,6 +8,10 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Android 13+: needed to show the progress notification. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- WebMChan has no network access. Should any library (such as the editor's preview player)
+         ever declare the INTERNET permission, this removes it from the finished app. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
 
     <application
         android:allowBackup="false"

@@ -11,6 +11,7 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
+import com.arthenica.ffmpegkit.StreamInformation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -49,7 +50,21 @@ data class SourceInfo(
     val videoKbps: Int = 0,
     /** The ffprobe codec name of the first audio stream, e.g. "aac"; empty when none or not known. */
     val audioCodec: String = "",
-)
+    /**
+     * Which version of the probe read this (see [PROBE_VERSION]). A saved card with an older one
+     * is probed again when the app starts.
+     */
+    val probeVersion: Int = PROBE_VERSION,
+) {
+    companion object {
+        /**
+         * 2: [width] and [height] are the picture as played, so a phone video stored sideways and
+         * flagged "rotate 90" reads as portrait. Version 1 gave the stored size, which is the wrong
+         * way round for those and made their size and aspect ratio come out wrong.
+         */
+        const val PROBE_VERSION = 2
+    }
+}
 
 data class Settings(
     val limitBytes: Long,
@@ -553,6 +568,9 @@ object Converter {
                 "video" -> if (w == 0) {
                     w = s.width?.toInt() ?: 0
                     h = s.height?.toInt() ?: 0
+                    // A phone video is often stored sideways with a "rotate" flag; ffmpeg (and every
+                    // player) turns it upright, so the size that matters is the one after that turn.
+                    if (rotationOf(s) % 180 == 90) { val t = w; w = h; h = t }
                     val parsed = parseRate(s.averageFrameRate)
                     fpsReadable = parsed != null
                     fps = parsed ?: 30.0
@@ -575,6 +593,30 @@ object Converter {
             videoKbps = vKbps,
             audioCodec = aCodec,
         )
+    }
+
+    /**
+     * How far the video stream must be turned clockwise to play upright: 0, 90, 180 or 270. Newer
+     * files carry it as a display matrix ("side_data_list", where the angle is anticlockwise, so it
+     * comes out negative for a clockwise turn); older ones as a "rotate" tag. 0 when there is none.
+     */
+    private fun rotationOf(s: StreamInformation): Int = try {
+        val props = s.allProperties
+        var degrees = 0.0
+        props?.optJSONObject("tags")?.optString("rotate", "")?.toDoubleOrNull()?.let { degrees = it }
+        val sideData = props?.optJSONArray("side_data_list")
+        if (sideData != null) {
+            for (n in 0 until sideData.length()) {
+                val o = sideData.optJSONObject(n) ?: continue
+                if (o.has("rotation")) {
+                    // ffprobe's sign is the reverse of the tag's.
+                    degrees = -o.optDouble("rotation", 0.0)
+                }
+            }
+        }
+        (((Math.round(degrees).toInt() % 360) + 360) % 360)
+    } catch (_: Exception) {
+        0
     }
 
     /** ffprobe's format list (e.g. "mov,mp4,m4a,3gp,3g2,mj2") as one readable name. */
@@ -771,6 +813,12 @@ object Converter {
          *  the caller for a split part, so each part gets an exact slice regardless of the limit. */
         clipDurationSec: Double? = null,
         /**
+         * The edit made on the card (cuts and crop), or null for none. When set, [src] must be the
+         * EDITED video's info (see [EditSpec.effectiveInfo]) and [startSec] and [clipDurationSec] are
+         * times in the edited video; the pieces of [input] they stand for come from [EditSpec.slicesFor].
+         */
+        edit: EditSpec? = null,
+        /**
          * Which video this is (its address), so the pass-1 analysis can be kept and reused by any later
          * conversion of the same video (see [Pass1Files]). Blank = the analysis is thrown away when this
          * conversion ends.
@@ -790,6 +838,17 @@ object Converter {
             val duration = clipDurationSec ?: min(remaining, effMax)
             val trimmed = clipDurationSec == null && src.durationSec > effMax
             val audioOn = settings.keepAudio && src.hasAudio
+
+            // The pieces of the source to encode. Without an edit that is one piece: this clip.
+            val slices: List<EditSlice> =
+                if (edit != null) edit.slicesFor(startSec, duration) else listOf(EditSlice(startSec, duration))
+            if (slices.isEmpty()) {
+                return@withContext ConvertResult.Fail("The edit leaves nothing to convert for this part.")
+            }
+            // More than one piece is joined by a filter graph (see [joinGraph]); one piece is encoded
+            // exactly as a video without an edit is.
+            val multi = slices.size > 1
+            val cropFilter = edit?.crop?.let { "crop=${it.w}:${it.h}:${it.x}:${it.y}" }
 
             // The frame rate cap. The fps filter is only added when the source is faster than it
             // (with half a frame of leeway, so 29.97 and 59.94 sources aren't touched by a 30 or
@@ -865,7 +924,7 @@ object Converter {
             val audioRates = HashMap<Int, Int>()
             fun audioRateFor(kbps: Int): Int =
                 if (kbps >= DEFAULT_AUDIO_KBPS) 0
-                else audioRates.getOrPut(kbps) { findAudioRate(input, startSec, kbps, onLog) }
+                else audioRates.getOrPut(kbps) { findAudioRate(input, slices.first().startSec, kbps, onLog) }
 
             // What Vorbis really produces is off the nominal figure at every setting (about 22 kbps for
             // a 16 kbps setting, about 30 for 32, about 56 for 64), and at the first attempt that error
@@ -877,7 +936,7 @@ object Converter {
                 val measureHz = audioRateFor(normalAudioKbps)
                 if (measureHz == AUDIO_RATE_CANCELLED) return@withContext ConvertResult.Cancelled
                 if (measureHz >= 0) {
-                    audioBytes = measureAudioBytes(input, startSec, duration, normalAudioKbps, measureHz, File(ctx.cacheDir, "audioprobe.webm"))
+                    audioBytes = measureSlicesAudioBytes(input, slices, normalAudioKbps, measureHz, File(ctx.cacheDir, "audioprobe.webm"))
                     if (audioBytes == MEASURE_CANCELLED) return@withContext ConvertResult.Cancelled
                     if (audioBytes > 0) {
                         onLog(
@@ -989,6 +1048,8 @@ object Converter {
                 lastKbps = vKbps
 
                 val filters = buildList {
+                    // The crop comes first, so every later step (frame rate, size) works on the cropped picture.
+                    if (cropFilter != null) add(cropFilter)
                     if (reduceFps) add("fps=$fpsCap")
                     if (settings.hasCustomSize) {
                         add(customScaleFilter(settings.customWidth, settings.customHeight))
@@ -1008,8 +1069,11 @@ object Converter {
                 // aimed for. The analysis is therefore named after the video and everything that shapes
                 // the picture it sees (filters, codec, start, length, encoder effort), and any attempt or
                 // later conversion that asks for the same picture goes straight to pass 2 on it.
+                // An edit changes which frames are seen, and (with several clips) the sound is part of the
+                // graph the analysis runs on, so both go into the key.
+                val editKey = if (edit != null) "|edit=${edit.signature()}|audio=$audioOn" else ""
                 val pictureKey = "$filters|vp9=${settings.useVp9}|start=${"%.3f".format(java.util.Locale.US, startSec)}" +
-                    "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}"
+                    "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}" + editKey
                 val pass1Key = "$sourceKey\n$pictureKey"
                 val pass1 = pass1FilesFor(ctx, pass1Key)
                 usedPass1 = pass1
@@ -1019,15 +1083,33 @@ object Converter {
                 // input, where it limits the decoder, and once after it, where it limits the encoder.
                 val threadArgs = if (t.maxThreads > 0) listOf("-threads", t.maxThreads.toString()) else emptyList()
 
-                val common = listOf("-hide_banner", "-y") +
+                // Where the picture comes from. One piece (every video without an edit, and a trim or
+                // crop alone): read as before, with the filters applied by -vf. Several pieces: one input
+                // per piece, joined by a filter graph that also applies the filters (see [joinGraph]).
+                // Both passes use the same graph, sound included, so pass 2 sees the frames pass 1 analysed.
+                val sourceArgs: List<String> = if (!multi) {
                     // Input seeking: fast (keyframe-based demux seek), and still frame-accurate
                     // because we're re-encoding rather than stream-copying.
-                    (if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()) +
-                    threadArgs +
-                    listOf(
-                        "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, duration),
+                    seekArgs(slices[0].startSec) + threadArgs + listOf(
+                        "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, slices[0].durationSec),
                         "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
                         "-vf", filters,
+                    )
+                } else {
+                    slices.flatMap { sl ->
+                        seekArgs(sl.startSec) + threadArgs + listOf(
+                            "-t", "%.3f".format(java.util.Locale.US, sl.durationSec), "-i", input.absolutePath,
+                        )
+                    } + listOf(
+                        "-t", "%.3f".format(java.util.Locale.US, slices.sumOf { it.durationSec }),
+                        "-filter_complex", joinGraph(slices, filters, audioOn),
+                        "-map", "[vout]", "-sn", "-dn", "-map_metadata", "-1",
+                    )
+                }
+
+                val common = listOf("-hide_banner", "-y") +
+                    sourceArgs +
+                    listOf(
                         "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
                         "-deadline", "good", "-cpu-used", cpuUsed,
                         "-lag-in-frames", lagFrames,
@@ -1061,6 +1143,13 @@ object Converter {
                         (if (audioOn) " + ${audioLabel(audioKbps)} audio" else ", no audio") +
                         (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
+                if (edit != null) {
+                    onLog(
+                        "   edit: ${edit.describe()}; this part is " + slices.joinToString(" + ") {
+                            "%.2fs from %.2fs".format(java.util.Locale.US, it.durationSec, it.startSec)
+                        } + " of the source"
+                    )
+                }
                 onLog("   filters: $filters")
                 onLog(
                     (if (src.fpsReadable) "   frame rate: source %.2f fps, cap $fpsCap fps, ".format(java.util.Locale.US, src.fps)
@@ -1097,9 +1186,12 @@ object Converter {
                     // leaves a half-written file with no "ok" mark). The "src" mark says whose it is.
                     pass1.invalidate()
                     try { pass1.src.writeText(sourceId.ifBlank { "tmp" }) } catch (_: Exception) { }
-                    val p1 = FFmpegKit.executeWithArguments(
-                        (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
-                    )
+                    // Joined clips: the graph has a sound output, which has to go somewhere, so it is
+                    // mapped and thrown away (the analysis itself only looks at the picture).
+                    val pass1Out = if (multi && audioOn) {
+                        listOf("-pass", "1", "-map", "[aout]", "-c:a", "pcm_s16le", "-f", "null", "/dev/null")
+                    } else listOf("-pass", "1", "-an", "-f", "null", "/dev/null")
+                    val p1 = FFmpegKit.executeWithArguments((common + pass1Out).toTypedArray())
                     if (ReturnCode.isCancel(p1.returnCode)) return@withContext ConvertResult.Cancelled
                     if (!ReturnCode.isSuccess(p1.returnCode)) {
                         // A failed attempt shouldn't throw away a good result from an earlier one.
@@ -1116,7 +1208,7 @@ object Converter {
                 onProgress(0f, "Attempt $attempt/$maxAttempts, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
                 pass2Stats()
                 val audioArgs = if (audioOn) {
-                    listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString()) +
+                    listOf("-map", if (multi) "[aout]" else "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString()) +
                         (if (audioHz > 0) listOf("-ar", audioHz.toString()) else emptyList())
                 } else listOf("-an")
                 val p2 = FFmpegKit.executeWithArguments(
@@ -1499,6 +1591,54 @@ object Converter {
         }
         probeOut.delete()
         return bytes
+    }
+
+    /**
+     * The audio of every piece of an edit, measured one piece at a time and added up (each piece is a
+     * separate short encode, so the total is a touch on the high side, which is the safe side).
+     * 0 = couldn't be measured; [MEASURE_CANCELLED] = the user cancelled.
+     */
+    private fun measureSlicesAudioBytes(input: File, slices: List<EditSlice>, kbps: Int, hz: Int, probeOut: File): Long {
+        var total = 0L
+        for (sl in slices) {
+            val b = measureAudioBytes(input, sl.startSec, sl.durationSec, kbps, hz, probeOut)
+            if (b == MEASURE_CANCELLED) return MEASURE_CANCELLED
+            if (b <= 0L) return 0L
+            total += b
+        }
+        return total
+    }
+
+    /** How long the fade at each join of two clips lasts: just enough to stop the sound clicking. */
+    private const val JOIN_FADE_SEC = 0.01
+
+    /**
+     * The filter graph that joins the pieces of an edit (one ffmpeg input each, in order) into one
+     * video: each piece's time is restarted at zero, the pieces are concatenated, and then [filters]
+     * (the crop, frame-rate cap and scaling the picture would get anyway) are applied to the whole.
+     * With [withAudio] the sound is joined too, with a very short fade where two clips meet. The
+     * outputs are labelled [vout] and (with sound) [aout].
+     */
+    internal fun joinGraph(slices: List<EditSlice>, filters: String, withAudio: Boolean): String {
+        val n = slices.size
+        val sb = StringBuilder()
+        for (k in 0 until n) {
+            sb.append("[$k:v:0]setpts=PTS-STARTPTS[v$k];")
+            if (withAudio) {
+                val d = slices[k].durationSec
+                sb.append("[$k:a:0]asetpts=PTS-STARTPTS")
+                if (d > JOIN_FADE_SEC * 10) {
+                    if (k > 0) sb.append(",afade=t=in:st=0:d=$JOIN_FADE_SEC")
+                    if (k < n - 1) sb.append(",afade=t=out:st=%.3f:d=$JOIN_FADE_SEC".format(java.util.Locale.US, d - JOIN_FADE_SEC))
+                }
+                sb.append("[a$k];")
+            }
+        }
+        for (k in 0 until n) sb.append("[v$k]").append(if (withAudio) "[a$k]" else "")
+        sb.append("concat=n=$n:v=1:a=${if (withAudio) 1 else 0}[cv]")
+        if (withAudio) sb.append("[aout]")
+        sb.append(";[cv]").append(filters).append("[vout]")
+        return sb.toString()
     }
 
     /** Input seeking: fast (keyframe-based demux seek), and frame-accurate because we re-encode. */

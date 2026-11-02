@@ -65,6 +65,26 @@ object BatchStore {
         return out
     }
 
+    /** null if there is no edit, or it can't be read (the card then simply has none). */
+    private fun readEdit(o: JSONObject?): EditSpec? {
+        if (o == null) return null
+        return try {
+            val arr = o.getJSONArray("clips")
+            val clips = ArrayList<EditClip>()
+            for (n in 0 until arr.length()) {
+                val c = arr.getJSONArray(n)
+                val a = c.getDouble(0)
+                val b = c.getDouble(1)
+                if (b > a) clips.add(EditClip(a, b))
+            }
+            if (clips.isEmpty()) return null
+            val crop = o.optJSONArray("crop")?.let { CropRect(it.getInt(0), it.getInt(1), it.getInt(2), it.getInt(3)) }
+            EditSpec(clips, crop)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     internal fun toJson(i: QueueItem): JSONObject = JSONObject().apply {
         put("id", i.id)
         put("uri", i.uri.toString())
@@ -76,6 +96,15 @@ object BatchStore {
         put("extraParts", i.extraParts)
         put("hasThumb", i.hasThumb)
         put("inPen", i.inPen)
+        i.edit?.let { e ->
+            put(
+                "edit",
+                JSONObject().apply {
+                    put("clips", JSONArray().apply { e.clips.forEach { c -> put(JSONArray().put(c.startSec).put(c.endSec)) } })
+                    e.crop?.let { c -> put("crop", JSONArray().put(c.x).put(c.y).put(c.w).put(c.h)) }
+                }
+            )
+        }
         i.detail?.let { put("detail", it) }
         i.savedUri?.let { put("savedUri", it.toString()) }
         // The Advanced tuning is global, so it isn't saved here.
@@ -117,6 +146,7 @@ object BatchStore {
                     put("vc", it.videoCodec)
                     put("vk", it.videoKbps)
                     put("ac", it.audioCodec)
+                    put("pv", it.probeVersion)
                 }
             )
         }
@@ -138,6 +168,8 @@ object BatchStore {
                     videoCodec = it.optString("vc", ""),
                     videoKbps = it.optInt("vk", 0),
                     audioCodec = it.optString("ac", ""),
+                    // Absent in files saved before the probe read rotation (version 1).
+                    probeVersion = it.optInt("pv", 1),
                 )
             },
             probeFailed = o.optBoolean("probeFailed", false),
@@ -156,6 +188,8 @@ object BatchStore {
             hasThumb = o.optBoolean("hasThumb", false),
             // Absent in files saved by older versions: not in the Holding Pen.
             inPen = o.optBoolean("inPen", false),
+            // Absent when the card has no edit (and in files saved by older versions).
+            edit = readEdit(o.optJSONObject("edit")),
             // Absent when no run was active (and in files saved by older versions).
             settings = o.optJSONObject("settings")?.let {
                 runCatching {

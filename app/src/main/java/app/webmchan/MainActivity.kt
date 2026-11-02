@@ -45,6 +45,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -154,6 +155,11 @@ class MainActivity : ComponentActivity() {
                     }
                     if (showAdvanced) {
                         P5Background { AdvancedScreen(onBack = { showAdvanced = false }) }
+                    }
+                    // The video editor, opened from a Holding Pen card. A page of its own, on top.
+                    val editingId = BatchRunner.editingId
+                    if (editingId >= 0L) {
+                        P5Background { EditorScreen(itemId = editingId, onClose = { BatchRunner.closeEditor() }) }
                     }
                 }
             }
@@ -374,6 +380,8 @@ internal fun QueueRow(
     /** Queue cards offer "Return to holding pen". */
     showReturn: Boolean = false,
     onReturn: () -> Unit = {},
+    /** Opens the editor for this card. Only Holding Pen cards offer it (see [QueueItem.inPen]). */
+    onEdit: () -> Unit = {},
     /** The video that will be converted next: gets a NEXT tag. */
     isNext: Boolean = false,
     /**
@@ -387,7 +395,10 @@ internal fun QueueRow(
     sourceAvailable: Boolean = true,
 ) {
     val ctx = LocalContext.current
-    val i = item.info
+    // The video as it will be converted: an edited card (cuts, crop) shows, and is planned with, the
+    // edited length and size. The source's own are under Details. Finished cards never have an edit.
+    val sourceInfo = item.info
+    val i = if (item.edit != null) sourceInfo?.let { item.edit.effectiveInfo(it) } else sourceInfo
     // Whether the card's extra detail is open (see "Details" at the bottom of the card).
     var expanded by remember { mutableStateOf(false) }
     // The Rename and Delete file dialogs of a Finished card.
@@ -512,7 +523,12 @@ internal fun QueueRow(
             if (!item.probeFailed) {
                 Thumb(
                     item,
-                    onClick = playUri?.let { u ->
+                    onClick = if (item.edit != null && !finishedCard) {
+                        // An edited video plays in the editor, which can only be opened from the Holding Pen.
+                        if (item.inPen) onEdit else {
+                            { Toast.makeText(ctx, "Edited videos can't be previewed from the queue.", Toast.LENGTH_SHORT).show() }
+                        }
+                    } else playUri?.let { u ->
                         {
                             // The file type is looked up only when tapped, not on every redraw.
                             val mime = if (finishedCard) "video/webm" else (ctx.contentResolver.getType(u) ?: "video/*")
@@ -554,6 +570,7 @@ internal fun QueueRow(
                                 filled = item.status == ItemStatus.CONVERTING || item.status == ItemStatus.DONE,
                             )
                             if (isNext) P5Tag("Next ▼", P5.White, filled = true)
+                            if (item.edit != null && !finishedCard) P5Tag("Edited", P5.RedBright)
                         }
                     }
                 }
@@ -660,7 +677,9 @@ internal fun QueueRow(
         val canReturn = showReturn && item.status != ItemStatus.CONVERTING && item.partsDone == 0 &&
             (!busy || item.status == ItemStatus.WAITING)
         val canExpand = (i != null && !item.probeFailed) || shownSettings != null
-        if (canExpand || showReturn) {
+        // Only a card in the Holding Pen can be edited; it is locked once it is sent to the queue.
+        val canEdit = item.inPen && !finishedCard && !inHistory && i != null && !item.probeFailed
+        if (canExpand || showReturn || canEdit) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 if (canExpand) {
                     Text(
@@ -673,6 +692,9 @@ internal fun QueueRow(
                     )
                 }
                 Spacer(Modifier.weight(1f))
+                if (canEdit) {
+                    P5Button("Edit", onClick = onEdit, kind = P5Kind.Secondary)
+                }
                 if (showReturn) {
                     P5Button("Return to holding pen", onClick = onReturn, enabled = canReturn, kind = P5Kind.Ghost)
                 }
@@ -714,6 +736,13 @@ internal fun QueueRow(
                 }
             }
             Text("File: ${item.name}", style = MaterialTheme.typography.bodySmall)
+            if (item.edit != null && sourceInfo != null && !finishedCard) {
+                Text(
+                    "Edited: ${item.edit.describe()}. The original is ${sourceInfo.width}×${sourceInfo.height}, " +
+                        "${String.format(Locale.US, "%.1f", sourceInfo.durationSec)}s; it isn't changed.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             if (i != null && !item.probeFailed) {
                 val len = String.format(Locale.US, "%.1f", i.durationSec)
                 val audio = if (i.hasAudio) {
@@ -1178,6 +1207,7 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
                 onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
                 showReturn = section == CardSection.QUEUE,
                 onReturn = { BatchRunner.returnToPen(item.id) },
+                onEdit = { BatchRunner.openEditor(item.id) },
                 isNext = item.id == nextId,
                 sweep = if (sweeping && item.status == ItemStatus.WAITING && item.info != null && !item.probeFailed) {
                     { sweepPhase }
@@ -1465,6 +1495,8 @@ fun App(onMenu: () -> Unit = {}) {
         customHeight = customHeight,
         audioKbps = audioKbps,
     )
+    // The editor (a page of its own) shows what an edit does to the conversion with these.
+    SideEffect { BatchRunner.liveSettings = cardSettings }
 
     // What each closed settings group shows as its current choice.
     val limitOk = limitKb >= 256
