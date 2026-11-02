@@ -563,6 +563,10 @@ internal fun QueueRow(
                             "${len}s · ${if (i.hasAudio) "has audio" else "no audio"}",
                             style = MaterialTheme.typography.bodySmall
                         )
+                        // On its own line above the status tag: beside it, the running percentage left it no room.
+                        if (item.edit != null && !finishedCard) {
+                            Box(Modifier.padding(top = 2.dp)) { P5Tag("Edited", P5.RedBright) }
+                        }
                         Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             P5Tag(
                                 state,
@@ -570,7 +574,6 @@ internal fun QueueRow(
                                 filled = item.status == ItemStatus.CONVERTING || item.status == ItemStatus.DONE,
                             )
                             if (isNext) P5Tag("Next ▼", P5.White, filled = true)
-                            if (item.edit != null && !finishedCard) P5Tag("Edited", P5.RedBright)
                         }
                     }
                 }
