@@ -777,9 +777,11 @@ object BatchRunner {
     }
 
     /**
-     * Reset app: the full cache wipe, and the Holding Pen, queue, Finished list, History, the Log page's
-     * conversions and every shared-video copy as well. Settings, Advanced numbers, the save location and
-     * the saved .webm videos are not touched.
+     * Reset app: back to a fresh install. The full cache wipe, and the Holding Pen, queue, Finished list,
+     * History, the Log page's conversions and every shared-video copy as well, plus every setting: the
+     * Settings switches, the Advanced numbers, the save location (its folder grant is let go) and the
+     * choices made on the main screen. Only the saved .webm videos stay, as they are in the person's own
+     * folders. The caller should restart the screen afterwards so it reads the defaults again.
      */
     suspend fun resetApp(ctx: Context): CacheStat? {
         if (cacheBusy) return null
@@ -800,6 +802,12 @@ object BatchRunner {
         persist()
         persistHistory()
         writer.execute { ConversionLogStore.save(appCtx, emptyList()) }
+        // Settings: the save location first (that lets go of the folder's lasting grant), then every
+        // saved preference, the Settings switches and the Advanced numbers.
+        OutputStorage.clearDir(appCtx)
+        appCtx.getSharedPreferences("webmchan", Context.MODE_PRIVATE).edit().clear().apply()
+        AppSettings.resetAll()
+        TuningStore.reset(appCtx)
         withContext(Dispatchers.IO) {
             CacheTools.clearFolder(appCtx.cacheDir)
             Converter.pruneAnalysis(appCtx, emptySet())

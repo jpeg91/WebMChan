@@ -100,6 +100,12 @@ object AppSettings {
         values[t.key] = on
         prefs?.edit()?.putBoolean(t.key, on)?.apply()
     }
+
+    /** Every switch back to its default, and what was saved forgotten (for Reset app on the Cache page). */
+    fun resetAll() {
+        prefs?.edit()?.clear()?.apply()
+        for (t in AppToggle.values()) values[t.key] = t.default
+    }
 }
 
 /** The Settings page: a switch for each [AppToggle], in groups. */

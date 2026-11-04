@@ -1,6 +1,8 @@
 // #cache
 package app.webmchan
 
+import android.app.Activity
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -73,6 +75,26 @@ fun CacheScreen(onBack: () -> Unit) {
             "What WebMChan keeps in its own storage on this phone. Your saved .webm videos are somewhere " +
                 "else and are never touched on this page.",
             style = MaterialTheme.typography.bodyMedium,
+        )
+
+        // How the cache works. Every point here is something the app does on its own (see BatchRunner).
+        P5SectionTitle("How the cache works")
+        Text(
+            "WebMChan keeps a few things on the phone to make converting quicker and to remember your " +
+                "lists. Most of it tidies itself, so you shouldn't normally need this page:\n\n" +
+                "• Working files (the cache folder) only exist while a video is being converted. They are " +
+                "deleted after each video, and again whenever the app starts. They can be large while a " +
+                "conversion runs, because they hold a copy of the video and the encoder's output.\n" +
+                "• The kept analysis of a video is deleted as soon as no card in the Holding Pen, queue or " +
+                "Finished list uses that video.\n" +
+                "• A thumbnail is deleted with its card, and any left over are cleared when the app starts.\n" +
+                "• A shared video's copy is deleted when the last card using it is removed, and any left " +
+                "over are cleared when the app starts.\n\n" +
+                "Android may also empty the cache folder by itself when the phone runs low on space. " +
+                "This page is for seeing where the space is, and for clearing things by hand if you want to " +
+                "(after a crash, say).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         val r = report
@@ -176,9 +198,11 @@ fun CacheScreen(onBack: () -> Unit) {
 
             P5SectionTitle("Reset app")
             Text(
-                "Everything above, and the Holding Pen, queue, Finished list, History, the Log page's " +
-                    "conversions and every shared copy as well: the app starts empty, like a fresh install. " +
-                    "Your settings, Advanced numbers, save location and saved .webm videos are kept. " +
+                "Puts WebMChan back to how it was when first installed. It does everything above, and also " +
+                    "empties the Holding Pen, queue, Finished list, History and the Log page, deletes every " +
+                    "shared copy, and resets all your settings: the Settings page, the Advanced numbers, " +
+                    "the save location and the choices on the main screen. The only thing kept is your saved " +
+                    ".webm videos, which are in your own folders. " +
                     "Frees about ${CacheTools.formatSize(r.resetApp.bytes)}. This can't be undone.",
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -211,9 +235,11 @@ fun CacheScreen(onBack: () -> Unit) {
             )
             CacheAction.RESET -> Triple(
                 "Reset app",
-                "This empties the Holding Pen, queue, Finished list, History and the Log page, and deletes " +
-                    "every shared copy, the analysis, thumbnails and cache. Your settings, save location and saved " +
-                    ".webm videos are kept. It can't be undone.",
+                "This puts WebMChan back to how it was when first installed. It empties the Holding Pen, " +
+                    "queue, Finished list, History and the Log page, deletes every shared copy, the analysis, " +
+                    "thumbnails and cache, and resets all your settings (the Settings page, Advanced numbers, " +
+                    "save location and main screen choices). Only your saved .webm videos are kept. " +
+                    "It can't be undone.",
                 shown.resetApp,
             )
         }
@@ -242,6 +268,11 @@ fun CacheScreen(onBack: () -> Unit) {
                             else "Done. Freed ${CacheTools.describe(done)}."
                             working = false
                             refresh++
+                            if (asked == CacheAction.RESET && done != null) {
+                                // The screens read their settings once, so start them again to show the defaults.
+                                Toast.makeText(ctx, "WebMChan was reset.", Toast.LENGTH_LONG).show()
+                                (ctx as? Activity)?.recreate()
+                            }
                         }
                     },
                 )
