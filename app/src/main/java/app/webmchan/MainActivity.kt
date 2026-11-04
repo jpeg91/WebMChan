@@ -159,7 +159,7 @@ class MainActivity : ComponentActivity() {
                     // The video editor, opened from a Holding Pen card. A page of its own, on top.
                     val editingId = BatchRunner.editingId
                     if (editingId >= 0L) {
-                        P5Background { EditorScreen(itemId = editingId, onClose = { BatchRunner.closeEditor() }) }
+                        P5Background(base = P5.RedDeep) { EditorScreen(itemId = editingId, onClose = { BatchRunner.closeEditor() }) }
                     }
                 }
             }
@@ -414,6 +414,9 @@ internal fun QueueRow(
     // Tapping the thumbnail plays the video: the converted file on a Finished card, the original
     // on a queue card. Nothing to play if the file is gone or the original couldn't be read.
     val finishedCard = item.status == ItemStatus.DONE
+    // Only a card in the Holding Pen can be edited; it is locked once it is sent to the queue. The Edit
+    // button sits where a converting card shows its percentage.
+    val canEdit = item.inPen && !finishedCard && !inHistory && i != null && !item.probeFailed
     val playUri: Uri? = when {
         finishedCard -> item.savedUri
         item.probeFailed || i == null -> null
@@ -583,6 +586,11 @@ internal fun QueueRow(
                 Spacer(Modifier.size(8.dp))
                 RunPercent(item)
             }
+            // A Holding Pen card has no percentage, so its Edit button takes that place.
+            if (canEdit) {
+                Spacer(Modifier.size(8.dp))
+                P5Button("Edit", onClick = onEdit, kind = P5Kind.Secondary)
+            }
         }
 
         // What this video is (or was) converted with. Once it's been sent to the queue it is fixed
@@ -680,9 +688,7 @@ internal fun QueueRow(
         val canReturn = showReturn && item.status != ItemStatus.CONVERTING && item.partsDone == 0 &&
             (!busy || item.status == ItemStatus.WAITING)
         val canExpand = (i != null && !item.probeFailed) || shownSettings != null
-        // Only a card in the Holding Pen can be edited; it is locked once it is sent to the queue.
-        val canEdit = item.inPen && !finishedCard && !inHistory && i != null && !item.probeFailed
-        if (canExpand || showReturn || canEdit) {
+        if (canExpand || showReturn) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 if (canExpand) {
                     Text(
@@ -695,9 +701,6 @@ internal fun QueueRow(
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                if (canEdit) {
-                    P5Button("Edit", onClick = onEdit, kind = P5Kind.Secondary)
-                }
                 if (showReturn) {
                     P5Button("Return to holding pen", onClick = onReturn, enabled = canReturn, kind = P5Kind.Ghost)
                 }
