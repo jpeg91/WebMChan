@@ -5,7 +5,9 @@ import android.view.TextureView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +48,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -255,7 +258,7 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            P5Button("Cancel", onClick = { cancel() }, kind = P5Kind.Ghost)
+            P5Button("Cancel", onClick = { cancel() }, kind = P5Kind.Secondary)
             Spacer(Modifier.weight(1f))
             P5Button(
                 "Reset",
@@ -266,7 +269,7 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
                     load(0, 0.0)
                 },
                 enabled = !spec.isNoOp(src),
-                kind = P5Kind.Ghost,
+                kind = P5Kind.Secondary,
             )
             Spacer(Modifier.width(6.dp))
             P5Button("Done", onClick = { done() })
@@ -280,31 +283,15 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
             overflow = TextOverflow.Ellipsis,
         )
 
-        // The picture, in a box exactly the shape of the video so the crop frame lines up with it.
-        Box(Modifier.fillMaxWidth().height(videoHeight), contentAlignment = Alignment.Center) {
-            Box(Modifier.aspectRatio(frameW.toFloat() / frameH).background(Color.Black)) {
+        // The picture, in a box exactly the shape of the video. The crop frame is drawn over a larger
+        // area (the picture plus CROP_PAD all round), so a frame edge sitting right on the picture's
+        // border can still be grabbed from outside it.
+        Box(Modifier.fillMaxWidth().height(videoHeight + CROP_PAD * 2), contentAlignment = Alignment.Center) {
+            Box(Modifier.padding(CROP_PAD).aspectRatio(frameW.toFloat() / frameH).background(Color.Black)) {
                 AndroidView(
                     factory = { c -> TextureView(c).also { player.setVideoTextureView(it) } },
                     modifier = Modifier.fillMaxSize(),
                 )
-                if (tab == EditorTab.CROP || spec.crop != null) {
-                    CropOverlay(
-                        frameW = frameW,
-                        frameH = frameH,
-                        rect = cropF,
-                        interactive = tab == EditorTab.CROP,
-                        onRect = { r ->
-                            cropF = r
-                            spec = spec.withCrop(
-                                EditSpec.cleanCrop(
-                                    r.left.roundToInt(), r.top.roundToInt(),
-                                    r.width.roundToInt(), r.height.roundToInt(), frameW, frameH,
-                                )
-                            )
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
                 if (previewFailed) {
                     Text(
                         "This phone can't preview this video. You can still set the cuts and the crop.",
@@ -313,6 +300,24 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
                         modifier = Modifier.align(Alignment.Center).padding(12.dp),
                     )
                 }
+            }
+            if (tab == EditorTab.CROP || spec.crop != null) {
+                CropOverlay(
+                    frameW = frameW,
+                    frameH = frameH,
+                    rect = cropF,
+                    interactive = tab == EditorTab.CROP,
+                    onRect = { r ->
+                        cropF = r
+                        spec = spec.withCrop(
+                            EditSpec.cleanCrop(
+                                r.left.roundToInt(), r.top.roundToInt(),
+                                r.width.roundToInt(), r.height.roundToInt(), frameW, frameH,
+                            )
+                        )
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
 
@@ -371,9 +376,9 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
                 onValueChangeFinished = { load(sel, 0.0) },
                 valueRange = lo.toFloat()..hi.toFloat(),
                 colors = SliderDefaults.colors(
-                    thumbColor = P5.Red,
-                    activeTrackColor = P5.Red,
-                    inactiveTrackColor = P5.Line,
+                    thumbColor = P5.White,
+                    activeTrackColor = P5.White,
+                    inactiveTrackColor = P5.Black,
                 ),
             )
             // Moving the playhead: by seconds, tenths of a second or single frames (at the video's own
@@ -489,7 +494,7 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
         }
 
         // ---- What this edit does to the conversion ----
-        Box(Modifier.fillMaxWidth().height(1.dp).background(P5.Line))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(P5.White.copy(alpha = 0.4f)))
         Text(
             "Edited video: ${clock(spec.totalSec)} · ${effective.width}×${effective.height} · ${spec.describe()}",
             style = MaterialTheme.typography.titleSmall,
@@ -557,14 +562,14 @@ private fun ClipTimeline(clips: List<EditClip>, selected: Int, editedSec: Double
         for ((i, c) in clips.withIndex()) {
             val w = (c.lengthSec / total * size.width).toFloat()
             drawRect(
-                color = if (i == selected) P5.Red else P5.GreyDim,
+                color = if (i == selected) P5.White else P5.GreyDim,
                 topLeft = Offset(x + gap / 2, 0f),
                 size = Size(max(1f, w - gap), size.height),
             )
             x += w
         }
         val px = (editedSec / total * size.width).toFloat().coerceIn(0f, size.width)
-        drawRect(color = P5.White, topLeft = Offset(px - 1.5.dp.toPx(), 0f), size = Size(3.dp.toPx(), size.height))
+        drawRect(color = P5.Amber, topLeft = Offset(px - 1.5.dp.toPx(), 0f), size = Size(3.dp.toPx(), size.height))
     }
 }
 
@@ -576,9 +581,25 @@ private const val G_TOP = 4
 private const val G_BOTTOM = 8
 private const val G_MOVE = 16
 
+/** How far the crop frame's drawing area reaches beyond the picture on every side. */
+private val CROP_PAD = 28.dp
+
+/** How close to an edge or corner (in dp) a touch has to be to take hold of it. */
+private val CROP_GRAB = 36.dp
+
+/** Where the picture sits inside the overlay: its top left corner and how many canvas pixels one picture pixel is. */
+private class PictureGeometry(val left: Float, val top: Float, val scale: Float)
+
+private fun pictureGeometry(w: Float, h: Float, frameW: Int, frameH: Int, pad: Float): PictureGeometry {
+    val scale = max(0.0001f, min((w - 2 * pad) / frameW, (h - 2 * pad) / frameH))
+    return PictureGeometry((w - frameW * scale) / 2f, (h - frameH * scale) / 2f, scale)
+}
+
 /**
  * Draws the crop frame over the picture, with the part outside it dimmed. With [interactive] the
- * frame can be dragged: [rect] is in pixels of the picture, [onRect] gets the new one.
+ * frame can be dragged: [rect] is in pixels of the picture, [onRect] gets the new one. The overlay is
+ * [CROP_PAD] larger than the picture on every side (see where it is placed), so the frame's edges
+ * can be grabbed even when they are right on the picture's border.
  */
 @Composable
 private fun CropOverlay(
@@ -594,41 +615,50 @@ private fun CropOverlay(
     Canvas(
         modifier.pointerInput(frameW, frameH, interactive) {
             if (!interactive) return@pointerInput
-            var grab = 0
-            detectDragGestures(
-                onDragStart = { at ->
-                    grab = cropHit(current.value, at, size.width.toFloat() / frameW, 28.dp.toPx())
-                },
-                onDragEnd = { grab = 0 },
-                onDragCancel = { grab = 0 },
-                onDrag = { change, drag ->
-                    if (grab != 0) {
+            val pad = CROP_PAD.toPx()
+            val grabDistance = CROP_GRAB.toPx()
+            awaitEachGesture {
+                // Takes hold the moment the finger lands, not after it has moved a little.
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val g = pictureGeometry(size.width.toFloat(), size.height.toFloat(), frameW, frameH, pad)
+                val grab = cropHit(
+                    current.value, Offset(down.position.x - g.left, down.position.y - g.top), g.scale, grabDistance,
+                )
+                // A touch that isn't on the frame is left alone, so the page can still scroll.
+                if (grab != 0) {
+                    down.consume()
+                    drag(down.id) { change ->
+                        val d = change.positionChange()
                         change.consume()
-                        val scale = size.width.toFloat() / frameW
-                        report.value(dragCrop(current.value, grab, drag.x / scale, drag.y / scale, frameW, frameH))
+                        report.value(dragCrop(current.value, grab, d.x / g.scale, d.y / g.scale, frameW, frameH))
                     }
-                },
-            )
+                }
+            }
         }
     ) {
-        val scale = size.width / frameW
-        val l = rect.left * scale
-        val t = rect.top * scale
-        val r = rect.right * scale
-        val b = rect.bottom * scale
+        val g = pictureGeometry(size.width, size.height, frameW, frameH, CROP_PAD.toPx())
+        val vl = g.left
+        val vt = g.top
+        val vr = vl + frameW * g.scale
+        val vb = vt + frameH * g.scale
+        val l = vl + rect.left * g.scale
+        val t = vt + rect.top * g.scale
+        val r = vl + rect.right * g.scale
+        val b = vt + rect.bottom * g.scale
+        // The picture outside the frame, dimmed.
         val dim = Color.Black.copy(alpha = 0.6f)
-        drawRect(dim, Offset(0f, 0f), Size(size.width, max(0f, t)))
-        drawRect(dim, Offset(0f, b), Size(size.width, max(0f, size.height - b)))
-        drawRect(dim, Offset(0f, t), Size(max(0f, l), max(0f, b - t)))
-        drawRect(dim, Offset(r, t), Size(max(0f, size.width - r), max(0f, b - t)))
+        drawRect(dim, Offset(vl, vt), Size(vr - vl, max(0f, t - vt)))
+        drawRect(dim, Offset(vl, b), Size(vr - vl, max(0f, vb - b)))
+        drawRect(dim, Offset(vl, t), Size(max(0f, l - vl), max(0f, b - t)))
+        drawRect(dim, Offset(r, t), Size(max(0f, vr - r), max(0f, b - t)))
         drawRect(
             color = P5.White,
             topLeft = Offset(l, t),
             size = Size(max(0f, r - l), max(0f, b - t)),
-            style = Stroke(width = 2.dp.toPx()),
+            style = Stroke(width = 2.5.dp.toPx()),
         )
         if (interactive) {
-            // Thirds, and a handle on each corner.
+            // Thirds.
             val faint = Color.White.copy(alpha = 0.35f)
             for (k in 1..2) {
                 val gx = l + (r - l) * k / 3f
@@ -636,10 +666,22 @@ private fun CropOverlay(
                 drawLine(faint, Offset(gx, t), Offset(gx, b), strokeWidth = 1.dp.toPx())
                 drawLine(faint, Offset(l, gy), Offset(r, gy), strokeWidth = 1.dp.toPx())
             }
-            val hs = 7.dp.toPx()
-            for (cx in listOf(l, r)) for (cy in listOf(t, b)) {
-                drawRect(P5.Red, Offset(cx - hs, cy - hs), Size(hs * 2, hs * 2))
+            // Handles: a square on each corner and a bar in the middle of each edge, so it is plain
+            // where to take hold.
+            fun handle(cx: Float, cy: Float, w: Float, h: Float) {
+                drawRect(P5.Red, Offset(cx - w / 2, cy - h / 2), Size(w, h))
+                drawRect(P5.White, Offset(cx - w / 2, cy - h / 2), Size(w, h), style = Stroke(width = 1.5.dp.toPx()))
             }
+            val sq = 16.dp.toPx()
+            val barLong = 34.dp.toPx()
+            val barShort = 10.dp.toPx()
+            val mx = (l + r) / 2f
+            val my = (t + b) / 2f
+            handle(mx, t, barLong, barShort)
+            handle(mx, b, barLong, barShort)
+            handle(l, my, barShort, barLong)
+            handle(r, my, barShort, barLong)
+            for (cx in listOf(l, r)) for (cy in listOf(t, b)) handle(cx, cy, sq, sq)
         }
     }
 }
