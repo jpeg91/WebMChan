@@ -22,15 +22,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
@@ -65,6 +68,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -672,13 +676,24 @@ internal fun QueueRow(
                             if (numParts == 1) "No split" else "$numParts parts",
                             style = MaterialTheme.typography.titleSmall
                         )
-                        Text(estimateText, style = MaterialTheme.typography.bodySmall, color = P5.Grey)
                     }
                     QueueButton("−", !locked && numParts > minParts) { onExtraParts(numParts - minParts - 1) }
                     QueueButton("+", !locked && numParts < maxParts) { onExtraParts(numParts - minParts + 1) }
                 }
-            } else {
-                Text(estimateText, style = MaterialTheme.typography.bodySmall)
+            }
+            // The important line, under the split box: bold white with a red bar, so it stands out.
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp).height(IntrinsicSize.Min),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.width(3.dp).fillMaxHeight().background(P5.Red))
+                Text(
+                    estimateText,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = P5.White,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
             }
 
         }
@@ -972,7 +987,10 @@ internal fun QueueRow(
             titleContentColor = P5.White,
             textContentColor = P5.White,
             title = { Text((if (inHistory) "Remove from history" else "Remove card").uppercase(), style = MaterialTheme.typography.titleMedium) },
-            text = { Text("The saved video isn't touched.") },
+            // Only worth saying while there is a saved video; after "Delete file" there isn't one.
+            text = if (item.savedUri != null) {
+                { Text("The saved video isn't touched.") }
+            } else null,
             confirmButton = { P5Button("Remove", onClick = { showRemove = false; removeCard() }) },
             dismissButton = { P5Button("Cancel", onClick = { showRemove = false }, kind = P5Kind.Ghost) },
         )
@@ -1144,14 +1162,32 @@ internal fun settingsWithTarget(s: Settings): String =
     (if (s.targetLabel.isNotBlank()) "${s.targetLabel} · " else "") + settingsBrief(s)
 
 /** One line saying what a running batch is being converted with. */
-private fun settingsLine(s: Settings): String = "Converting with: " + settingsWithTarget(s)
 
 private enum class CardSection { PEN, QUEUE, CONVERTING }
 
-/** A short grey line shown in a section that has nothing in it. */
+/**
+ * A note under a section heading: a dark cut-corner panel with a red bar down its edge, an optional
+ * bold capitals headline and a grey line of text. Used for the empty states and the short
+ * explanations of the Holding pen, Queue and Converting sections.
+ */
 @Composable
-private fun EmptyNote(text: String) {
-    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun SectionNote(text: String, headline: String? = null) {
+    val shape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .clip(shape)
+            .background(P5.Panel),
+    ) {
+        Box(Modifier.width(4.dp).fillMaxHeight().background(P5.Red))
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            if (headline != null) {
+                Text(headline.uppercase(), style = MaterialTheme.typography.titleSmall, color = P5.White)
+            }
+            Text(text, style = MaterialTheme.typography.bodySmall, color = P5.Grey)
+        }
+    }
 }
 
 /**
@@ -1327,9 +1363,11 @@ fun App(onMenu: () -> Unit = {}) {
 
     val logListState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
+    // The log box is 6 lines tall, or 64 when expanded.
+    var logExpanded by remember { mutableStateOf(false) }
 
     // Keep the newest line in view.
-    LaunchedEffect(logLines) {
+    LaunchedEffect(logLines, logExpanded) {
         if (logLines.isNotEmpty()) logListState.scrollToItem(logLines.lastIndex)
     }
 
@@ -1536,6 +1574,9 @@ fun App(onMenu: () -> Unit = {}) {
     val penAny = queue.any { it.inPen }
     val penCount = queue.count { it.inPen && it.info != null }
 
+    // The Menu button floats over the scrolling page (see the end of this function), so it stays in the
+    // top right wherever the page is scrolled to.
+    Box(Modifier.fillMaxSize()) {
     Column(
         Modifier
             .fillMaxSize()
@@ -1544,7 +1585,8 @@ fun App(onMenu: () -> Unit = {}) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
+            // Right padding keeps the title clear of the floating Menu button.
+            Column(Modifier.weight(1f).padding(end = 96.dp)) {
                 P5Title("WebMChan", upperCase = false)
                 Text(
                     "4chan WebM converter".uppercase(),
@@ -1553,7 +1595,6 @@ fun App(onMenu: () -> Unit = {}) {
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            P5Button("Menu", onClick = onMenu, kind = P5Kind.Secondary)
         }
 
         P5Button(
@@ -1583,14 +1624,10 @@ fun App(onMenu: () -> Unit = {}) {
             if (penAny) P5Button("Clear pen", onClick = { BatchRunner.clearPen() }, kind = P5Kind.Secondary)
         }
         if (penAny) {
-            Text(
-                "Newest at the top. The settings below apply to these videos when you send them to the queue.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            SectionNote("Newest at the top. The settings below apply to these videos when you send them to the queue.")
             QueueCards(section = CardSection.PEN, busy = busy, liveSettings = cardSettings)
         } else {
-            EmptyNote("Nothing waiting. Choose or share videos to add them here.")
+            SectionNote("Choose or share videos to add them here.", headline = "Nothing waiting")
         }
 
         CollapsibleSection(
@@ -2020,50 +2057,39 @@ fun App(onMenu: () -> Unit = {}) {
         }
 
         // ---- Queue ----
+        // Only shown while a video is waiting for its turn; gone entirely when there is none.
         val queueCount = queue.count { !it.inPen && it.status != ItemStatus.CONVERTING }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            P5SectionTitle(if (queueCount > 0) "Queue ($queueCount)" else "Queue")
-            Spacer(Modifier.weight(1f))
-            if (queueCount > 0 && !busy) {
-                P5Button("Clear queue", onClick = { BatchRunner.clearQueue() }, kind = P5Kind.Secondary)
-            }
-        }
         if (queueCount > 0) {
-            Text(
-                "Converted from the bottom up. Videos sent from the holding pen join at the top.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                P5SectionTitle("Queue ($queueCount)")
+                Spacer(Modifier.weight(1f))
+                if (!busy) {
+                    P5Button("Clear queue", onClick = { BatchRunner.clearQueue() }, kind = P5Kind.Secondary)
+                }
+            }
+            SectionNote("Converted from the bottom up. Videos sent from the holding pen join at the top.")
             QueueCards(section = CardSection.QUEUE, busy = busy, liveSettings = cardSettings)
-        } else {
-            EmptyNote("Nothing queued. Videos you send from the holding pen wait here for their turn.")
         }
 
         // ---- Converting ----
         Row(Modifier.fillMaxWidth()) { P5SectionTitle("Converting") }
         if (busy) {
-            queue.firstNotNullOfOrNull { if (!it.inPen) it.settings else null }?.let {
-                Text(
-                    settingsLine(it),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
             QueueCards(section = CardSection.CONVERTING, busy = busy, liveSettings = cardSettings)
             progressBlock()
         } else {
-            EmptyNote("Nothing is converting.")
+            SectionNote("Nothing is converting.", headline = "Idle")
             if (runTotal > 1) summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
         }
 
         val lines = logLines
         if (lines.isNotEmpty()) {
-            Row(Modifier.fillMaxWidth()) { P5SectionTitle("Log") }
+            // 6 lines tall (64 when expanded): the line height below times the lines, plus the padding.
+            val logBoxHeight = with(LocalDensity.current) { (14.sp * (if (logExpanded) 64 else 6)).toDp() } + 20.dp
             LazyColumn(
                 state = logListState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(150.dp)
+                    .height(logBoxHeight)
                     .clip(CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
                     .background(Color.Black)
                     .border(1.5.dp, P5.Line, CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
@@ -2078,12 +2104,20 @@ fun App(onMenu: () -> Unit = {}) {
                     )
                 }
             }
-            P5Button(
-                "Copy log",
-                onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) },
-                kind = P5Kind.Secondary,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                P5Button(
+                    "Copy log",
+                    onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) },
+                    kind = P5Kind.Secondary,
+                    modifier = Modifier.weight(1f),
+                )
+                P5Button(
+                    if (logExpanded) "Shrink log" else "Expand log",
+                    onClick = { logExpanded = !logExpanded },
+                    kind = P5Kind.Secondary,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
 
 
@@ -2097,7 +2131,7 @@ fun App(onMenu: () -> Unit = {}) {
             }
         }
         if (finished.isEmpty()) {
-            EmptyNote("No finished videos yet.")
+            SectionNote("Converted videos land here.", headline = "No finished videos yet")
         } else {
             finished.asReversed().forEach { item ->
                 key(item.id) {
@@ -2134,5 +2168,12 @@ fun App(onMenu: () -> Unit = {}) {
             }
         }
         Spacer(Modifier.height(8.dp))
+    }
+    P5Button(
+        "Menu",
+        onClick = onMenu,
+        kind = P5Kind.Secondary,
+        modifier = Modifier.align(Alignment.TopEnd).padding(top = 20.dp, end = 20.dp),
+    )
     }
 }
