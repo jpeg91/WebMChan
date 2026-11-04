@@ -122,33 +122,8 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
         )
     }
 
-    // ---- The preview player ----
-    val player = remember {
-        ExoPlayer.Builder(ctx).build().apply {
-            // Frame-accurate seeks: a cut lands where the playhead is, not on the nearest keyframe.
-            setSeekParameters(SeekParameters.EXACT)
-            repeatMode = Player.REPEAT_MODE_OFF
-        }
-    }
-    DisposableEffect(player) {
-        val listener = object : Player.Listener {
-            override fun onPlayerError(error: PlaybackException) {
-                previewFailed = true
-            }
-        }
-        player.addListener(listener)
-        onDispose {
-            player.removeListener(listener)
-            player.release()
-        }
-    }
-    // Stop playing when the app goes to the background.
-    DisposableEffect(ctx) {
-        val lifecycle = (ctx as? LifecycleOwner)?.lifecycle
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) player.pause() }
-        lifecycle?.addObserver(observer)
-        onDispose { lifecycle?.removeObserver(observer) }
-    }
+    // ---- The preview player (see PreviewKit) ----
+    val player = rememberPreviewPlayer { previewFailed = true }
 
     /** The clips as a playlist, each cut to its own stretch of the source: playing it is playing the edit. */
     fun playlist(): List<MediaItem> = spec.clips.map { c ->
@@ -231,16 +206,10 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
     BackHandler(onBack = { cancel() })
 
     if (confirmDiscard) {
-        AlertDialog(
-            onDismissRequest = { confirmDiscard = false },
-            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
-            containerColor = P5.Ink,
-            titleContentColor = P5.White,
-            textContentColor = P5.White,
-            title = { Text("Discard changes".uppercase(), style = MaterialTheme.typography.titleMedium) },
-            text = { Text("Leave the editor without saving your changes to this video?") },
-            confirmButton = { P5Button("Discard", onClick = { confirmDiscard = false; onClose() }) },
-            dismissButton = { P5Button("Keep editing", onClick = { confirmDiscard = false }, kind = P5Kind.Ghost) },
+        DiscardDialog(
+            message = "Leave the editor without saving your changes to this video?",
+            onDiscard = { confirmDiscard = false; onClose() },
+            onKeep = { confirmDiscard = false },
         )
     }
 
@@ -288,10 +257,7 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
         // border can still be grabbed from outside it.
         Box(Modifier.fillMaxWidth().height(videoHeight + CROP_PAD * 2), contentAlignment = Alignment.Center) {
             Box(Modifier.padding(CROP_PAD).aspectRatio(frameW.toFloat() / frameH).background(Color.Black)) {
-                AndroidView(
-                    factory = { c -> TextureView(c).also { player.setVideoTextureView(it) } },
-                    modifier = Modifier.fillMaxSize(),
-                )
+                PreviewSurface(player, Modifier.fillMaxSize())
                 if (previewFailed) {
                     Text(
                         "This phone can't preview this video. You can still set the cuts and the crop.",
@@ -383,16 +349,8 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
             )
             // Moving the playhead: by seconds, tenths of a second or single frames (at the video's own
             // frame rate; 30 if that couldn't be read).
-            val frameSec = if (src.fpsReadable && src.fps > 0.0) 1.0 / src.fps else 1.0 / 30.0
             fun step(delta: Double) = seekTo(sel, (offset + delta).coerceIn(0.0, clip.lengthSec))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                P5Button("−1s", onClick = { step(-1.0) }, modifier = Modifier.weight(1f), kind = P5Kind.Secondary, dense = true)
-                P5Button("−0.1s", onClick = { step(-0.1) }, modifier = Modifier.weight(1f), kind = P5Kind.Secondary, dense = true)
-                P5Button("−1 frame", onClick = { step(-frameSec) }, modifier = Modifier.weight(1f), kind = P5Kind.Secondary, dense = true)
-                P5Button("+1 frame", onClick = { step(frameSec) }, modifier = Modifier.weight(1f), kind = P5Kind.Secondary, dense = true)
-                P5Button("+0.1s", onClick = { step(0.1) }, modifier = Modifier.weight(1f), kind = P5Kind.Secondary, dense = true)
-                P5Button("+1s", onClick = { step(1.0) }, modifier = Modifier.weight(1f), kind = P5Kind.Secondary, dense = true)
-            }
+            StepButtons(frameSecOf(src)) { step(it) }
             // Trim the clip to the playhead.
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 P5Button(
@@ -528,19 +486,12 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
     }
 }
 
-/** Minutes, seconds and tenths: 1:05.3. */
-private fun clock(sec: Double): String {
-    val t = max(0.0, sec)
-    val m = (t / 60.0).toInt()
-    return String.format(Locale.US, "%d:%04.1f", m, t - m * 60.0)
-}
-
 /**
  * The edited video as a bar: one block per clip in the order they are joined (the selected one in
  * red), a white line for the playhead. Tap or drag on it to move the playhead.
  */
 @Composable
-private fun ClipTimeline(clips: List<EditClip>, selected: Int, editedSec: Double, onSeek: (Double) -> Unit) {
+internal fun ClipTimeline(clips: List<EditClip>, selected: Int, editedSec: Double, onSeek: (Double) -> Unit) {
     val total = clips.sumOf { it.lengthSec }.coerceAtLeast(0.001)
     val seek = rememberUpdatedState(onSeek)
     Canvas(
@@ -582,7 +533,7 @@ private const val G_BOTTOM = 8
 private const val G_MOVE = 16
 
 /** How far the crop frame's drawing area reaches beyond the picture on every side. */
-private val CROP_PAD = 28.dp
+internal val CROP_PAD = 28.dp
 
 /** How close to an edge or corner (in dp) a touch has to be to take hold of it. */
 private val CROP_GRAB = 36.dp
@@ -602,7 +553,7 @@ private fun pictureGeometry(w: Float, h: Float, frameW: Int, frameH: Int, pad: F
  * can be grabbed even when they are right on the picture's border.
  */
 @Composable
-private fun CropOverlay(
+internal fun CropOverlay(
     frameW: Int,
     frameH: Int,
     rect: Rect,

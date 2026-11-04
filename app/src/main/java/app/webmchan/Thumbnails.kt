@@ -53,16 +53,24 @@ object Thumbnails {
      * Makes the thumbnail for [id] from either [file] (a plain file, e.g. a conversion that has
      * just finished) or [uri] (a picked video, or a saved output). Returns whether it worked.
      * The frame comes from about 10% of the way in (at most 5 s), as the very first frame is
-     * often black.
+     * often black, unless [atSec] says which moment to use (a thumbnail the user picked; see
+     * ThumbnailPickerScreen), which is taken as it is.
      */
-    suspend fun create(ctx: Context, id: Long, uri: Uri?, file: File?, durationSec: Double): Boolean =
+    suspend fun create(
+        ctx: Context,
+        id: Long,
+        uri: Uri?,
+        file: File?,
+        durationSec: Double,
+        atSec: Double? = null,
+    ): Boolean =
         withContext(Dispatchers.IO) {
             if (uri == null && file == null) return@withContext false
             val dest = file(ctx, id)
             dest.parentFile?.mkdirs()
-            val timeSec = (durationSec * 0.1).coerceIn(0.0, 5.0)
+            val timeSec = atSec?.coerceAtLeast(0.0) ?: (durationSec * 0.1).coerceIn(0.0, 5.0)
             try {
-                fromRetriever(ctx, uri, file, timeSec, dest) || fromFfmpeg(ctx, uri, file, timeSec, dest)
+                fromRetriever(ctx, uri, file, timeSec, dest, atSec != null) || fromFfmpeg(ctx, uri, file, timeSec, dest)
             } catch (_: Throwable) {
                 // A missing thumbnail is fine; a serious error (e.g. the FFmpeg library not loading) must not close the app.
                 dest.delete()
@@ -70,13 +78,16 @@ object Thumbnails {
             }
         }
 
-    private fun fromRetriever(ctx: Context, uri: Uri?, file: File?, timeSec: Double, dest: File): Boolean {
+    private fun fromRetriever(ctx: Context, uri: Uri?, file: File?, timeSec: Double, dest: File, exact: Boolean): Boolean {
         val r = MediaMetadataRetriever()
         return try {
             if (file != null) r.setDataSource(file.absolutePath) else r.setDataSource(ctx, uri!!)
             val us = (timeSec * 1_000_000).toLong()
-            // getFrameAtTime applies the video's rotation, so portrait clips come out upright.
-            val frame = r.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            // getFrameAtTime applies the video's rotation, so portrait clips come out upright. A picked
+            // moment (exact) is decoded to that very frame; the automatic one just takes the nearest
+            // keyframe, which is quicker and good enough.
+            val option = if (exact) MediaMetadataRetriever.OPTION_CLOSEST else MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+            val frame = r.getFrameAtTime(us, option)
                 ?: r.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 ?: return false
             val scale = min(1.0, MAX_EDGE.toDouble() / max(frame.width, frame.height))

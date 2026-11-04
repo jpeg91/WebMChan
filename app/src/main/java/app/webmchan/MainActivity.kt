@@ -43,6 +43,8 @@ import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -170,6 +172,13 @@ class MainActivity : ComponentActivity() {
                     if (editingId >= 0L) {
                         P5Background(base = P5.RedDeep) { EditorScreen(itemId = editingId, onClose = { BatchRunner.closeEditor() }) }
                     }
+                    // The thumbnail picker, opened from the same card button. Also a page of its own, on top.
+                    val thumbPickId = BatchRunner.thumbPickId
+                    if (thumbPickId >= 0L) {
+                        P5Background(base = P5.RedDeep) {
+                            ThumbnailPickerScreen(itemId = thumbPickId, onClose = { BatchRunner.closeThumbPicker() })
+                        }
+                    }
                 }
             }
         }
@@ -248,7 +257,8 @@ private fun playVideo(ctx: Context, uri: Uri, mime: String) {
 @Composable
 private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
     val ctx = LocalContext.current
-    val bitmap by produceState<ImageBitmap?>(null, item.id, item.hasThumb) {
+    // The pick is a key too: choosing another frame rewrites the same file, and the card has to reload it.
+    val bitmap by produceState<ImageBitmap?>(null, item.id, item.hasThumb, item.thumbSec) {
         value = if (item.hasThumb) {
             withContext(Dispatchers.IO) {
                 BitmapFactory.decodeFile(Thumbnails.file(ctx, item.id).absolutePath)?.asImageBitmap()
@@ -391,6 +401,8 @@ internal fun QueueRow(
     onReturn: () -> Unit = {},
     /** Opens the editor for this card. Only Holding Pen cards offer it (see [QueueItem.inPen]). */
     onEdit: () -> Unit = {},
+    /** Opens the thumbnail picker for this card. Also only for Holding Pen cards, from the same menu as Edit. */
+    onThumbnail: () -> Unit = {},
     /** The video that will be converted next: gets a NEXT tag. */
     isNext: Boolean = false,
     /**
@@ -426,8 +438,8 @@ internal fun QueueRow(
     // Tapping the thumbnail plays the video: the converted file on a Finished card, the original
     // on a queue card. Nothing to play if the file is gone or the original couldn't be read.
     val finishedCard = item.status == ItemStatus.DONE
-    // Only a card in the Holding Pen can be edited; it is locked once it is sent to the queue. The Edit
-    // button sits where a converting card shows its percentage.
+    // Only a card in the Holding Pen can be edited or given a thumbnail; it is locked once it is sent to the
+    // queue. The "///" button (a small menu: Edit, Thumbnail) sits where a converting card shows its percentage.
     val canEdit = item.inPen && !finishedCard && !inHistory && i != null && !item.probeFailed
     val playUri: Uri? = when {
         finishedCard -> item.savedUri
@@ -606,8 +618,11 @@ internal fun QueueRow(
                             style = MaterialTheme.typography.bodySmall
                         )
                         // On its own line above the status tag: beside it, the running percentage left it no room.
-                        if (item.edit != null && !finishedCard) {
-                            Box(Modifier.padding(top = 2.dp)) { P5Tag("Edited", P5.RedBright) }
+                        if ((item.edit != null || item.thumbSec != null) && !finishedCard) {
+                            Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                if (item.edit != null) P5Tag("Edited", P5.RedBright)
+                                if (item.thumbSec != null) P5Tag("Thumbnail", P5.RedBright)
+                            }
                         }
                         Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             P5Tag(
@@ -632,10 +647,28 @@ internal fun QueueRow(
                     RunPercent(item)
                 }
             }
-            // A Holding Pen card has no percentage, so its Edit button takes that place.
+            // A Holding Pen card has no percentage, so its "///" button takes that place. It opens a small
+            // light menu of the pages a card has: Edit and Thumbnail.
             if (canEdit) {
                 Spacer(Modifier.size(8.dp))
-                P5Button("Edit", onClick = onEdit, kind = P5Kind.Secondary)
+                var showCardMenu by remember { mutableStateOf(false) }
+                Box {
+                    P5Button("///", onClick = { showCardMenu = true }, kind = P5Kind.Secondary)
+                    DropdownMenu(
+                        expanded = showCardMenu,
+                        onDismissRequest = { showCardMenu = false },
+                        modifier = Modifier.background(P5.White),
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Edit", color = P5.Black) },
+                            onClick = { showCardMenu = false; onEdit() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Thumbnail", color = P5.Black) },
+                            onClick = { showCardMenu = false; onThumbnail() },
+                        )
+                    }
+                }
             }
         }
 
@@ -807,6 +840,13 @@ internal fun QueueRow(
                 Text(
                     "Edited: ${item.edit.describe()}. The original is ${sourceInfo.width}×${sourceInfo.height}, " +
                         "${String.format(Locale.US, "%.1f", sourceInfo.durationSec)}s; it isn't changed.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (item.thumbSec != null && !finishedCard) {
+                Text(
+                    "Thumbnail: the frame at ${String.format(Locale.US, "%.2f", item.thumbSec)}s of the original is added " +
+                        "as the first frame of each converted file.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -1351,6 +1391,7 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
                 showReturn = section == CardSection.QUEUE,
                 onReturn = { BatchRunner.returnToPen(item.id) },
                 onEdit = { BatchRunner.openEditor(item.id) },
+                onThumbnail = { BatchRunner.openThumbPicker(item.id) },
                 isNext = item.id == nextId,
                 sweep = if (sweeping && item.status == ItemStatus.WAITING && item.info != null && !item.probeFailed) {
                     { sweepPhase }

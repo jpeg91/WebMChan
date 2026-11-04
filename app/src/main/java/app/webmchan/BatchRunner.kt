@@ -91,6 +91,14 @@ data class QueueItem(
      * what the Finished card shows.
      */
     val customName: String? = null,
+    /**
+     * The frame picked as this video's thumbnail, as a time in the SOURCE video (null = none: the site
+     * uses the converted video's own first frame). The conversion puts that frame in front of the video
+     * as its new first frame, and the card's thumbnail shows it. Like [edit] it belongs to the card and
+     * can only be set in the Holding Pen. On a Finished card it only records that the saved file starts
+     * with the picked frame (so a lost thumbnail is remade from its first frame).
+     */
+    val thumbSec: Double? = null,
 )
 
 /**
@@ -482,7 +490,7 @@ object BatchRunner {
                 val info = item.info ?: continue
                 if (item.status == ItemStatus.FAILED && item.probeFailed) continue
                 if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
-                setThumb(ctx, id, item.uri, null, info.durationSec, queue)
+                setThumb(ctx, id, item.uri, null, info.durationSec, queue, item.thumbSec)
             }
 
             // Finished files might have been deleted or moved outside the app (or the SD card
@@ -508,7 +516,7 @@ object BatchRunner {
                 val saved = item.savedUri ?: continue
                 val info = item.info ?: continue
                 if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
-                setThumb(ctx, id, saved, null, info.durationSec, finished)
+                setThumb(ctx, id, saved, null, info.durationSec, finished, if (item.thumbSec != null) 0.0 else null)
             }
 
             Thumbnails.pruneExcept(ctx, (queue + finished + history).map { it.id }.toSet())
@@ -550,7 +558,7 @@ object BatchRunner {
             val saved = item.savedUri ?: continue
             val info = item.info ?: continue
             if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
-            setThumb(ctx, id, saved, null, info.durationSec, history)
+            setThumb(ctx, id, saved, null, info.durationSec, history, if (item.thumbSec != null) 0.0 else null)
         }
         persistHistory()
     }
@@ -576,8 +584,9 @@ object BatchRunner {
         file: File?,
         durationSec: Double,
         list: MutableList<QueueItem>,
+        atSec: Double? = null,
     ) {
-        val ok = Thumbnails.create(ctx, id, uri, file, durationSec)
+        val ok = Thumbnails.create(ctx, id, uri, file, durationSec, atSec)
         val at = list.indexOfFirst { it.id == id }
         if (at < 0) {
             Thumbnails.delete(ctx, id)
@@ -838,6 +847,46 @@ object BatchRunner {
 
     fun closeEditor() {
         editingId = -1L
+    }
+
+    // ---- The thumbnail picker ----
+
+    /** The card open in the thumbnail picker (see ThumbnailPickerScreen), or -1 when it isn't open. Not saved. */
+    var thumbPickId by mutableLongStateOf(-1L)
+        private set
+
+    /** Opens the thumbnail picker for a card in the Holding Pen. Nothing else can be given a picked thumbnail. */
+    fun openThumbPicker(id: Long) {
+        val item = queue.firstOrNull { it.id == id } ?: return
+        if (!item.inPen || item.info == null || item.probeFailed) return
+        thumbPickId = id
+    }
+
+    fun closeThumbPicker() {
+        thumbPickId = -1L
+    }
+
+    /**
+     * Saves (or, with null, clears) the picked thumbnail frame of a Holding Pen card: a time in the
+     * source video. The card's preview picture is remade from that frame first and the pick is
+     * recorded once it is there, so the card never shows the old picture under the new pick.
+     */
+    fun setThumbPick(ctx: Context, id: Long, sec: Double?) {
+        val appCtx = ctx.applicationContext
+        val item = queue.firstOrNull { it.id == id } ?: return
+        if (!item.inPen || item.thumbSec == sec) return
+        val info = item.info ?: return
+        scope.launch {
+            val ok = Thumbnails.create(appCtx, id, item.uri, null, info.durationSec, atSec = sec)
+            val at = queue.indexOfFirst { it.id == id }
+            if (at < 0) {
+                // The card was removed in the meantime.
+                Thumbnails.delete(appCtx, id)
+                return@launch
+            }
+            queue[at] = queue[at].copy(thumbSec = sec, hasThumb = ok)
+            persist()
+        }
     }
 
     /** Saves (or, with null, removes) the edit on a Holding Pen card. */
@@ -1543,6 +1592,7 @@ object BatchRunner {
                             ctx, staged!!, src, settings,
                             startSec = startSec, clipDurationSec = clipDur,
                             edit = item.edit,
+                            thumbSec = item.thumbSec,
                             sourceId = item.uri.toString(),
                             onLog = { line -> logBuffer.add(line) { logLines = it } },
                         ) { p, s ->
@@ -1589,7 +1639,11 @@ object BatchRunner {
                                     probedOut.copy(targetedFps = Converter.targetedFps(src, settings.targetFps))
                                 // Each part gets its own thumbnail, from its own converted file.
                                 val cardId = ids.incrementAndGet()
-                                val hasThumb = Thumbnails.create(ctx, cardId, null, res.file, outInfo.durationSec)
+                                // With a picked thumbnail frame, the file starts with it: that first frame is the thumbnail.
+                                val hasThumb = Thumbnails.create(
+                                    ctx, cardId, null, res.file, outInfo.durationSec,
+                                    atSec = if (item.thumbSec != null) 0.0 else null,
+                                )
 
                                 val saved = withContext(Dispatchers.IO) {
                                     OutputStorage.save(ctx, res.file, outName) {
@@ -1628,6 +1682,8 @@ object BatchRunner {
                                         savedUri = saved.uri,
                                         // What this file was made for, shown on its Finished card.
                                         settings = settings,
+                                        // Marks that the file starts with a picked thumbnail frame.
+                                        thumbSec = item.thumbSec,
                                     )
                                 finished.add(doneCard)
                                 // History keeps it even after it is removed from Finished.

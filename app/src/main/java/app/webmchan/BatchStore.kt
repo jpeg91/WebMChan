@@ -97,6 +97,7 @@ object BatchStore {
         put("hasThumb", i.hasThumb)
         put("inPen", i.inPen)
         i.customName?.let { put("customName", it) }
+        i.thumbSec?.let { put("thumbSec", it) }
         i.edit?.let { e ->
             put(
                 "edit",
@@ -191,6 +192,8 @@ object BatchStore {
             inPen = o.optBoolean("inPen", false),
             // Absent when the card has no typed name (and in files saved by older versions).
             customName = if (o.has("customName")) o.getString("customName") else null,
+            // Absent when no thumbnail frame was picked (and in files saved by older versions).
+            thumbSec = if (o.has("thumbSec")) o.optDouble("thumbSec", -1.0).takeIf { it >= 0.0 } else null,
             // Absent when the card has no edit (and in files saved by older versions).
             edit = readEdit(o.optJSONObject("edit")),
             // Absent when no run was active (and in files saved by older versions).

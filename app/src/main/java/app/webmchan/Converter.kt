@@ -818,6 +818,12 @@ object Converter {
          */
         edit: EditSpec? = null,
         /**
+         * The thumbnail frame picked on the card: a time in the SOURCE video ([input]), or null for none.
+         * That frame is put in front of this clip as its new first frame, which is the one a site makes
+         * its thumbnail from (see [joinGraph]). Every part of a split video gets it.
+         */
+        thumbSec: Double? = null,
+        /**
          * Which video this is (its address), so the pass-1 analysis can be kept and reused by any later
          * conversion of the same video (see [Pass1Files]). Blank = the analysis is thrown away when this
          * conversion ends.
@@ -847,6 +853,9 @@ object Converter {
             // More than one piece is joined by a filter graph (see [joinGraph]); one piece is encoded
             // exactly as a video without an edit is.
             val multi = slices.size > 1
+            // A picked thumbnail frame is added by the same filter graph that joins pieces, so a clip with
+            // one is built that way even when it is a single piece.
+            val useGraph = multi || thumbSec != null
             val cropFilter = edit?.crop?.let { "crop=${it.w}:${it.h}:${it.x}:${it.y}" }
 
             // The frame rate cap. The fps filter is only added when the source is faster than it
@@ -854,6 +863,9 @@ object Converter {
             // 60 cap). A slower source is never sped up.
             val fpsCap = clampFps(settings.targetFps)
             val reduceFps = src.fps > fpsCap + 0.5
+            // How long the picked thumbnail frame is shown: one frame of the finished video, so the clip
+            // is only that much longer (well inside the length grace).
+            val thumbFrameSec = 1.0 / (if (reduceFps) fpsCap.toDouble() else src.fps).coerceIn(1.0, 120.0)
 
             val out = File(ctx.cacheDir, "out.webm")
             val sourceKey = "${sourceId.ifBlank { "tmp:" + input.name }}|${src.fileBytes}"
@@ -1046,10 +1058,12 @@ object Converter {
                 lastHeight = height
                 lastKbps = vKbps
 
-                val filters = buildList {
+                // What happens to the picture: crop, frame rate cap, size. The picked thumbnail frame gets the
+                // same, except the frame rate (it is one still frame), so it ends up the same size.
+                fun pictureFilters(withFps: Boolean): String = buildList {
                     // The crop comes first, so every later step (frame rate, size) works on the cropped picture.
                     if (cropFilter != null) add(cropFilter)
-                    if (reduceFps) add("fps=$fpsCap")
+                    if (reduceFps && withFps) add("fps=$fpsCap")
                     if (settings.hasCustomSize) {
                         add(customScaleFilter(settings.customWidth, settings.customHeight))
                     } else if (hasMin) {
@@ -1063,6 +1077,7 @@ object Converter {
                         add("scale=-2:$height")
                     }
                 }.joinToString(",").ifEmpty { "null" }
+                val filters = pictureFilters(true)
 
                 // Pass 1 only analyses the picture, so what it finds doesn't depend on the bitrate being
                 // aimed for. The analysis is therefore named after the video and everything that shapes
@@ -1070,7 +1085,8 @@ object Converter {
                 // later conversion that asks for the same picture goes straight to pass 2 on it.
                 // An edit changes which frames are seen, and (with several clips) the sound is part of the
                 // graph the analysis runs on, so both go into the key.
-                val editKey = if (edit != null) "|edit=${edit.signature()}|audio=$audioOn" else ""
+                val editKey = (if (edit != null) "|edit=${edit.signature()}|audio=$audioOn" else "") +
+                    (if (thumbSec != null) "|thumb=${"%.3f".format(java.util.Locale.US, thumbSec)}|audio=$audioOn" else "")
                 val pictureKey = "$filters|vp9=${settings.useVp9}|start=${"%.3f".format(java.util.Locale.US, startSec)}" +
                     "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}" + editKey
                 val pass1Key = "$sourceKey\n$pictureKey"
@@ -1086,7 +1102,7 @@ object Converter {
                 // crop alone): read as before, with the filters applied by -vf. Several pieces: one input
                 // per piece, joined by a filter graph that also applies the filters (see [joinGraph]).
                 // Both passes use the same graph, sound included, so pass 2 sees the frames pass 1 analysed.
-                val sourceArgs: List<String> = if (!multi) {
+                val sourceArgs: List<String> = if (!useGraph) {
                     // Input seeking: fast (keyframe-based demux seek), and still frame-accurate
                     // because we're re-encoding rather than stream-copying.
                     seekArgs(slices[0].startSec) + threadArgs + listOf(
@@ -1099,9 +1115,22 @@ object Converter {
                         seekArgs(sl.startSec) + threadArgs + listOf(
                             "-t", "%.3f".format(java.util.Locale.US, sl.durationSec), "-i", input.absolutePath,
                         )
-                    } + listOf(
-                        "-t", "%.3f".format(java.util.Locale.US, slices.sumOf { it.durationSec }),
-                        "-filter_complex", joinGraph(slices, filters, audioOn),
+                    } + (
+                        // The picked frame is one more input: the source from there, of which only the
+                        // first frame is used (the short -t stops ffmpeg decoding on from it).
+                        if (thumbSec != null) {
+                            seekArgs(thumbSec) + threadArgs + listOf("-t", "2", "-i", input.absolutePath)
+                        } else emptyList()
+                    ) + listOf(
+                        "-t", "%.3f".format(
+                            java.util.Locale.US,
+                            slices.sumOf { it.durationSec } + (if (thumbSec != null) thumbFrameSec else 0.0),
+                        ),
+                        "-filter_complex",
+                        joinGraph(
+                            slices, filters, audioOn,
+                            if (thumbSec != null) ThumbFrame(slices.size, thumbFrameSec, pictureFilters(false)) else null,
+                        ),
                         "-map", "[vout]", "-sn", "-dn", "-map_metadata", "-1",
                     )
                 }
@@ -1142,6 +1171,9 @@ object Converter {
                         (if (audioOn) " + ${audioLabel(audioKbps)} audio" else ", no audio") +
                         (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
+                if (thumbSec != null) {
+                    onLog("   thumbnail: the frame at %.3fs of the source is added in front as the first frame".format(java.util.Locale.US, thumbSec))
+                }
                 if (edit != null) {
                     onLog(
                         "   edit: ${edit.describe()}; this part is " + slices.joinToString(" + ") {
@@ -1187,7 +1219,7 @@ object Converter {
                     try { pass1.src.writeText(sourceId.ifBlank { "tmp" }) } catch (_: Exception) { }
                     // Joined clips: the graph has a sound output, which has to go somewhere, so it is
                     // mapped and thrown away (the analysis itself only looks at the picture).
-                    val pass1Out = if (multi && audioOn) {
+                    val pass1Out = if (useGraph && audioOn) {
                         listOf("-pass", "1", "-map", "[aout]", "-c:a", "pcm_s16le", "-f", "null", "/dev/null")
                     } else listOf("-pass", "1", "-an", "-f", "null", "/dev/null")
                     val p1 = FFmpegKit.executeWithArguments((common + pass1Out).toTypedArray())
@@ -1207,7 +1239,7 @@ object Converter {
                 onProgress(0f, "Attempt $attempt/$maxAttempts, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
                 pass2Stats()
                 val audioArgs = if (audioOn) {
-                    listOf("-map", if (multi) "[aout]" else "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString()) +
+                    listOf("-map", if (useGraph) "[aout]" else "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString()) +
                         (if (audioHz > 0) listOf("-ar", audioHz.toString()) else emptyList())
                 } else listOf("-an")
                 val p2 = FFmpegKit.executeWithArguments(
@@ -1632,13 +1664,26 @@ object Converter {
     private const val JOIN_FADE_SEC = 0.01
 
     /**
+     * A picked thumbnail frame for [joinGraph]: which ffmpeg input it comes from (one more than the
+     * pieces), how long it is shown ([frameSec]: one frame of the finished video), and the picture
+     * filters (crop, size) it gets so it matches the rest.
+     */
+    internal class ThumbFrame(val inputIndex: Int, val frameSec: Double, val pictureFilters: String)
+
+    /**
      * The filter graph that joins the pieces of an edit (one ffmpeg input each, in order) into one
      * video: each piece's time is restarted at zero, the pieces are concatenated, and then [filters]
      * (the crop, frame-rate cap and scaling the picture would get anyway) are applied to the whole.
      * With [withAudio] the sound is joined too, with a very short fade where two clips meet. The
-     * outputs are labelled [vout] and (with sound) [aout].
+     * outputs are labelled [vout] and (with sound) [aout]. One piece is fine: nothing is joined.
+     *
+     * With a [thumb], its first frame is made the first frame of the finished video (the frame a site
+     * takes its thumbnail from). The finished picture is delayed by one frame ([ThumbFrame.frameSec],
+     * the first frame repeated) and the thumbnail frame is laid over that extra frame alone; the sound
+     * is delayed by the same, so nothing drifts out of step. (Joining the frame on with concat instead
+     * lost it whenever the frame rate cap was lower than the source's.)
      */
-    internal fun joinGraph(slices: List<EditSlice>, filters: String, withAudio: Boolean): String {
+    internal fun joinGraph(slices: List<EditSlice>, filters: String, withAudio: Boolean, thumb: ThumbFrame? = null): String {
         val n = slices.size
         val sb = StringBuilder()
         for (k in 0 until n) {
@@ -1655,8 +1700,17 @@ object Converter {
         }
         for (k in 0 until n) sb.append("[v$k]").append(if (withAudio) "[a$k]" else "")
         sb.append("concat=n=$n:v=1:a=${if (withAudio) 1 else 0}[cv]")
-        if (withAudio) sb.append("[aout]")
-        sb.append(";[cv]").append(filters).append("[vout]")
+        if (withAudio) sb.append(if (thumb != null) "[ca]" else "[aout]")
+        if (thumb == null) {
+            sb.append(";[cv]").append(filters).append("[vout]")
+            return sb.toString()
+        }
+        val d = "%.4f".format(java.util.Locale.US, thumb.frameSec)
+        sb.append(";[cv]").append(filters).append("[fv]")
+        sb.append(";[${thumb.inputIndex}:v:0]trim=end_frame=1,setpts=PTS-STARTPTS,").append(thumb.pictureFilters).append("[tv]")
+        sb.append(";[fv]tpad=start_duration=$d:start_mode=clone[pv]")
+        sb.append(";[pv][tv]overlay=x=0:y=0:eof_action=repeat:enable='lt(t,$d)'[vout]")
+        if (withAudio) sb.append(";[ca]adelay=delays=%.1f:all=1[aout]".format(java.util.Locale.US, thumb.frameSec * 1000.0))
         return sb.toString()
     }
 
