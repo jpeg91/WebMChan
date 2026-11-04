@@ -714,7 +714,7 @@ internal fun QueueRow(
                     Column(Modifier.weight(1f)) {
                         Text(
                             if (numParts == 1) "No split" else "$numParts parts - ${partSecText}s each",
-                            style = MaterialTheme.typography.titleSmall
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                     QueueButton("−", !locked && numParts > minParts) { onExtraParts(numParts - minParts - 1) }
@@ -729,7 +729,7 @@ internal fun QueueRow(
                 Box(Modifier.width(3.dp).fillMaxHeight().background(P5.Amber))
                 Text(
                     estimateText,
-                    style = MaterialTheme.typography.titleSmall,
+                    style = MaterialTheme.typography.bodySmall,
                     color = P5.Amber,
                     modifier = Modifier.padding(start = 8.dp),
                 )
@@ -1016,13 +1016,6 @@ internal fun QueueRow(
                         singleLine = true,
                         shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
                     )
-                    Text(
-                        "When the video is saved, its part number (if it is split), the sound and quality " +
-                            "markers and \"${Converter.OUTPUT_NAME_TAG}\" are added to the end of this, then .webm. " +
-                            "Leave it empty to use the original video's name.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = P5.Grey,
-                    )
                 }
             },
             confirmButton = { P5Button("Save", onClick = save, enabled = blank || cleaned != null) },
@@ -1148,6 +1141,8 @@ private fun CollapsibleSection(
     expanded: Boolean,
     onToggle: () -> Unit,
     summaryIsError: Boolean = false,
+    /** A thinner header with slightly smaller text, for a group that holds other groups. */
+    slim: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val shape = remember { CutCornerShape(topEnd = 16.dp, bottomStart = 16.dp) }
@@ -1164,13 +1159,13 @@ private fun CollapsibleSection(
                 .fillMaxWidth()
                 .background(if (expanded) P5.Red else Color.Transparent)
                 .clickable(onClick = onToggle)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = if (slim) 7.dp else 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
                     title.uppercase(),
-                    style = MaterialTheme.typography.labelLarge.copy(fontSize = 16.sp),
+                    style = MaterialTheme.typography.labelLarge.copy(fontSize = if (slim) 13.sp else 16.sp),
                     color = P5.White,
                 )
                 if (!expanded) {
@@ -1877,6 +1872,7 @@ fun App(onMenu: () -> Unit = {}) {
             expanded = deepOpen,
             onToggle = { deepOpen = !deepOpen },
             summaryIsError = !fpsOk,
+            slim = true,
         ) {
             CollapsibleSection(
                 title = "Sound",
