@@ -692,6 +692,123 @@ object BatchRunner {
         scope.launch(Dispatchers.IO) { Converter.pruneAnalysis(ctx, keep) }
     }
 
+    // ---- The Cache page ----
+
+    /**
+     * True while something is working with the cache's files (a run that is going or paused, videos being
+     * read, or a shared video being copied in), when no wipe is allowed.
+     */
+    val cacheBusy: Boolean get() = busy || probing > 0 || copyingTotal > 0
+
+    /** The folders (as canonical paths) of the shared-video copies that a queue, Holding Pen or Finished card still uses. */
+    private fun sharedFoldersInUse(): Set<String> =
+        (queue + finished).mapNotNull { q ->
+            q.uri.takeIf { it.scheme == "file" }?.path?.let { File(it).parentFile?.canonicalPath }
+        }.toSet()
+
+    /** Reads what the app keeps in its storage, for the Cache page. */
+    suspend fun cacheReport(ctx: Context): CacheReport {
+        val appCtx = ctx.applicationContext
+        // What cards still use is worked out here, where the lists are read; the folders are walked off the main thread.
+        val keepSources = (queue + finished).map { it.uri.toString() }.toSet()
+        val keepThumbs = (queue + finished + history).map { it.id }.toSet()
+        val keepShared = sharedFoldersInUse()
+        return withContext(Dispatchers.IO) {
+            val (analysisIn, analysisOut) = Converter.analysisUsage(appCtx, keepSources)
+            val (thumbsIn, thumbsOut) = CacheTools.thumbsUsage(Thumbnails.dir(appCtx), keepThumbs)
+            val (sharedIn, sharedOut) = CacheTools.sharedUsage(sharedDir(appCtx), keepShared)
+            // The few files at the top of the app's storage are the saved lists and logs.
+            val saved = appCtx.filesDir.listFiles()?.filter { it.isFile }
+                ?.fold(CacheStat()) { sum, f -> sum + CacheTools.statOf(f) } ?: CacheStat()
+            CacheReport(
+                cacheFolder = CacheTools.cacheFolderRows(appCtx.cacheDir),
+                analysisInUse = analysisIn, analysisUnused = analysisOut,
+                thumbsInUse = thumbsIn, thumbsUnused = thumbsOut,
+                sharedInUse = sharedIn, sharedUnused = sharedOut,
+                savedData = saved,
+            )
+        }
+    }
+
+    /**
+     * Safe wipe: empties the cache folder and deletes the analysis, thumbnails and shared-video copies
+     * that no card uses. Nothing on screen changes. Returns what was freed, or null if it wasn't
+     * allowed ([cacheBusy]).
+     */
+    suspend fun wipeSafe(ctx: Context): CacheStat? {
+        if (cacheBusy) return null
+        val appCtx = ctx.applicationContext
+        val before = cacheReport(appCtx)
+        val keepSources = (queue + finished).map { it.uri.toString() }.toSet()
+        val keepThumbs = (queue + finished + history).map { it.id }.toSet()
+        val keepShared = sharedFoldersInUse()
+        withContext(Dispatchers.IO) {
+            CacheTools.clearFolder(appCtx.cacheDir)
+            Converter.pruneAnalysis(appCtx, keepSources)
+            Thumbnails.pruneExcept(appCtx, keepThumbs)
+            sharedDir(appCtx).listFiles()?.forEach { if (it.canonicalPath !in keepShared) it.deleteRecursively() }
+        }
+        return before.total - cacheReport(appCtx).total
+    }
+
+    /**
+     * Full cache wipe: the safe wipe, plus all the kept analysis and every thumbnail. The cards stay
+     * (without thumbnails, which are made again the next time the app starts, where the video is still
+     * there), as do shared copies a card uses and the saved lists. A video converted again redoes its analysis.
+     */
+    suspend fun wipeFull(ctx: Context): CacheStat? {
+        if (cacheBusy) return null
+        val appCtx = ctx.applicationContext
+        val before = cacheReport(appCtx)
+        val keepShared = sharedFoldersInUse()
+        // The cards forget their thumbnails first, so none points at a file that is about to go.
+        for (list in listOf(queue, finished, history)) {
+            for (n in list.indices) if (list[n].hasThumb) list[n] = list[n].copy(hasThumb = false)
+        }
+        persist()
+        persistHistory()
+        withContext(Dispatchers.IO) {
+            CacheTools.clearFolder(appCtx.cacheDir)
+            Converter.pruneAnalysis(appCtx, emptySet())
+            Thumbnails.pruneExcept(appCtx, emptySet())
+            sharedDir(appCtx).listFiles()?.forEach { if (it.canonicalPath !in keepShared) it.deleteRecursively() }
+        }
+        return before.total - cacheReport(appCtx).total
+    }
+
+    /**
+     * Reset app: the full cache wipe, and the Holding Pen, queue, Finished list, History, the Log page's
+     * conversions and every shared-video copy as well. Settings, Advanced numbers, the save location and
+     * the saved .webm videos are not touched.
+     */
+    suspend fun resetApp(ctx: Context): CacheStat? {
+        if (cacheBusy) return null
+        val appCtx = ctx.applicationContext
+        val before = cacheReport(appCtx)
+        closeEditor()
+        // Let go of the lasting read grants on picked videos; the cards that held them are going.
+        (queue + finished + history).map { it.uri }.distinct().forEach { if (it.scheme != "file") releaseAccess(appCtx, it) }
+        queue.clear()
+        finished.clear()
+        history.clear()
+        historySourceOk.clear()
+        cardEvents.clear()
+        conversionLogs.clear()
+        summary = null
+        notice = null
+        logBuffer.clear { logLines = it }
+        persist()
+        persistHistory()
+        writer.execute { ConversionLogStore.save(appCtx, emptyList()) }
+        withContext(Dispatchers.IO) {
+            CacheTools.clearFolder(appCtx.cacheDir)
+            Converter.pruneAnalysis(appCtx, emptySet())
+            Thumbnails.pruneExcept(appCtx, emptySet())
+            CacheTools.clearFolder(sharedDir(appCtx))
+        }
+        return before.total - cacheReport(appCtx).total
+    }
+
     // ---- The video editor ----
 
     /** The card open in the editor (see EditorScreen), or -1 when it isn't open. Not saved. */

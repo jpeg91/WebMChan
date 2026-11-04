@@ -249,7 +249,7 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
  * they can be tried out without rebuilding the app. The defaults are the recommended values.
  */
 @Composable
-fun AdvancedScreen(onBack: () -> Unit) {
+fun AdvancedScreen(onBack: () -> Unit, onCache: () -> Unit = {}) {
     val ctx = LocalContext.current
     BackHandler(onBack = onBack)
 
@@ -265,6 +265,12 @@ fun AdvancedScreen(onBack: () -> Unit) {
     ) {
         P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
         P5Title("Advanced settings", size = 30.sp)
+        P5Button(
+            "Cache →",
+            onClick = onCache,
+            kind = P5Kind.Secondary,
+            modifier = Modifier.fillMaxWidth(),
+        )
         Text(
             "For testing. These numbers steer how videos are fitted into a size limit; the defaults " +
                 "are the recommended values. Changes apply from the next conversion, and anything " +

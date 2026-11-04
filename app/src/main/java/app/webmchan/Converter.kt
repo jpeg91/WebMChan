@@ -1421,6 +1421,26 @@ object Converter {
         }
     }
 
+    /**
+     * What the kept analysis takes, for the Cache page: ([CacheStat] of what a video still on a card
+     * owns, and of what nothing needs). Grouped and judged exactly as [pruneAnalysis] does, so the
+     * "unused" part is what a prune would delete. The analysis the running conversion uses counts as in use.
+     */
+    fun analysisUsage(ctx: Context, keepSources: Set<String>): Pair<CacheStat, CacheStat> {
+        val dir = File(ctx.filesDir, PASS1_DIR)
+        val files = dir.listFiles() ?: return CacheStat() to CacheStat()
+        val active = activePass1
+        var inUse = CacheStat()
+        var unused = CacheStat()
+        val byName = files.groupBy { it.name.substringBefore('.').removeSuffix("-0") }
+        for ((name, group) in byName) {
+            val size = group.fold(CacheStat()) { sum, f -> sum + CacheTools.statOf(f) }
+            val owner = try { File(dir, "$name.src").takeIf { it.exists() }?.readText() } catch (_: Exception) { null }
+            if (name == active || (owner != null && owner in keepSources)) inUse += size else unused += size
+        }
+        return inUse to unused
+    }
+
     // ---- Best quality ----
 
     /** The fullest result of a Best quality conversion so far is kept under this name (out.webm is the attempt in progress). */

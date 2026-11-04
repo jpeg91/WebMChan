@@ -30,6 +30,9 @@ object Thumbnails {
     /** The longest edge of a stored thumbnail, in pixels. */
     private const val MAX_EDGE = 360
 
+    /** The folder the thumbnails are kept in (for the Cache page). */
+    fun dir(ctx: Context): File = File(ctx.filesDir, DIR)
+
     fun file(ctx: Context, id: Long): File = File(File(ctx.filesDir, DIR), "$id.jpg")
 
     fun exists(ctx: Context, id: Long): Boolean = file(ctx, id).length() > 0

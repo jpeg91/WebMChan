@@ -120,6 +120,7 @@ class MainActivity : ComponentActivity() {
                 var showLog by remember { mutableStateOf(false) }
                 var showAbout by remember { mutableStateOf(false) }
                 var showAdvanced by remember { mutableStateOf(false) }
+                var showCache by remember { mutableStateOf(false) }
                 // Keeps the screen on while a run is going (and the app is open), if the Settings page says so.
                 val keepOn = AppSettings.get(AppToggle.KEEP_SCREEN_ON) && BatchRunner.busy && !BatchRunner.paused
                 androidx.compose.runtime.DisposableEffect(keepOn) {
@@ -159,7 +160,10 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     if (showAdvanced) {
-                        P5Background { AdvancedScreen(onBack = { showAdvanced = false }) }
+                        P5Background { AdvancedScreen(onBack = { showAdvanced = false }, onCache = { showCache = true }) }
+                    }
+                    if (showCache) {
+                        P5Background { CacheScreen(onBack = { showCache = false }) }
                     }
                     // The video editor, opened from a Holding Pen card. A page of its own, on top.
                     val editingId = BatchRunner.editingId
