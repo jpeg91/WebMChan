@@ -697,6 +697,25 @@ fun P5Percent(value: Int?, modifier: Modifier = Modifier, frozen: Boolean = fals
 }
 
 /**
+ * The "1/3" above the percentage of a split video: [P5Percent]'s look (heavy red italic, white
+ * outline, hard black shadow, the same tilt) at a smaller size, without the underlines.
+ */
+@Composable
+fun P5PartCount(current: Int, total: Int, modifier: Modifier = Modifier) {
+    val label = "$current/$total"
+    val style = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic,
+        fontSize = 24.sp, lineHeight = 26.sp, letterSpacing = 0.sp,
+    )
+    val stroked = style.copy(drawStyle = Stroke(width = 7f, join = StrokeJoin.Round))
+    Box(modifier.graphicsLayer { rotationZ = -6f }) {
+        Box(Modifier.offset(2.dp, 2.dp)) { Text(label, style = stroked, color = Color.Black) }
+        Text(label, style = stroked, color = P5.White)
+        Text(label, style = style, color = P5.Red)
+    }
+}
+
+/**
  * A progress bar: slanted, black, filled with red candy stripes. Takes the progress as a function
  * so only the drawing is redone as it changes. Driven by plain numbers, not by Compose's
  * animation system, so it moves even when the phone has animations turned off.

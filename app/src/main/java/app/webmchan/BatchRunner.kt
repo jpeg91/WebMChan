@@ -84,6 +84,13 @@ data class QueueItem(
      * the pen. A fresh card made from the same video starts without one.
      */
     val edit: EditSpec? = null,
+    /**
+     * A name for the converted file chosen on the card (the part before the part number, markers and
+     * app tag, which are still added when it is saved), or null for the source video's own name. Only
+     * kept until the conversion is done: the card leaves the queue then and the saved file's name is
+     * what the Finished card shows.
+     */
+    val customName: String? = null,
 )
 
 /**
@@ -830,6 +837,23 @@ object BatchRunner {
         persist()
     }
 
+    /**
+     * Sets (or, with a blank [name], clears) the name the converted file of queue card [id] will be
+     * saved under. Allowed in the Holding Pen, the queue and on the card being converted (the name is
+     * read when each part is saved). Returns false if [name] can't be used in a file name.
+     */
+    fun setCustomName(id: Long, name: String): Boolean {
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0) return false
+        val cleaned = if (name.isBlank()) null else (OutputStorage.cleanBaseName(name) ?: return false)
+        val item = queue[at]
+        if (cleaned != item.customName) {
+            queue[at] = item.copy(customName = cleaned)
+            persist()
+        }
+        return true
+    }
+
     fun removeAt(index: Int) {
         if (index !in queue.indices) return
         val item = queue[index]
@@ -1300,8 +1324,6 @@ object BatchRunner {
                 val numParts = Converter.partsFor(src.durationSec, settings.maxDurationSec, settings.tuning, item.extraParts)
                 val partDur = min(src.durationSec / numParts, Converter.effectiveMaxSec(settings.maxDurationSec, settings.tuning))
                 currentParts = numParts
-                val base = item.name.substringBeforeLast('.', item.name)
-
                 // Carry on after the parts that are already saved, if this video was part-way
                 // through. That only holds if it would be split exactly the same way now (the same
                 // number of parts means identical boundaries); if the target changed since, the
@@ -1414,11 +1436,10 @@ object BatchRunner {
                                 // get a "-Part1", "-Part2"... marker ahead of that (zero-padded when
                                 // there are 10 or more, so they sort), and every name ends with the
                                 // app tag: "clip-Part02-MQ-WebMChan_for_Android.webm".
-                                val audioMarker = if (res.audioIncluded) "A" else "M"
-                                val effortMarker =
-                                    if (settings.bestQuality) "B" else if (settings.fastest) "F" else if (settings.fastEncode) "S" else "Q"
-                                val partSuffix = if (numParts > 1) "-${Converter.partName(part, numParts)}" else ""
-                                val outName = "$base$partSuffix-$audioMarker$effortMarker-${Converter.OUTPUT_NAME_TAG}.webm"
+                                // A name typed on the card (even while converting) replaces the source's name.
+                                val base = OutputName.baseFor(item.name, queue.firstOrNull { it.id == id }?.customName)
+                                val effortMarker = OutputName.effortMarker(settings.bestQuality, settings.fastest, settings.fastEncode)
+                                val outName = OutputName.build(base, part, numParts, res.audioIncluded, effortMarker)
 
                                 // What the Finished card shows is the converted file itself (its own
                                 // length, size and so on), not the source video it came from. Read
@@ -1456,6 +1477,8 @@ object BatchRunner {
                                     itemFailMsg = saved.message
                                     break
                                 }
+                                // The name the file really got (a clash adds "(1)"), for the Finished card's title.
+                                val savedName = withContext(Dispatchers.IO) { OutputStorage.fileName(ctx, saved.uri) } ?: outName
                                 val mb = String.format(Locale.US, "%.2f", res.bytes / 1048576.0)
                                 val detail = buildString {
                                     append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
@@ -1471,7 +1494,8 @@ object BatchRunner {
                                     QueueItem(
                                         id = cardId,
                                         uri = item.uri,
-                                        name = if (numParts > 1) "${item.name}$partTag" else item.name,
+                                        // The saved file's own name, which always ends in .webm.
+                                        name = savedName,
                                         info = outInfo,
                                         hasThumb = hasThumb,
                                         status = ItemStatus.DONE,

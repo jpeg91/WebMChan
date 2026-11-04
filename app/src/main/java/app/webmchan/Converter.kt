@@ -237,14 +237,13 @@ sealed class StageResult {
 object Converter {
 
     /** Added to the end of every converted file's name, just before ".webm". */
-    const val OUTPUT_NAME_TAG = "WebMChan_for_Android"
+    const val OUTPUT_NAME_TAG = OutputName.TAG
 
     /**
      * "Part1" ... "Part9", or zero-padded to the width of the part count ("Part01" ... "Part12")
      * so the files sort in order.
      */
-    fun partName(part: Int, numParts: Int): String =
-        "Part" + part.toString().padStart(numParts.toString().length, '0')
+    fun partName(part: Int, numParts: Int): String = OutputName.partName(part, numParts)
 
     /** A [Settings.maxDurationSec] of this means no length limit. The Custom option uses it; board targets carry their own limit. */
     const val NO_LENGTH_LIMIT = 0

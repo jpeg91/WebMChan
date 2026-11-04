@@ -96,6 +96,7 @@ object BatchStore {
         put("extraParts", i.extraParts)
         put("hasThumb", i.hasThumb)
         put("inPen", i.inPen)
+        i.customName?.let { put("customName", it) }
         i.edit?.let { e ->
             put(
                 "edit",
@@ -188,6 +189,8 @@ object BatchStore {
             hasThumb = o.optBoolean("hasThumb", false),
             // Absent in files saved by older versions: not in the Holding Pen.
             inPen = o.optBoolean("inPen", false),
+            // Absent when the card has no typed name (and in files saved by older versions).
+            customName = if (o.has("customName")) o.getString("customName") else null,
             // Absent when the card has no edit (and in files saved by older versions).
             edit = readEdit(o.optJSONObject("edit")),
             // Absent when no run was active (and in files saved by older versions).

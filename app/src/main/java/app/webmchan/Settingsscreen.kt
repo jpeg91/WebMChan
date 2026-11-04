@@ -4,6 +4,8 @@ package app.webmchan
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,9 +21,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
 /** One on/off setting: how it is saved, labelled and explained on the Settings page. */
@@ -108,6 +115,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     ) {
         P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
         P5Title("Settings")
+        SaveLocationGroup()
         group("Look", AppToggle.ANIMATIONS_OFF)
         group(
             "Notifications",
@@ -119,6 +127,64 @@ fun SettingsScreen(onBack: () -> Unit) {
             "Videos and cards",
             AppToggle.AUTO_CLEAR_FINISHED, AppToggle.CONFIRM_DESTRUCTIVE, AppToggle.SHARE_TO_RUNNING_BATCH,
         )
+    }
+}
+
+/** Where converted videos are saved, and the buttons to change it (they can't while a batch is running). */
+@Composable
+private fun SaveLocationGroup() {
+    val ctx = LocalContext.current
+    var outputLabel by remember { mutableStateOf(OutputStorage.displayName(ctx)) }
+    var hasCustomDir by remember { mutableStateOf(OutputStorage.savedDirUri(ctx) != null) }
+    var folderError by remember { mutableStateOf<String?>(null) }
+    val busy = BatchRunner.busy
+
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { picked ->
+        if (picked != null) {
+            try {
+                OutputStorage.rememberDir(ctx, picked)
+                outputLabel = OutputStorage.displayName(ctx)
+                hasCustomDir = true
+                folderError = null
+            } catch (e: Exception) {
+                folderError = "Couldn't get permission for that folder. Try a different one."
+            }
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        P5SectionTitle("Save location")
+        Text(outputLabel, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Videos are saved in a WebMChan folder inside the location you choose. " +
+                "If it becomes unavailable (e.g. SD card removed), they go to Download/WebMChan instead.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        folderError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            P5Button(
+                "Choose folder",
+                onClick = { folderPicker.launch(null) },
+                enabled = !busy,
+                kind = P5Kind.Secondary,
+                modifier = Modifier.weight(1f),
+            )
+            if (hasCustomDir) {
+                P5Button(
+                    "Use default",
+                    onClick = {
+                        OutputStorage.clearDir(ctx)
+                        outputLabel = OutputStorage.displayName(ctx)
+                        hasCustomDir = false
+                        folderError = null
+                    },
+                    enabled = !busy,
+                    kind = P5Kind.Secondary,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
     }
 }
 

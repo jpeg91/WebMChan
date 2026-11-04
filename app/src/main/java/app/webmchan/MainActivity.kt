@@ -13,6 +13,7 @@ import android.widget.Toast
 import android.os.Build
 import android.os.SystemClock
 import android.os.Bundle
+import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -413,6 +414,9 @@ internal fun QueueRow(
     var renaming by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
     var showRemove by remember { mutableStateOf(false) }
+    // The dialog that sets the name the converted file will be saved under (Holding Pen, queue, converting).
+    var showNameEdit by remember { mutableStateOf(false) }
+    var nameEditText by remember { mutableStateOf("") }
     val removeCard = { if (inHistory) BatchRunner.removeFromHistory(item.id) else BatchRunner.removeFinished(item.id) }
 
     // Tapping the thumbnail plays the video: the converted file on a Finished card, the original
@@ -507,13 +511,40 @@ internal fun QueueRow(
         // when the thumbnail sat beside it too). Long names stop at two lines; the full name is
         // under Details.
         Row(verticalAlignment = Alignment.Top) {
-            Text(
-                item.name,
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(top = 8.dp, end = 8.dp),
-            )
+            // A finished card names the saved file (always ending in .webm). A card that is still to be
+            // converted names the source video, or the name typed for the output; tapping it edits that.
+            val title = when {
+                finishedCard -> webmFileName(item.name)
+                item.customName != null -> item.customName
+                else -> item.name
+            }
+            val canNameOutput = showControls && !finishedCard && !inHistory && !item.probeFailed
+            Row(
+                Modifier
+                    .weight(1f)
+                    .clickable(enabled = canNameOutput) {
+                        nameEditText = item.customName ?: item.name.substringBeforeLast('.', item.name)
+                        showNameEdit = true
+                    }
+                    .padding(top = 8.dp, end = 8.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (canNameOutput) {
+                    Text(
+                        "✎",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = P5.RedBright,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+            }
             if (showControls) {
                 // While a batch runs, a video still waiting its turn can be moved; the one being converted can't.
                 if (!busy || (item.status == ItemStatus.WAITING && item.id != BatchRunner.pausedItemId)) {
@@ -588,7 +619,14 @@ internal fun QueueRow(
             // The percentage of the video being converted, big and red, in the style of 💯.
             if (converting && i != null && !item.probeFailed) {
                 Spacer(Modifier.size(8.dp))
-                RunPercent(item)
+                Column(horizontalAlignment = Alignment.End) {
+                    // A split video also says which part this is, e.g. "1/3" (partsDone counts the parts
+                    // already finished or skipped, so the one being encoded is the next).
+                    if (item.partsTotal > 1) {
+                        P5PartCount(minOf(item.partsDone + 1, item.partsTotal), item.partsTotal)
+                    }
+                    RunPercent(item)
+                }
             }
             // A Holding Pen card has no percentage, so its Edit button takes that place.
             if (canEdit) {
@@ -654,13 +692,15 @@ internal fun QueueRow(
 
             // Splits: live estimate of what each part would get, and (for queued videos) the
             // buttons to add splits or take them away again, down to the minimum the board needs.
+            val partSecText = String.format(Locale.US, "%.1f", est.partSec)
             val estimateText = buildString {
                 append("Expected conversion output: ")
-                if (numParts > 1) append("Each part ${String.format(Locale.US, "%.1f", est.partSec)}s - ")
                 append("${est.height}p at ${est.videoKbps}kbps")
             }
             val panelShape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp)
-            if (showControls) {
+            // In the Holding Pen the box is always there (it's where splits are added). Once the card has
+            // left the pen it only stays if the video is split, to show the part count and length.
+            if (showControls && (item.inPen || numParts > 1)) {
                 val locked = busy || item.partsDone > 0
                 Row(
                     Modifier
@@ -673,7 +713,7 @@ internal fun QueueRow(
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(
-                            if (numParts == 1) "No split" else "$numParts parts",
+                            if (numParts == 1) "No split" else "$numParts parts - ${partSecText}s each",
                             style = MaterialTheme.typography.titleSmall
                         )
                     }
@@ -681,17 +721,16 @@ internal fun QueueRow(
                     QueueButton("+", !locked && numParts < maxParts) { onExtraParts(numParts - minParts + 1) }
                 }
             }
-            // The important line, under the split box: bold white with a red bar, so it stands out.
+            // The important line, under the split box: amber with an amber bar, so it stands out.
             Row(
                 Modifier.fillMaxWidth().padding(top = 6.dp).height(IntrinsicSize.Min),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(Modifier.width(3.dp).fillMaxHeight().background(P5.Red))
+                Box(Modifier.width(3.dp).fillMaxHeight().background(P5.Amber))
                 Text(
                     estimateText,
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = P5.White,
+                    color = P5.Amber,
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
@@ -756,7 +795,10 @@ internal fun QueueRow(
                     )
                 }
             }
-            Text("File: ${item.name}", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "File: ${if (finishedCard) webmFileName(item.name) else item.name}",
+                style = MaterialTheme.typography.bodySmall
+            )
             if (item.edit != null && sourceInfo != null && !finishedCard) {
                 Text(
                     "Edited: ${item.edit.describe()}. The original is ${sourceInfo.width}×${sourceInfo.height}, " +
@@ -945,6 +987,49 @@ internal fun QueueRow(
         )
     }
 
+    if (showNameEdit) {
+        val cleaned = OutputStorage.cleanBaseName(nameEditText)
+        val blank = nameEditText.isBlank()
+        val save = {
+            if (blank || cleaned != null) {
+                BatchRunner.setCustomName(item.id, nameEditText)
+                showNameEdit = false
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { showNameEdit = false },
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Output file name".uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = nameEditText,
+                        onValueChange = { nameEditText = it },
+                        label = { Text("File name") },
+                        isError = !blank && cleaned == null,
+                        supportingText = {
+                            if (!blank && cleaned == null) Text("Enter a name without / \\ : * ? \" < > |")
+                        },
+                        singleLine = true,
+                        shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
+                    )
+                    Text(
+                        "When the video is saved, its part number (if it is split), the sound and quality " +
+                            "markers and \"${Converter.OUTPUT_NAME_TAG}\" are added to the end of this, then .webm. " +
+                            "Leave it empty to use the original video's name.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = P5.Grey,
+                    )
+                }
+            },
+            confirmButton = { P5Button("Save", onClick = save, enabled = blank || cleaned != null) },
+            dismissButton = { P5Button("Cancel", onClick = { showNameEdit = false }, kind = P5Kind.Ghost) },
+        )
+    }
+
     if (showDelete) {
         val fileLabel = remember(item.savedUri) {
             item.savedUri?.let { OutputStorage.fileName(ctx, it) } ?: "this file"
@@ -996,6 +1081,23 @@ internal fun QueueRow(
         )
     }
 }
+
+/** The battery nudge is shown at most once per app launch (a plain flag: it resets when the app restarts). */
+private var batteryNagShownThisLaunch = false
+
+/** True when the nudge should show now: not shown yet this launch, not switched off, and the app not already allowed. */
+private fun batteryNagDue(ctx: Context, prefs: android.content.SharedPreferences): Boolean {
+    if (batteryNagShownThisLaunch || prefs.getBoolean("battery_nag_off", false)) return false
+    val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return false
+    return !pm.isIgnoringBatteryOptimizations(ctx.packageName)
+}
+
+/**
+ * A Finished card's title: the saved file's name, which always ends in .webm. Cards made by older
+ * versions hold the source video's name instead, so for those the extension is swapped.
+ */
+private fun webmFileName(name: String): String =
+    if (name.endsWith(".webm", ignoreCase = true)) name else name.substringBeforeLast('.', name) + ".webm"
 
 @Composable
 private fun TargetRow(
@@ -1348,7 +1450,7 @@ fun App(onMenu: () -> Unit = {}) {
     // The one-time heads-up shown the first time Best quality is picked.
     var showBestNotice by remember { mutableStateOf(false) }
     var codecOpen by remember { mutableStateOf(false) }
-    var saveOpen by remember { mutableStateOf(false) }
+    var deepOpen by remember { mutableStateOf(false) }
 
     // Pass 1 has no real progress to report. Compose's built-in indeterminate bar relies on
     // Compose's own animation system, which some phones freeze (the "Animator duration scale"
@@ -1357,9 +1459,6 @@ fun App(onMenu: () -> Unit = {}) {
     var pass1Sweep by remember { mutableFloatStateOf(0f) }
 
     // Where output is saved. Empty custom-dir state means the default Download/WebMChan/.
-    var outputLabel by remember { mutableStateOf(OutputStorage.displayName(ctx)) }
-    var hasCustomDir by remember { mutableStateOf(OutputStorage.savedDirUri(ctx) != null) }
-    var folderError by remember { mutableStateOf<String?>(null) }
 
     val logListState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
@@ -1388,19 +1487,6 @@ fun App(onMenu: () -> Unit = {}) {
         BatchRunner.addVideos(ctx, picked)
     }
 
-    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { picked ->
-        if (picked != null) {
-            try {
-                OutputStorage.rememberDir(ctx, picked)
-                outputLabel = OutputStorage.displayName(ctx)
-                hasCustomDir = true
-                folderError = null
-            } catch (e: Exception) {
-                folderError = "Couldn't get permission for that folder. Try a different one."
-            }
-        }
-    }
-
     // Android 13+ asks before an app may show notifications. We explain and ask every time you
     // convert until it's granted, then start either way: converting works without it, you just
     // won't see the progress notification. Android stops showing its own prompt after two
@@ -1408,15 +1494,29 @@ fun App(onMenu: () -> Unit = {}) {
     var pendingSettings by remember { mutableStateOf<Settings?>(null) }
     var showNotificationExplainer by remember { mutableStateOf(false) }
     var explainerBlocked by remember { mutableStateOf(false) }
+
+    // After the notification step, and before a run starts: a one-off nudge to allow unrestricted
+    // battery use (see the dialog below). Everything that used to start the run now goes through this.
+    var showBatteryNag by remember { mutableStateOf(false) }
+    var batterySettings by remember { mutableStateOf<Settings?>(null) }
+    val startRun: (Settings) -> Unit = { s ->
+        if (batteryNagDue(ctx, prefs)) {
+            batteryNagShownThisLaunch = true
+            batterySettings = s
+            showBatteryNag = true
+        } else {
+            BatchRunner.start(ctx, s)
+        }
+    }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
-        pendingSettings?.let { BatchRunner.start(ctx, it) }
+        pendingSettings?.let { startRun(it) }
         pendingSettings = null
     }
     // Explains why before Android's own permission prompt appears.
     if (showNotificationExplainer) {
         val skip = {
             showNotificationExplainer = false
-            pendingSettings?.let { BatchRunner.start(ctx, it) }
+            pendingSettings?.let { startRun(it) }
             pendingSettings = null
         }
         AlertDialog(
@@ -1450,7 +1550,7 @@ fun App(onMenu: () -> Unit = {}) {
                             } catch (_: Exception) {
                             }
                             // Don't lose the tap: start converting now.
-                            pendingSettings?.let { BatchRunner.start(ctx, it) }
+                            pendingSettings?.let { startRun(it) }
                             pendingSettings = null
                         } else {
                             ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE)
@@ -1461,6 +1561,68 @@ fun App(onMenu: () -> Unit = {}) {
                 )
             },
             dismissButton = { P5Button("Skip", onClick = skip, kind = P5Kind.Ghost) },
+        )
+    }
+
+    // Android may stop an app in the background to save battery, which would end a long conversion
+    // part-way. We explain, then open Android's own battery screen for the person to allow it (this
+    // needs no permission). The run starts either way, so the tap is never lost. Shown at most once
+    // per app launch, never when the app is already allowed, and never again after "Don't ask again".
+    if (showBatteryNag) {
+        val proceed = {
+            showBatteryNag = false
+            batterySettings?.let { BatchRunner.start(ctx, it) }
+            batterySettings = null
+        }
+        AlertDialog(
+            onDismissRequest = proceed,
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("Unrestricted battery use".uppercase(), style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "To save battery, Android can stop WebMChan while it is in the background, which ends a " +
+                            "long conversion part-way. Allowing unrestricted battery use stops that.\n\n" +
+                            "The button below opens Android's battery settings. Then:\n" +
+                            "1. Find WebMChan (switch the list to \"All apps\" if you can't see it).\n" +
+                            "2. Choose \"Don't optimise\" (some phones say \"Unrestricted\").\n" +
+                            "3. Come back here. Your conversion carries on meanwhile.\n\n" +
+                            "On some phones it is under Settings > Apps > WebMChan > Battery instead."
+                    )
+                    P5Button(
+                        "Don't ask again",
+                        onClick = {
+                            prefs.edit().putBoolean("battery_nag_off", true).apply()
+                            proceed()
+                        },
+                        kind = P5Kind.Ghost,
+                    )
+                }
+            },
+            confirmButton = {
+                P5Button(
+                    "Open battery settings",
+                    onClick = {
+                        try {
+                            ctx.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        } catch (_: Exception) {
+                            // Not on every phone: the app's own info page has the same Battery entry.
+                            try {
+                                ctx.startActivity(
+                                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                                        .setData(Uri.parse("package:${ctx.packageName}"))
+                                )
+                            } catch (_: Exception) {
+                            }
+                        }
+                        proceed()
+                    },
+                )
+            },
+            dismissButton = { P5Button("Later", onClick = proceed, kind = P5Kind.Ghost) },
         )
     }
 
@@ -1707,217 +1869,189 @@ fun App(onMenu: () -> Unit = {}) {
             }
         }
 
+        // Sound, frame rate, encoding and codec live in one group that starts closed: the defaults suit
+        // most videos, so a newcomer can ignore them and an advanced user still has every choice.
         CollapsibleSection(
-            title = "Sound",
-            summary = audioSummaryText,
-            expanded = audioOpen,
-            onToggle = { audioOpen = !audioOpen },
+            title = "Encoding settings",
+            summary = if (fpsOk) "Defaults are fine for most videos" else "Frame rate: enter a whole number from ${Converter.MIN_FPS} to ${Converter.MAX_FPS}",
+            expanded = deepOpen,
+            onToggle = { deepOpen = !deepOpen },
+            summaryIsError = !fpsOk,
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        when {
-                            !audioAllowed -> "This target doesn't allow sound; the space goes to video quality."
-                            removeAudio -> "Sound is off: the output has no sound and the space goes to video quality."
-                            else -> "Sound is on: kept in the output at the quality chosen below. Only targets marked \"Audio OK\" allow it."
-                        },
-                        style = MaterialTheme.typography.bodySmall
+            CollapsibleSection(
+                title = "Sound",
+                summary = audioSummaryText,
+                expanded = audioOpen,
+                onToggle = { audioOpen = !audioOpen },
+            ) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            when {
+                                !audioAllowed -> "This target doesn't allow sound; the space goes to video quality."
+                                removeAudio -> "Sound is off: the output has no sound and the space goes to video quality."
+                                else -> "Sound is on: kept in the output at the quality chosen below. Only targets marked \"Audio OK\" allow it."
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    // On = sound kept. (removeAudio is the opposite way round internally.)
+                    Switch(
+                        checked = !effectiveRemoveAudio,
+                        onCheckedChange = { removeAudio = !it },
+                        enabled = audioAllowed,
+                        colors = p5SwitchColors(),
                     )
                 }
-                // On = sound kept. (removeAudio is the opposite way round internally.)
-                Switch(
-                    checked = !effectiveRemoveAudio,
-                    onCheckedChange = { removeAudio = !it },
-                    enabled = audioAllowed,
-                    colors = p5SwitchColors(),
-                )
+                // Only while sound is on. Lower rates leave more of the size limit for the picture.
+                if (!effectiveRemoveAudio) {
+                    Text(
+                        "Sound quality. A tight size limit may lower it a little automatically; it never goes above the choice here.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    TargetRow(
+                        selected = audioKbps == 16,
+                        enabled = true,
+                        title = "16 kbps (mono)",
+                        subtitle = "Poor quality, mono. Frees the most space for the picture.",
+                    ) { audioKbps = 16 }
+                    TargetRow(
+                        selected = audioKbps == 32,
+                        enabled = true,
+                        title = "32 kbps",
+                        subtitle = "Noticeably thinner sound. Frees space for the picture.",
+                    ) { audioKbps = 32 }
+                    TargetRow(
+                        selected = audioKbps == 64,
+                        enabled = true,
+                        title = "64 kbps (default)",
+                        subtitle = "Recommended. Good sound for the space it takes.",
+                    ) { audioKbps = 64 }
+                    TargetRow(
+                        selected = audioKbps == 128,
+                        enabled = true,
+                        title = "128 kbps",
+                        subtitle = "High quality. Worth it when the size limit is generous.",
+                    ) { audioKbps = 128 }
+                    TargetRow(
+                        selected = audioKbps == 256,
+                        enabled = true,
+                        title = "256 kbps",
+                        subtitle = "Highest quality. Takes a big share of the size limit.",
+                    ) { audioKbps = 256 }
+                }
             }
-            // Only while sound is on. Lower rates leave more of the size limit for the picture.
-            if (!effectiveRemoveAudio) {
+
+            CollapsibleSection(
+                title = "Frame rate",
+                summary = fpsSummaryText,
+                expanded = fpsOpen,
+                onToggle = { fpsOpen = !fpsOpen },
+                summaryIsError = !fpsOk,
+            ) {
                 Text(
-                    "Sound quality. A tight size limit may lower it a little automatically; it never goes above the choice here.",
+                    "The most frames per second the output may have. A video that's already slower keeps its own rate; frame rates are never raised.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 TargetRow(
-                    selected = audioKbps == 16,
+                    selected = fpsChoice == 0,
                     enabled = true,
-                    title = "16 kbps (mono)",
-                    subtitle = "Poor quality, mono. Frees the most space for the picture.",
-                ) { audioKbps = 16 }
+                    title = "24 fps",
+                    subtitle = "Film standard. Fewer frames means more detail in each one on a tight limit. A 30 or 60 fps source loses frames unevenly, so motion can look slightly juddery.",
+                ) { fpsChoice = 0 }
                 TargetRow(
-                    selected = audioKbps == 32,
+                    selected = fpsChoice == 1,
                     enabled = true,
-                    title = "32 kbps",
-                    subtitle = "Noticeably thinner sound. Frees space for the picture.",
-                ) { audioKbps = 32 }
+                    title = "30 fps (default)",
+                    subtitle = "Recommended. A good balance of smooth motion and detail.",
+                ) { fpsChoice = 1 }
                 TargetRow(
-                    selected = audioKbps == 64,
+                    selected = fpsChoice == 2,
                     enabled = true,
-                    title = "64 kbps (default)",
-                    subtitle = "Recommended. Good sound for the space it takes.",
-                ) { audioKbps = 64 }
+                    title = "60 fps",
+                    subtitle = "Smoother motion, but each second needs twice the bits for the same detail. On small size limits expect smaller frames and a rougher picture.",
+                ) { fpsChoice = 2 }
                 TargetRow(
-                    selected = audioKbps == 128,
+                    selected = isCustomFps,
                     enabled = true,
-                    title = "128 kbps",
-                    subtitle = "High quality. Worth it when the size limit is generous.",
-                ) { audioKbps = 128 }
-                TargetRow(
-                    selected = audioKbps == 256,
-                    enabled = true,
-                    title = "256 kbps",
-                    subtitle = "Highest quality. Takes a big share of the size limit.",
-                ) { audioKbps = 256 }
-            }
-        }
-
-        CollapsibleSection(
-            title = "Frame rate",
-            summary = fpsSummaryText,
-            expanded = fpsOpen,
-            onToggle = { fpsOpen = !fpsOpen },
-            summaryIsError = !fpsOk,
-        ) {
-            Text(
-                "The most frames per second the output may have. A video that's already slower keeps its own rate; frame rates are never raised.",
-                style = MaterialTheme.typography.bodySmall
-            )
-            TargetRow(
-                selected = fpsChoice == 0,
-                enabled = true,
-                title = "24 fps",
-                subtitle = "Film standard. Fewer frames means more detail in each one on a tight limit. A 30 or 60 fps source loses frames unevenly, so motion can look slightly juddery.",
-            ) { fpsChoice = 0 }
-            TargetRow(
-                selected = fpsChoice == 1,
-                enabled = true,
-                title = "30 fps (default)",
-                subtitle = "Recommended. A good balance of smooth motion and detail.",
-            ) { fpsChoice = 1 }
-            TargetRow(
-                selected = fpsChoice == 2,
-                enabled = true,
-                title = "60 fps",
-                subtitle = "Smoother motion, but each second needs twice the bits for the same detail. On small size limits expect smaller frames and a rougher picture.",
-            ) { fpsChoice = 2 }
-            TargetRow(
-                selected = isCustomFps,
-                enabled = true,
-                title = "Custom",
-                subtitle = "Your own limit, ${Converter.MIN_FPS} to ${Converter.MAX_FPS} fps.",
-            ) { fpsChoice = FPS_PRESETS.size }
-            if (isCustomFps) {
-                OutlinedTextField(
-                    value = customFps,
-                    onValueChange = { customFps = it },
-                    label = { Text("Frame rate limit (fps)") },
-                    isError = customFpsValue == null,
-                    supportingText = {
-                        if (customFpsValue == null) {
-                            Text("Enter a whole number from ${Converter.MIN_FPS} to ${Converter.MAX_FPS}.")
-                        }
-                    },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    enabled = true,
-                    shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
-                )
-            }
-        }
-
-        CollapsibleSection(
-            title = "Encoding",
-            summary = encodingSummaryText,
-            expanded = encodingOpen,
-            onToggle = { encodingOpen = !encodingOpen },
-        ) {
-            TargetRow(
-                selected = bestQuality,
-                enabled = true,
-                title = "Best quality",
-                subtitle = "The highest quality that fits, however long it takes. Much slower than Quality: it " +
-                    "encodes again and again until the file is within about 1% of the size limit. " +
-                    "VP9 (under Codec) gives better quality still, but is slower again.",
-            ) {
-                bestQuality = true; fastEncode = false; fastest = false
-                // A heads-up the first time only: this mode runs hot and long.
-                if (!prefs.getBoolean("best_notice_seen", false)) showBestNotice = true
-            }
-            TargetRow(
-                selected = !bestQuality && !fastEncode && !fastest,
-                enabled = true,
-                title = "Quality (default)",
-                subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
-            ) { bestQuality = false; fastEncode = false; fastest = false }
-            TargetRow(
-                selected = !bestQuality && fastEncode && !fastest,
-                enabled = true,
-                title = "Speed",
-                subtitle = "Faster than Quality mode, only slightly softer detail.",
-            ) { bestQuality = false; fastEncode = true; fastest = false }
-            TargetRow(
-                selected = !bestQuality && fastest,
-                enabled = true,
-                title = "Fastest",
-                subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
-            ) { bestQuality = false; fastest = true }
-        }
-
-        CollapsibleSection(
-            title = "Codec",
-            summary = codecSummaryText,
-            expanded = codecOpen,
-            onToggle = { codecOpen = !codecOpen },
-        ) {
-            TargetRow(
-                selected = !useVp9,
-                enabled = true,
-                title = "VP8 (default)",
-                subtitle = "Recommended default. Fastest. It just works.",
-            ) { useVp9 = false }
-            TargetRow(
-                selected = useVp9,
-                enabled = true,
-                title = "VP9",
-                subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
-            ) { useVp9 = true }
-        }
-
-        CollapsibleSection(
-            title = "Save location",
-            summary = outputLabel,
-            expanded = saveOpen,
-            onToggle = { saveOpen = !saveOpen },
-        ) {
-            Text(outputLabel, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                "Videos are saved in a WebMChan folder inside the location you choose. " +
-                    "If it becomes unavailable (e.g. SD card removed), they go to Download/WebMChan instead.",
-                style = MaterialTheme.typography.bodySmall
-            )
-            folderError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                P5Button(
-                    "Choose folder",
-                    onClick = { folderPicker.launch(null) },
-                    enabled = !busy,
-                    kind = P5Kind.Secondary,
-                    modifier = Modifier.weight(1f),
-                )
-                if (hasCustomDir) {
-                    P5Button(
-                        "Use default",
-                        onClick = {
-                            OutputStorage.clearDir(ctx)
-                            outputLabel = OutputStorage.displayName(ctx)
-                            hasCustomDir = false
-                            folderError = null
+                    title = "Custom",
+                    subtitle = "Your own limit, ${Converter.MIN_FPS} to ${Converter.MAX_FPS} fps.",
+                ) { fpsChoice = FPS_PRESETS.size }
+                if (isCustomFps) {
+                    OutlinedTextField(
+                        value = customFps,
+                        onValueChange = { customFps = it },
+                        label = { Text("Frame rate limit (fps)") },
+                        isError = customFpsValue == null,
+                        supportingText = {
+                            if (customFpsValue == null) {
+                                Text("Enter a whole number from ${Converter.MIN_FPS} to ${Converter.MAX_FPS}.")
+                            }
                         },
-                        enabled = !busy,
-                        kind = P5Kind.Secondary,
-                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        enabled = true,
+                        shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
                     )
                 }
+            }
+
+            CollapsibleSection(
+                title = "Encoding",
+                summary = encodingSummaryText,
+                expanded = encodingOpen,
+                onToggle = { encodingOpen = !encodingOpen },
+            ) {
+                TargetRow(
+                    selected = bestQuality,
+                    enabled = true,
+                    title = "Best quality",
+                    subtitle = "The highest quality that fits, however long it takes. Much slower than Quality: it " +
+                        "encodes again and again until the file is within about 1% of the size limit. " +
+                        "VP9 (under Codec) gives better quality still, but is slower again.",
+                ) {
+                    bestQuality = true; fastEncode = false; fastest = false
+                    // A heads-up the first time only: this mode runs hot and long.
+                    if (!prefs.getBoolean("best_notice_seen", false)) showBestNotice = true
+                }
+                TargetRow(
+                    selected = !bestQuality && !fastEncode && !fastest,
+                    enabled = true,
+                    title = "Quality (default)",
+                    subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
+                ) { bestQuality = false; fastEncode = false; fastest = false }
+                TargetRow(
+                    selected = !bestQuality && fastEncode && !fastest,
+                    enabled = true,
+                    title = "Speed",
+                    subtitle = "Faster than Quality mode, only slightly softer detail.",
+                ) { bestQuality = false; fastEncode = true; fastest = false }
+                TargetRow(
+                    selected = !bestQuality && fastest,
+                    enabled = true,
+                    title = "Fastest",
+                    subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
+                ) { bestQuality = false; fastest = true }
+            }
+
+            CollapsibleSection(
+                title = "Codec",
+                summary = codecSummaryText,
+                expanded = codecOpen,
+                onToggle = { codecOpen = !codecOpen },
+            ) {
+                TargetRow(
+                    selected = !useVp9,
+                    enabled = true,
+                    title = "VP8 (default)",
+                    subtitle = "Recommended default. Fastest. It just works.",
+                ) { useVp9 = false }
+                TargetRow(
+                    selected = useVp9,
+                    enabled = true,
+                    title = "VP9",
+                    subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
+                ) { useVp9 = true }
             }
         }
 
@@ -2047,7 +2181,7 @@ fun App(onMenu: () -> Unit = {}) {
                     pendingSettings = settings
                     showNotificationExplainer = true
                 } else {
-                    BatchRunner.start(ctx, settings)
+                    startRun(settings)
                 }
             },
             enabled = canGo,
