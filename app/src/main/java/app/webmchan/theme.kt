@@ -174,11 +174,11 @@ internal fun slantPath(w: Float, h: Float, s: Float, dx: Float = 0f, dy: Float =
  * Also makes plain text white by default.
  */
 @Composable
-fun P5Background(content: @Composable () -> Unit) {
+fun P5Background(base: Color = P5.Black, content: @Composable () -> Unit) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(P5.Black)
+            .background(base)
             .drawP5Backdrop(),
     ) {
         // Keeps the content clear of the status bar, the navigation bar and any camera cut-out
