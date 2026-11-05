@@ -1088,7 +1088,7 @@ object Converter {
                 val editKey = (if (edit != null) "|edit=${edit.signature()}|audio=$audioOn" else "") +
                     (if (thumbSec != null) "|thumb=${"%.3f".format(java.util.Locale.US, thumbSec)}|audio=$audioOn" else "")
                 val pictureKey = "$filters|vp9=${settings.useVp9}|start=${"%.3f".format(java.util.Locale.US, startSec)}" +
-                    "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}|fpsmode=cfr" + editKey
+                    "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}|rate=${if (useGraph) "%.5f".format(java.util.Locale.US, if (reduceFps) fpsCap.toDouble() else src.fps) else "src"}" + editKey
                 val pass1Key = "$sourceKey\n$pictureKey"
                 val pass1 = pass1FilesFor(ctx, pass1Key)
                 usedPass1 = pass1
@@ -1135,15 +1135,21 @@ object Converter {
                     )
                 }
 
+                // A graph (thumbnail or joined pieces) reaches the encoder with no usable frame rate, so
+                // ffmpeg guesses one from the container: pass 1's null output and pass 2's webm end up
+                // with different timing, which can wreck libvpx's rate control. State the rate outright,
+                // the same in both passes. Not used without a graph, which keeps its own rate.
+                val graphRate = if (reduceFps) fpsCap.toDouble() else src.fps
+                val graphRateArgs: List<String> = if (useGraph && graphRate > 0.0) {
+                    listOf("-r", "%.5f".format(java.util.Locale.US, graphRate), "-fps_mode", "cfr")
+                } else emptyList()
+
                 val common = listOf("-hide_banner", "-y") +
                     sourceArgs +
                     listOf(
                         "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
                         "-deadline", "good", "-cpu-used", cpuUsed,
                         "-lag-in-frames", lagFrames,
-                        // Same frame timing in both passes. Without this ffmpeg picks it from the output
-                        // format: constant for pass 1's null output, variable for pass 2's webm.
-                        "-fps_mode", "cfr",
                         // Tag the output's colour metadata explicitly. Without this, ffmpeg can leave
                         // it unset or carry over a tag from the source (sometimes "gbr"/identity, which
                         // tells a strict player to decode the YUV pixels as if they were RGB, producing
@@ -1154,7 +1160,7 @@ object Converter {
                     ) + (if (settings.useVp9) {
                     listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
-                } else emptyList()) + bestArgs + threadArgs + listOf(
+                } else emptyList()) + bestArgs + threadArgs + graphRateArgs + listOf(
                     "-passlogfile", pass1.prefix,
                 )
 
