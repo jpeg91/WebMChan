@@ -49,6 +49,11 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
         "A small monochrome icon at the top of the screen while WebMChan is working: an hourglass " +
             "during analysis, the percentage while encoding, plus paused, failed and finished icons.",
     ),
+    NOTIFICATION_LOCK_SCREEN(
+        "notificationLockScreen", true, "Show on lock screen",
+        "Shows the notification card on the lock screen just as it looks in the notification shade, " +
+            "including video names. Off shows only a plain WebMChan line there.",
+    ),
     NOTIFICATION_FINISHED(
         "notificationFinished", true, "Finished notification",
         "Tells you when a run has finished, if the app isn't on screen. With this off, the finished tick still shows in the status bar, quietly, if the status bar indicator is on.",
@@ -125,7 +130,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         group("Look", AppToggle.ANIMATIONS_OFF)
         group(
             "Notifications",
-            AppToggle.NOTIFICATION_PROGRESS, AppToggle.STATUS_BAR_ICON,
+            AppToggle.NOTIFICATION_PROGRESS, AppToggle.STATUS_BAR_ICON, AppToggle.NOTIFICATION_LOCK_SCREEN,
             AppToggle.NOTIFICATION_FINISHED, AppToggle.NOTIFICATION_FAILURE,
         )
         group("While converting", AppToggle.KEEP_SCREEN_ON)
