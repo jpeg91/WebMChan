@@ -109,6 +109,25 @@ class ConvertService : Service() {
             } else IconCompat.createWithResource(ctx, fallback)
         }
 
+        /**
+         * Lock screen behaviour. On: the full card shows there exactly as in the shade (Android would
+         * otherwise swap it for "Contents hidden" on a secured lock screen). Off: only a plain
+         * "WebMChan" line shows, with no video names. Android's own "Sensitive notifications" setting
+         * on the phone can still hide it.
+         */
+        private fun NotificationCompat.Builder.lockScreen(ctx: Context, channel: String, icon: IconCompat): NotificationCompat.Builder {
+            AppSettings.init(ctx)
+            if (AppSettings.get(AppToggle.NOTIFICATION_LOCK_SCREEN)) {
+                return setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            }
+            val hidden = NotificationCompat.Builder(ctx, channel)
+                .setSmallIcon(icon)
+                .setContentTitle("WebMChan")
+                .setContentText("Content hidden on lock screen")
+                .build()
+            return setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setPublicVersion(hidden)
+        }
+
         private fun openAppIntent(ctx: Context): PendingIntent {
             // The launcher intent brings the existing app task to the front instead of
             // starting a second copy of the screen.
@@ -162,9 +181,11 @@ class ConvertService : Service() {
             )
             // The Settings page can turn the percentage (or hourglass) and the bar off.
             val (small, big) = styledViews(ctx, title, text, showPercent = AppSettings.get(AppToggle.NOTIFICATION_PROGRESS), percent = percent)
+            val icon = statusIcon(ctx, StatusIcon.WORKING, percent, android.R.drawable.stat_sys_download)
             return NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
-                .setSmallIcon(statusIcon(ctx, StatusIcon.WORKING, percent, android.R.drawable.stat_sys_download))
-                // Still set, for what can't show the custom views (accessibility, lock screen, wearables).
+                .setSmallIcon(icon)
+                .lockScreen(ctx, CHANNEL_PROGRESS, icon)
+                // Still set, for what can't show the custom views (accessibility, wearables).
                 .setContentTitle(title)
                 .setContentText(text.lineSequence().firstOrNull() ?: text)
                 .setStyle(NotificationCompat.DecoratedCustomViewStyle())
@@ -191,8 +212,10 @@ class ConvertService : Service() {
         fun postPaused(ctx: Context, text: String) {
             ensureChannels(ctx)
             val (small, big) = styledViews(ctx, "WebMChan: paused", text, showPercent = false, percent = null)
+            val icon = statusIcon(ctx, StatusIcon.PAUSED, null, android.R.drawable.ic_media_pause)
             val n = NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
-                .setSmallIcon(statusIcon(ctx, StatusIcon.PAUSED, null, android.R.drawable.ic_media_pause))
+                .setSmallIcon(icon)
+                .lockScreen(ctx, CHANNEL_PROGRESS, icon)
                 .setContentTitle("WebMChan: paused")
                 .setContentText(text)
                 .setStyle(NotificationCompat.DecoratedCustomViewStyle())
@@ -218,8 +241,10 @@ class ConvertService : Service() {
             ensureChannels(ctx)
             val text = "$name\n${message.lineSequence().firstOrNull { it.isNotBlank() } ?: "Failed."}"
             val (small, big) = styledViews(ctx, "WebMChan: failed", text, showPercent = false, percent = null)
+            val icon = statusIcon(ctx, StatusIcon.FAILED, null, android.R.drawable.stat_notify_error)
             val n = NotificationCompat.Builder(ctx, CHANNEL_DONE)
-                .setSmallIcon(statusIcon(ctx, StatusIcon.FAILED, null, android.R.drawable.stat_notify_error))
+                .setSmallIcon(icon)
+                .lockScreen(ctx, CHANNEL_DONE, icon)
                 .setContentTitle("WebMChan: failed")
                 .setContentText(text.lineSequence().first())
                 .setStyle(NotificationCompat.DecoratedCustomViewStyle())
@@ -240,8 +265,11 @@ class ConvertService : Service() {
         fun postFinished(ctx: Context, text: String, quiet: Boolean = false) {
             ensureChannels(ctx)
             val (small, big) = styledViews(ctx, "WebMChan", text, showPercent = false, percent = null)
-            val n = NotificationCompat.Builder(ctx, if (quiet) CHANNEL_QUIET else CHANNEL_DONE)
-                .setSmallIcon(statusIcon(ctx, StatusIcon.DONE, null, android.R.drawable.stat_sys_download_done))
+            val channel = if (quiet) CHANNEL_QUIET else CHANNEL_DONE
+            val icon = statusIcon(ctx, StatusIcon.DONE, null, android.R.drawable.stat_sys_download_done)
+            val n = NotificationCompat.Builder(ctx, channel)
+                .setSmallIcon(icon)
+                .lockScreen(ctx, channel, icon)
                 .setContentTitle("WebMChan")
                 .setContentText(text)
                 .setStyle(NotificationCompat.DecoratedCustomViewStyle())
