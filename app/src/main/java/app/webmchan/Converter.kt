@@ -1088,7 +1088,7 @@ object Converter {
                 val editKey = (if (edit != null) "|edit=${edit.signature()}|audio=$audioOn" else "") +
                     (if (thumbSec != null) "|thumb=${"%.3f".format(java.util.Locale.US, thumbSec)}|audio=$audioOn" else "")
                 val pictureKey = "$filters|vp9=${settings.useVp9}|start=${"%.3f".format(java.util.Locale.US, startSec)}" +
-                    "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}" + editKey
+                    "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}|fpsmode=cfr" + editKey
                 val pass1Key = "$sourceKey\n$pictureKey"
                 val pass1 = pass1FilesFor(ctx, pass1Key)
                 usedPass1 = pass1
@@ -1141,6 +1141,9 @@ object Converter {
                         "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
                         "-deadline", "good", "-cpu-used", cpuUsed,
                         "-lag-in-frames", lagFrames,
+                        // Same frame timing in both passes. Without this ffmpeg picks it from the output
+                        // format: constant for pass 1's null output, variable for pass 2's webm.
+                        "-fps_mode", "cfr",
                         // Tag the output's colour metadata explicitly. Without this, ffmpeg can leave
                         // it unset or carry over a tag from the source (sometimes "gbr"/identity, which
                         // tells a strict player to decode the YUV pixels as if they were RGB, producing
