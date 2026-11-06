@@ -83,22 +83,48 @@ import androidx.compose.ui.unit.sp
  * styled building blocks). None of the app's behaviour lives here.
  */
 
-/** The palette. Red is for fills and big accents; [RedBright] is the red that is safe for small text. */
+/**
+ * Which accent the app is drawn in. The Audio Mode screen turns [audio] on ("princetheme": the same
+ * look with the red swapped for purple). It is Compose state, so everything that reads [P5.Red],
+ * [P5.RedBright] or [P5.RedDeep] redraws when it changes.
+ */
+object AccentMode {
+    var audio by mutableStateOf(false)
+}
+
+/** Princetheme: p5theme with the red replaced by #755FBE (and a lighter and a darker purple to go with it). */
+object Prince {
+    val Red = Color(0xFF755FBE)
+    val RedBright = Color(0xFFA897EC)
+    val RedDeep = Color(0xFF3A2E6B)
+}
+
+/**
+ * The palette. Red is for fills and big accents; [RedBright] is the red that is safe for small text.
+ * In Audio Mode ([AccentMode.audio]) the three reds read as the purples of [Prince]. [redFor] and its
+ * two relatives give a colour for a given mode, for places that can't read the screen's mode (a
+ * notification for a run that isn't the screen on show).
+ */
 object P5 {
     val Black = Color(0xFF080808)
     val Ink = Color(0xFF151515)
     val Panel = Color(0xFF232323)
     val Line = Color(0xFF4A4A4A)
-    val Red = Color(0xFFE60012)
-    val RedBright = Color(0xFFFF4553)
-    val RedDeep = Color(0xFF7A000B)
+    private val RedVideo = Color(0xFFE60012)
+    private val RedBrightVideo = Color(0xFFFF4553)
+    private val RedDeepVideo = Color(0xFF7A000B)
+    val Red: Color get() = if (AccentMode.audio) Prince.Red else RedVideo
+    val RedBright: Color get() = if (AccentMode.audio) Prince.RedBright else RedBrightVideo
+    val RedDeep: Color get() = if (AccentMode.audio) Prince.RedDeep else RedDeepVideo
+    fun redFor(audio: Boolean): Color = if (audio) Prince.Red else RedVideo
+    fun redDeepFor(audio: Boolean): Color = if (audio) Prince.RedDeep else RedDeepVideo
     val White = Color(0xFFFFFFFF)
     val Grey = Color(0xFFC4C4C4)
     val GreyDim = Color(0xFF727272)
     val Amber = Color(0xFFFFC21A)
 }
 
-private val P5ColorScheme = darkColorScheme(
+private fun p5ColorScheme() = darkColorScheme(
     primary = P5.Red,
     onPrimary = P5.White,
     primaryContainer = P5.RedDeep,
@@ -149,7 +175,9 @@ private val P5Typography = Typography(
 
 @Composable
 fun P5Theme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = P5ColorScheme, typography = P5Typography, content = content)
+    // Rebuilt when the accent changes (Audio Mode is purple).
+    val scheme = remember(AccentMode.audio) { p5ColorScheme() }
+    MaterialTheme(colorScheme = scheme, typography = P5Typography, content = content)
 }
 
 /** A parallelogram: the top edge is pushed right by [slant], the bottom edge left. */
@@ -254,10 +282,12 @@ fun P5Button(
     compact: Boolean = false,
     /** Smaller still than [compact]: a short one-line label, for a row of several small buttons. */
     dense: Boolean = false,
+    /** A fixed colour pair (main, deep) in place of the screen's accent: the Menu's button for the other mode. */
+    accent: Pair<Color, Color>? = null,
 ) {
     val shape = remember { SlantShape(if (dense) 5.dp else if (compact) 6.dp else 9.dp) }
     val fill = when (kind) {
-        P5Kind.Primary -> if (enabled) P5.Red else P5.Panel
+        P5Kind.Primary -> if (enabled) (accent?.first ?: P5.Red) else P5.Panel
         P5Kind.Secondary -> P5.Black
         P5Kind.Ghost -> Color.Transparent
     }
@@ -276,7 +306,7 @@ fun P5Button(
                         val s = px(if (compact) 6f else 9f).coerceAtMost(w / 3f)
                         drawPath(
                             slantPath(w, h, s, px(if (compact) 3f else 4f), px(if (compact) 3f else 4f)),
-                            if (kind == P5Kind.Primary) P5.RedDeep else P5.Red.copy(alpha = 0.8f),
+                            if (kind == P5Kind.Primary) (accent?.second ?: P5.RedDeep) else P5.Red.copy(alpha = 0.8f),
                         )
                     }
                 } else Modifier

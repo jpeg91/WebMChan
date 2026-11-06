@@ -65,6 +65,20 @@ object BatchStore {
         return out
     }
 
+    /** null if the card isn't an Audio Mode card. */
+    private fun readAudio(o: JSONObject?): AudioSpec? {
+        if (o == null) return null
+        val images = ArrayList<AudioImage>()
+        val arr = o.optJSONArray("images")
+        if (arr != null) {
+            for (n in 0 until arr.length()) {
+                val a = arr.optJSONArray(n) ?: continue
+                images.add(AudioImage(a.optString(0, ""), a.optInt(1, 0), a.optInt(2, 0)))
+            }
+        }
+        return AudioSpec(images, o.optBoolean("cover", false), o.optString("title", ""), o.optString("artist", ""))
+    }
+
     /** null if there is no edit, or it can't be read (the card then simply has none). */
     private fun readEdit(o: JSONObject?): EditSpec? {
         if (o == null) return null
@@ -107,6 +121,17 @@ object BatchStore {
                 }
             )
         }
+        i.audio?.let { a ->
+            put(
+                "audio",
+                JSONObject().apply {
+                    put("images", JSONArray().apply { a.images.forEach { im -> put(JSONArray().put(im.path).put(im.w).put(im.h)) } })
+                    put("cover", a.coverFromTags)
+                    put("title", a.title)
+                    put("artist", a.artist)
+                }
+            )
+        }
         i.detail?.let { put("detail", it) }
         i.savedUri?.let { put("savedUri", it.toString()) }
         // The Advanced tuning is global, so it isn't saved here.
@@ -126,6 +151,7 @@ object BatchStore {
                     put("fps", it.targetFps)
                     put("custom", it.isCustom)
                     put("ak", it.audioKbps)
+                    put("am", it.audioMode)
                     put("cw", it.customWidth)
                     put("ch", it.customHeight)
                     put("label", it.targetLabel)
@@ -196,6 +222,8 @@ object BatchStore {
             thumbSec = if (o.has("thumbSec")) o.optDouble("thumbSec", -1.0).takeIf { it >= 0.0 } else null,
             // Absent when the card has no edit (and in files saved by older versions).
             edit = readEdit(o.optJSONObject("edit")),
+            // Absent on a video card (and in files saved before Audio Mode).
+            audio = readAudio(o.optJSONObject("audio")),
             // Absent when no run was active (and in files saved by older versions).
             settings = o.optJSONObject("settings")?.let {
                 runCatching {
@@ -214,6 +242,8 @@ object BatchStore {
                         isCustom = it.optBoolean("custom", false),
                         // Absent in files saved by older versions: the old fixed 64 kbps.
                         audioKbps = it.optInt("ak", Converter.DEFAULT_AUDIO_KBPS),
+                        // Absent in files saved before Audio Mode: a video card.
+                        audioMode = it.optBoolean("am", false),
                         // Absent in files saved by older versions: no custom resolution.
                         customWidth = it.optInt("cw", 0),
                         customHeight = it.optInt("ch", 0),

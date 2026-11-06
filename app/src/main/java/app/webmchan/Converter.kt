@@ -112,6 +112,12 @@ data class Settings(
      * lower). At [Converter.MONO_AUDIO_MAX_KBPS] and below the audio is mono.
      */
     val audioKbps: Int = Converter.DEFAULT_AUDIO_KBPS,
+    /**
+     * True for an Audio Mode card (an audio file with a picture, see [AudioConverter]). Then [targetFps]
+     * is the picture's frame rate, the audio bitrate is worked out by the app ([audioKbps] is unused)
+     * and [keepAudio] is always true.
+     */
+    val audioMode: Boolean = false,
 ) {
     /** True when the Custom target has a resolution of its own (so the automatic pick is bypassed). */
     val hasCustomSize: Boolean get() = customWidth > 0 || customHeight > 0
@@ -220,6 +226,8 @@ sealed class ConvertResult {
         val audioIncluded: Boolean,
         /** How many encodes it took to fit (1 = first try). */
         val attempts: Int = 1,
+        /** Audio Mode only: the audio bitrate the file ended up with (kbps); 0 otherwise. */
+        val audioKbps: Int = 0,
     ) : ConvertResult()
 
     data class Fail(val message: String) : ConvertResult()
@@ -796,7 +804,7 @@ object Converter {
     fun clearWorkFiles(ctx: Context) {
         ctx.cacheDir.listFiles()?.filter {
             it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name == BEST_FILE_NAME ||
-                it.name == "audioprobe.webm" || it.name.startsWith("ffpass")
+                it.name == "audioprobe.webm" || it.name == "audio-best.webm" || it.name.startsWith("ffpass")
         }?.forEach { it.delete() }
     }
 

@@ -178,11 +178,11 @@ internal object NotificationArt {
      * hourglass instead, exactly as [P5Percent] does; its frame comes from the clock, so each
      * update of the notification shows the next step.
      */
-    fun percent(ctx: Context, value: Int?): Bitmap {
+    fun percent(ctx: Context, value: Int?, audio: Boolean = false): Bitmap {
         val d = ctx.resources.displayMetrics.density
         val hourglass = value == null
         val digits = value?.coerceIn(0, 100)?.toString() ?: ""
-        val fill = P5.Red.toArgb()
+        val fill = P5.redFor(audio).toArgb()
         val outline = P5.White.toArgb()
 
         val bigSize = 26f
@@ -272,7 +272,7 @@ internal object NotificationArt {
      * outline, like [P5Progress]. [fraction] null (no percentage yet) shows the panel with dim
      * stripes all the way across.
      */
-    fun progressBar(ctx: Context, fraction: Float?): Bitmap {
+    fun progressBar(ctx: Context, fraction: Float?, audio: Boolean = false): Bitmap {
         val d = ctx.resources.displayMetrics.density
         // The notification is about as wide as the screen, minus its margins; the ImageView stretches
         // the picture to fit, so being a little off only changes the slant very slightly.
@@ -304,14 +304,14 @@ internal object NotificationArt {
         c.save()
         c.clipPath(shape)
         if (fraction == null) {
-            stripes(P5.RedDeep.copy(alpha = 0.55f).toArgb())
+            stripes(P5.redDeepFor(audio).copy(alpha = 0.55f).toArgb())
         } else if (fraction > 0f) {
             c.save()
             c.clipRect(0f, 0f, w * fraction.coerceIn(0f, 1f), h.toFloat())
             paint.style = Paint.Style.FILL
-            paint.color = P5.Red.toArgb()
+            paint.color = P5.redFor(audio).toArgb()
             c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), paint)
-            stripes(P5.RedDeep.toArgb())
+            stripes(P5.redDeepFor(audio).toArgb())
             c.restore()
         }
         c.restore()

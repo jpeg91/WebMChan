@@ -4,6 +4,7 @@
   and step) and the slanted red progress bar underneath (drawn by NotificationArt.progressBar).
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/notif_root"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="@drawable/notification_bg"

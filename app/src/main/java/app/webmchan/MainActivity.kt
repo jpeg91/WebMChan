@@ -58,6 +58,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -97,6 +98,10 @@ import java.util.Locale
 /** The frame rate caps offered as presets. Custom follows them in the radio list. */
 private val FPS_PRESETS = listOf(24, 30, 60)
 
+/** Audio Mode: how often the (still) picture is drawn. */
+private val AUDIO_FPS_PRESETS = listOf(1, 2, 5, 10, 24)
+private const val AUDIO_FPS_DEFAULT_INDEX = 1
+
 /** Index into [FPS_PRESETS] of the default (30). */
 private const val FPS_DEFAULT_INDEX = 1
 
@@ -135,7 +140,19 @@ class MainActivity : ComponentActivity() {
                     // App stays composed underneath, so opening a page doesn't lose the scroll
                     // position or the settings. The pages stack: Menu, then History, Log or About on
                     // top of it (and Advanced on top of About), so back returns to the one before.
-                    P5Background { App(onMenu = { showMenu = true }) }
+                    P5Background { App(onMenu = { showMenu = true }, onOtherMode = { AccentMode.audio = true }) }
+                    // Audio Mode: the same page, adapted, on top of the video one. AccentMode.audio is
+                    // both "this screen is showing" and the switch that turns the theme purple (princetheme).
+                    if (AccentMode.audio) {
+                        P5Background {
+                            App(
+                                onMenu = { showMenu = true },
+                                audio = true,
+                                onExitAudio = { AccentMode.audio = false },
+                                onOtherMode = { AccentMode.audio = false },
+                            )
+                        }
+                    }
                     if (showMenu) {
                         P5Background {
                             MenuScreen(
@@ -144,6 +161,10 @@ class MainActivity : ComponentActivity() {
                                 onSettings = { showSettings = true },
                                 onLog = { showLog = true },
                                 onAbout = { showAbout = true },
+                                onSwitchMode = {
+                                    AccentMode.audio = !AccentMode.audio
+                                    showMenu = false
+                                },
                             )
                         }
                     }
@@ -207,7 +228,10 @@ class MainActivity : ComponentActivity() {
             for (n in 0 until clip.itemCount) clip.getItemAt(n).uri?.let { uris.add(it) }
         }
         if (uris.isEmpty()) return
-        BatchRunner.addShared(this, uris.toList())
+        // Shared audio opens Audio Mode (its own screen); videos go to the video screen as before.
+        val audio = intent.type?.startsWith("audio/") == true
+        AccentMode.audio = audio
+        BatchRunner.addShared(this, uris.toList(), audio = audio)
         // Handled; stops a later recreation from adding them again.
         intent.action = null
     }
@@ -258,8 +282,12 @@ private fun playVideo(ctx: Context, uri: Uri, mime: String) {
 private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
     val ctx = LocalContext.current
     // The pick is a key too: choosing another frame rewrites the same file, and the card has to reload it.
-    val bitmap by produceState<ImageBitmap?>(null, item.id, item.hasThumb, item.thumbSec) {
-        value = if (item.hasThumb) {
+    // An Audio Mode card that isn't converted yet shows its own picture (the first one), not a video frame.
+    val picture = if (item.status != ItemStatus.DONE) item.audio?.images?.firstOrNull()?.path else null
+    val bitmap by produceState<ImageBitmap?>(null, item.id, item.hasThumb, item.thumbSec, picture) {
+        value = if (item.audio != null && item.status != ItemStatus.DONE) {
+            picture?.let { path -> withContext(Dispatchers.IO) { BitmapFactory.decodeFile(path)?.asImageBitmap() } }
+        } else if (item.hasThumb) {
             withContext(Dispatchers.IO) {
                 BitmapFactory.decodeFile(Thumbnails.file(ctx, item.id).absolutePath)?.asImageBitmap()
             }
@@ -317,6 +345,7 @@ private fun fpsLabel(i: SourceInfo, finished: Boolean): String = when {
  * ("Attempt 1/4, pass 2/2: encoding ...") and the progress (below 0 = the stage can't say).
  */
 private fun runStage(status: String, progress: Float): RunLook = when {
+    status.contains("Encoding audio") -> if (progress >= 1f) RunLook.FINISHING else RunLook.ENCODING
     status.contains("pass 1/2") -> RunLook.ANALYSING
     status.contains("pass 2/2") -> if (progress >= 1f) RunLook.FINISHING else RunLook.ENCODING
     status.endsWith("Done") -> RunLook.FINISHING
@@ -416,6 +445,12 @@ internal fun QueueRow(
     sourceAvailable: Boolean = true,
 ) {
     val ctx = LocalContext.current
+    val isAudio = item.audio != null
+    // Audio Mode: picking pictures for the card (added to its pictures, or replacing them).
+    var appendPictures by remember { mutableStateOf(true) }
+    val picturePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if (uris.isNotEmpty()) BatchRunner.setAudioImages(ctx, item.id, uris, appendPictures)
+    }
     // The video as it will be converted: an edited card (cuts, crop) shows, and is planned with, the
     // edited length and size. The source's own are under Details. Finished cards never have an edit.
     val sourceInfo = item.info
@@ -585,7 +620,7 @@ internal fun QueueRow(
                     } else playUri?.let { u ->
                         {
                             // The file type is looked up only when tapped, not on every redraw.
-                            val mime = if (finishedCard) "video/webm" else (ctx.contentResolver.getType(u) ?: "video/*")
+                            val mime = if (finishedCard) "video/webm" else (ctx.contentResolver.getType(u) ?: if (isAudio) "audio/*" else "video/*")
                             playVideo(ctx, u, mime)
                         }
                     },
@@ -595,11 +630,11 @@ internal fun QueueRow(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 when {
                     item.probeFailed -> Text(
-                        "Couldn't read this video.",
+                        if (isAudio) "Couldn't read this audio." else "Couldn't read this video.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
-                    i == null -> Text("Reading video…", style = MaterialTheme.typography.bodySmall)
+                    i == null -> Text(if (isAudio) "Reading audio…" else "Reading video…", style = MaterialTheme.typography.bodySmall)
                     else -> {
                         val len = String.format(Locale.US, "%.1f", i.durationSec)
                         val (state, tagColor) = if (pausedHere) "Paused" to P5.Amber else when (item.status) {
@@ -609,14 +644,26 @@ internal fun QueueRow(
                             ItemStatus.FAILED -> "Failed" to P5.Amber
                             ItemStatus.CANCELLED -> "Not converted" to P5.GreyDim
                         }
-                        Text(
-                            "${i.width}×${i.height} · ${fpsLabel(i, finishedCard)}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Text(
-                            "${len}s · ${if (i.hasAudio) "has audio" else "no audio"}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        if (isAudio && !finishedCard) {
+                            val n = item.audio?.images?.size ?: 0
+                            Text(
+                                if (n == 0) "No image (black)" else if (n == 1) "1 image" else "$n images",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                "${len}s · ${if (i.audioCodec.isNotBlank()) prettyCodec(i.audioCodec) else "audio"}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        } else {
+                            Text(
+                                "${i.width}×${i.height} · ${fpsLabel(i, finishedCard)}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                "${len}s · ${if (i.hasAudio) "has audio" else "no audio"}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                         // On its own line above the status tag: beside it, the running percentage left it no room.
                         if ((item.edit != null || item.thumbSec != null) && !finishedCard) {
                             Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -631,6 +678,8 @@ internal fun QueueRow(
                                 filled = item.status == ItemStatus.CONVERTING || item.status == ItemStatus.DONE,
                             )
                             if (isNext) P5Tag("Next ▼", P5.White, filled = true)
+                            // Which mode made (or will make) this card; always in its own colour, so History tells them apart.
+                            if (isAudio) P5Tag("Audio", Prince.RedBright) else P5Tag("Video", P5.Grey)
                         }
                     }
                 }
@@ -659,14 +708,31 @@ internal fun QueueRow(
                         onDismissRequest = { showCardMenu = false },
                         modifier = Modifier.background(P5.White),
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("Edit", color = P5.Black) },
-                            onClick = { showCardMenu = false; onEdit() },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Thumbnail", color = P5.Black) },
-                            onClick = { showCardMenu = false; onThumbnail() },
-                        )
+                        if (isAudio) {
+                            DropdownMenuItem(
+                                text = { Text("Add image", color = P5.Black) },
+                                onClick = { showCardMenu = false; appendPictures = true; picturePicker.launch("image/*") },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Change image", color = P5.Black) },
+                                onClick = { showCardMenu = false; appendPictures = false; picturePicker.launch("image/*") },
+                            )
+                            if (item.audio?.images?.isNotEmpty() == true) {
+                                DropdownMenuItem(
+                                    text = { Text("Remove image", color = P5.Black) },
+                                    onClick = { showCardMenu = false; BatchRunner.clearAudioImages(ctx, item.id) },
+                                )
+                            }
+                        } else {
+                            DropdownMenuItem(
+                                text = { Text("Edit", color = P5.Black) },
+                                onClick = { showCardMenu = false; onEdit() },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Thumbnail", color = P5.Black) },
+                                onClick = { showCardMenu = false; onThumbnail() },
+                            )
+                        }
                     }
                 }
             }
@@ -698,7 +764,7 @@ internal fun QueueRow(
             val t = settings.tuning
             val minParts = Converter.partCount(i.durationSec, maxDuration, t)
             val maxParts = Converter.maxPartCount(i.durationSec, maxDuration, t)
-            val est = Converter.estimate(i, settings, item.extraParts)
+            val est = if (isAudio) AudioFit.estimate(i, settings, item.extraParts, item.audio) else Converter.estimate(i, settings, item.extraParts)
             val numParts = est.parts
             // Only when the board's limit forces the split. A clip already under the limit that
             // was split further with the stepper just shows its part count on the stepper row.
@@ -719,7 +785,7 @@ internal fun QueueRow(
                     color = warnColor
                 )
             }
-            if ((minW > 0 || minH > 0) && (i.width < minW || i.height < minH)) {
+            if (!isAudio && (minW > 0 || minH > 0) && (i.width < minW || i.height < minH)) {
                 Text(
                     "Below this target's minimum (${minW}×${minH}): it will be scaled up, keeping its aspect ratio.",
                     style = MaterialTheme.typography.bodySmall,
@@ -732,7 +798,8 @@ internal fun QueueRow(
             val partSecText = String.format(Locale.US, "%.1f", est.partSec)
             val estimateText = buildString {
                 append("Expected conversion output: ")
-                append("${est.height}p at ${est.videoKbps}kbps")
+                if (isAudio) append("sound at ${est.audioKbps}kbps, picture ${est.height}p")
+                else append("${est.height}p at ${est.videoKbps}kbps")
             }
             val panelShape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp)
             // In the Holding Pen the box is always there (it's where splits are added). Once the card has
@@ -771,6 +838,14 @@ internal fun QueueRow(
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
+            if (isAudio && est.audioKbps < AudioFit.WARN_KBPS) {
+                Text(
+                    "Low sound quality: only ${est.audioKbps} kbps fits. Splitting into more parts would raise it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = warnColor,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
 
         }
 
@@ -801,7 +876,7 @@ internal fun QueueRow(
             // What kind of video the estimated bitrate suits (bits per pixel, so the frame size and
             // frame rate count). The poor brackets also say what could improve it, best first and
             // only what can still be changed; two tips at most. Not shown for an invalid custom limit.
-            if (i != null && item.status != ItemStatus.DONE && settings.limitBytes >= 256 * 1024L) {
+            if (!isAudio && i != null && item.status != ItemStatus.DONE && settings.limitBytes >= 256 * 1024L) {
                 val t = settings.tuning
                 val maxParts = Converter.maxPartCount(i.durationSec, maxDuration, t)
                 val est = Converter.estimate(i, settings, item.extraParts)
@@ -856,7 +931,8 @@ internal fun QueueRow(
                     if (i.audioCodec.isNotBlank()) "audio ${prettyCodec(i.audioCodec)}" else "has audio"
                 } else "no audio"
                 Text(
-                    "${if (finishedCard) "Output" else "Source"}: ${i.width}×${i.height} · $len s · ${fpsLabel(i, finishedCard)} · $audio",
+                    if (isAudio && !finishedCard) "Source: $len s · $audio"
+                    else "${if (finishedCard) "Output" else "Source"}: ${i.width}×${i.height} · $len s · ${fpsLabel(i, finishedCard)} · $audio",
                     style = MaterialTheme.typography.bodySmall
                 )
                 val fileBits = listOfNotNull(
@@ -886,8 +962,12 @@ internal fun QueueRow(
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
-                    "${if (shownSettings.keepAudio) "Sound on, ${Converter.audioLabel(shownSettings.audioKbps)}" else "Sound off"} · frame rate ≤ ${shownSettings.targetFps} fps · " +
-                        "${effortName(shownSettings)} · ${if (shownSettings.useVp9) "VP9" else "VP8"}",
+                    if (shownSettings.audioMode) {
+                        "Best sound that fits · picture ${shownSettings.targetFps} fps · ${if (shownSettings.useVp9) "VP9" else "VP8"}"
+                    } else {
+                        "${if (shownSettings.keepAudio) "Sound on, ${Converter.audioLabel(shownSettings.audioKbps)}" else "Sound off"} · frame rate ≤ ${shownSettings.targetFps} fps · " +
+                            "${effortName(shownSettings)} · ${if (shownSettings.useVp9) "VP9" else "VP8"}"
+                    },
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -1278,6 +1358,11 @@ private fun effortName(s: Settings) =
 
 /** The settings in one short line, e.g. "6 MB · ≤ 400 s · ♪ 64 kbps · ≤ 30 fps · Quality · VP8". */
 private fun settingsBrief(s: Settings): String =
+    if (s.audioMode) {
+        "${formatLimit(s.limitBytes)} · " +
+            (if (s.maxDurationSec > 0) "≤ ${s.maxDurationSec} s · " else "") +
+            "best sound that fits · picture ${s.targetFps} fps · ${if (s.useVp9) "VP9" else "VP8"}"
+    } else
     "${formatLimit(s.limitBytes)} · " +
         (if (s.maxDurationSec > 0) "≤ ${s.maxDurationSec} s · " else "") +
         (customResLabel(s.customWidth, s.customHeight)?.let { "$it · " } ?: "") +
@@ -1336,7 +1421,7 @@ private fun SectionNote(text: String, headline: String? = null) {
  * with; one in the Holding Pen follows [liveSettings]. "Up" on a card moves it up the screen.
  */
 @Composable
-private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settings) {
+private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settings, audio: Boolean = false) {
     val queue = BatchRunner.queue
     // Conversion runs from the bottom of the list up, so the next video is the first waiting one
     // in list order (the one lowest on screen).
@@ -1355,13 +1440,13 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
     }
     val nextId = if (section == CardSection.QUEUE) {
         queue.firstOrNull {
-            !it.inPen && it.info != null && !it.probeFailed && it.status == ItemStatus.WAITING &&
+            it.isAudio == audio && !it.inPen && it.info != null && !it.probeFailed && it.status == ItemStatus.WAITING &&
                 it.id != BatchRunner.pausedItemId
         }?.id
     } else null
     for (idx in queue.indices.reversed()) {
         val item = queue[idx]
-        val show = when (section) {
+        val show = item.isAudio == audio && when (section) {
             CardSection.PEN -> item.inPen
             CardSection.QUEUE -> !item.inPen && item.status != ItemStatus.CONVERTING && item.id != BatchRunner.pausedItemId
             // Includes the video Pause Now interrupted, which keeps its card here while paused.
@@ -1402,14 +1487,26 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
 }
 
 @Composable
-fun App(onMenu: () -> Unit = {}) {
+fun App(
+    onMenu: () -> Unit = {},
+    /** True for the Audio Mode screen: the same page, adapted (see AudioMode.kt). Its cards, settings and saved choices are its own. */
+    audio: Boolean = false,
+    /** Audio Mode: back to the video screen (system back). */
+    onExitAudio: () -> Unit = {},
+    /** Jumps to the other mode's screen (from the "in use" note). */
+    onOtherMode: () -> Unit = {},
+) {
     val ctx = LocalContext.current
+    if (audio) androidx.activity.compose.BackHandler(onBack = onExitAudio)
+    val noun = if (audio) "tracks" else "videos"
 
     // The queue, the finished list, progress and the log all live in BatchRunner (not here), so a
     // running batch survives the screen being closed. Settings below apply to every video in it.
     val queue = BatchRunner.queue
-    val finished = BatchRunner.finished
-    val busy = BatchRunner.busy
+    val finished = BatchRunner.finished.filter { it.isAudio == audio }
+    // Only one mode converts at a time: while the other one does, this screen says so instead of offering Convert.
+    val otherBusy = BatchRunner.busy && BatchRunner.runAudio != audio
+    val busy = BatchRunner.busy && !otherBusy
     val probing = BatchRunner.probing
     val copyingTotal = BatchRunner.copyingTotal
     val cancelling = BatchRunner.cancelling
@@ -1442,43 +1539,48 @@ fun App(onMenu: () -> Unit = {}) {
     // Index into TARGETS; TARGETS.size means "Custom".
     // The choices below are remembered between runs.
     val prefs = remember { ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE) }
-    var targetIdx by remember { mutableIntStateOf(prefs.getInt("ui_target_idx", 0).coerceIn(0, TARGETS.size)) }
-    var customMb by remember { mutableStateOf(prefs.getString("ui_custom_mb", "4") ?: "4") }
+    // Audio Mode remembers its own choices.
+    val pre = if (audio) "uia_" else "ui_"
+    val targets = remember(audio) { if (audio) TARGETS.filter { it.audioAllowed } else TARGETS }
+    val fpsPresets = if (audio) AUDIO_FPS_PRESETS else FPS_PRESETS
+    val fpsDefaultIndex = if (audio) AUDIO_FPS_DEFAULT_INDEX else FPS_DEFAULT_INDEX
+    var targetIdx by remember { mutableIntStateOf(prefs.getInt("${pre}target_idx", 0).coerceIn(0, targets.size)) }
+    var customMb by remember { mutableStateOf(prefs.getString("${pre}custom_mb", "4") ?: "4") }
     // Custom resolution, in pixels. Empty = not set (automatic).
-    var customW by remember { mutableStateOf(prefs.getString("ui_custom_w", "") ?: "") }
-    var customH by remember { mutableStateOf(prefs.getString("ui_custom_h", "") ?: "") }
-    var removeAudio by remember { mutableStateOf(prefs.getBoolean("ui_remove_audio", true)) }
+    var customW by remember { mutableStateOf(prefs.getString("${pre}custom_w", "") ?: "") }
+    var customH by remember { mutableStateOf(prefs.getString("${pre}custom_h", "") ?: "") }
+    var removeAudio by remember { mutableStateOf(prefs.getBoolean("${pre}remove_audio", true)) }
     // One of Converter.AUDIO_KBPS_OPTIONS; anything else saved falls back to the default.
     var audioKbps by remember {
         mutableIntStateOf(
-            prefs.getInt("ui_audio_kbps", Converter.DEFAULT_AUDIO_KBPS)
+            prefs.getInt("${pre}audio_kbps", Converter.DEFAULT_AUDIO_KBPS)
                 .takeIf { it in Converter.AUDIO_KBPS_OPTIONS } ?: Converter.DEFAULT_AUDIO_KBPS
         )
     }
-    var fastEncode by remember { mutableStateOf(prefs.getBoolean("ui_fast_encode", false)) }
-    var useVp9 by remember { mutableStateOf(prefs.getBoolean("ui_use_vp9", false)) }
-    var fastest by remember { mutableStateOf(prefs.getBoolean("ui_fastest", false)) }
+    var fastEncode by remember { mutableStateOf(prefs.getBoolean("${pre}fast_encode", false)) }
+    var useVp9 by remember { mutableStateOf(prefs.getBoolean("${pre}use_vp9", false)) }
+    var fastest by remember { mutableStateOf(prefs.getBoolean("${pre}fastest", false)) }
     // Best quality, one of the three exclusive encoding choices (with Quality/Speed and Fastest).
-    var bestQuality by remember { mutableStateOf(prefs.getBoolean("ui_best_quality", false)) }
+    var bestQuality by remember { mutableStateOf(prefs.getBoolean("${pre}best_quality", false)) }
     // Index into FPS_PRESETS; FPS_PRESETS.size means "Custom".
     var fpsChoice by remember {
-        mutableIntStateOf(prefs.getInt("ui_fps_choice", FPS_DEFAULT_INDEX).coerceIn(0, FPS_PRESETS.size))
+        mutableIntStateOf(prefs.getInt("${pre}fps_choice", fpsDefaultIndex).coerceIn(0, fpsPresets.size))
     }
-    var customFps by remember { mutableStateOf(prefs.getString("ui_custom_fps", "30") ?: "30") }
+    var customFps by remember { mutableStateOf(prefs.getString("${pre}custom_fps", if (audio) "2" else "30") ?: (if (audio) "2" else "30")) }
     LaunchedEffect(targetIdx, customMb, customW, customH, removeAudio, audioKbps, fastEncode, useVp9, fastest, bestQuality, fpsChoice, customFps) {
         prefs.edit()
-            .putInt("ui_target_idx", targetIdx)
-            .putString("ui_custom_mb", customMb)
-            .putString("ui_custom_w", customW)
-            .putString("ui_custom_h", customH)
-            .putBoolean("ui_remove_audio", removeAudio)
-            .putInt("ui_audio_kbps", audioKbps)
-            .putBoolean("ui_fast_encode", fastEncode)
-            .putBoolean("ui_use_vp9", useVp9)
-            .putBoolean("ui_fastest", fastest)
-            .putBoolean("ui_best_quality", bestQuality)
-            .putInt("ui_fps_choice", fpsChoice)
-            .putString("ui_custom_fps", customFps)
+            .putInt("${pre}target_idx", targetIdx)
+            .putString("${pre}custom_mb", customMb)
+            .putString("${pre}custom_w", customW)
+            .putString("${pre}custom_h", customH)
+            .putBoolean("${pre}remove_audio", removeAudio)
+            .putInt("${pre}audio_kbps", audioKbps)
+            .putBoolean("${pre}fast_encode", fastEncode)
+            .putBoolean("${pre}use_vp9", useVp9)
+            .putBoolean("${pre}fastest", fastest)
+            .putBoolean("${pre}best_quality", bestQuality)
+            .putInt("${pre}fps_choice", fpsChoice)
+            .putString("${pre}custom_fps", customFps)
             .apply()
     }
 
@@ -1524,7 +1626,7 @@ fun App(onMenu: () -> Unit = {}) {
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { picked ->
-        BatchRunner.addVideos(ctx, picked)
+        if (audio) BatchRunner.addAudio(ctx, picked) else BatchRunner.addVideos(ctx, picked)
     }
 
     // Android 13+ asks before an app may show notifications. We explain and ask every time you
@@ -1545,7 +1647,7 @@ fun App(onMenu: () -> Unit = {}) {
             batterySettings = s
             showBatteryNag = true
         } else {
-            BatchRunner.start(ctx, s)
+            BatchRunner.start(ctx, s, audio)
         }
     }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
@@ -1611,7 +1713,7 @@ fun App(onMenu: () -> Unit = {}) {
     if (showBatteryNag) {
         val proceed = {
             showBatteryNag = false
-            batterySettings?.let { BatchRunner.start(ctx, it) }
+            batterySettings?.let { BatchRunner.start(ctx, it, audio) }
             batterySettings = null
         }
         AlertDialog(
@@ -1693,18 +1795,18 @@ fun App(onMenu: () -> Unit = {}) {
         )
     }
 
-    val target: Target? = TARGETS.getOrNull(targetIdx)
+    val target: Target? = targets.getOrNull(targetIdx)
     val isCustom = target == null
     val limitKb: Int = target?.limitKb ?: ((customMb.toDoubleOrNull() ?: 0.0) * 1024).toInt()
     val maxDuration: Int = target?.maxDurationSec ?: Converter.NO_LENGTH_LIMIT
     val minW: Int = target?.minWidth ?: 0
     val minH: Int = target?.minHeight ?: 0
     val audioAllowed: Boolean = target?.audioAllowed ?: true
-    val effectiveRemoveAudio = removeAudio || !audioAllowed
+    val effectiveRemoveAudio = if (audio) false else removeAudio || !audioAllowed
 
     // The frame rate cap. A Custom entry that isn't a whole number in range can't be used: Convert
     // stays disabled until it is fixed, and in the meantime the cards use the default.
-    val isCustomFps = fpsChoice >= FPS_PRESETS.size
+    val isCustomFps = fpsChoice >= fpsPresets.size
     val customFpsValue: Int? = customFps.trim().toIntOrNull()?.takeIf { it in Converter.MIN_FPS..Converter.MAX_FPS }
     val fpsOk = !isCustomFps || customFpsValue != null
 
@@ -1717,7 +1819,7 @@ fun App(onMenu: () -> Unit = {}) {
     val resOk = widthOk && heightOk
     val customWidth: Int = if (isCustom) customWValue ?: 0 else 0
     val customHeight: Int = if (isCustom) customHValue ?: 0 else 0
-    val targetFps: Int = if (!isCustomFps) FPS_PRESETS[fpsChoice] else (customFpsValue ?: Converter.DEFAULT_FPS)
+    val targetFps: Int = if (!isCustomFps) fpsPresets[fpsChoice] else (customFpsValue ?: if (audio) AUDIO_FPS_PRESETS[AUDIO_FPS_DEFAULT_INDEX] else Converter.DEFAULT_FPS)
 
     // What the next conversion would use. The queue cards work their split estimates out from it,
     // so they follow the board, size limit, audio, effort, frame rate and Advanced settings as they change.
@@ -1740,9 +1842,10 @@ fun App(onMenu: () -> Unit = {}) {
         customWidth = customWidth,
         customHeight = customHeight,
         audioKbps = audioKbps,
+        audioMode = audio,
     )
     // The editor (a page of its own) shows what an edit does to the conversion with these.
-    SideEffect { BatchRunner.liveSettings = cardSettings }
+    if (!audio) SideEffect { BatchRunner.liveSettings = cardSettings }
 
     // What each closed settings group shows as its current choice.
     val limitOk = limitKb >= 256
@@ -1765,16 +1868,56 @@ fun App(onMenu: () -> Unit = {}) {
         isCustomFps && customFpsValue == null ->
             "Custom · enter a whole number from ${Converter.MIN_FPS} to ${Converter.MAX_FPS}"
         isCustomFps -> "Custom · up to $customFpsValue fps"
-        fpsChoice == FPS_DEFAULT_INDEX -> "${FPS_PRESETS[fpsChoice]} fps (default)"
-        else -> "${FPS_PRESETS[fpsChoice]} fps"
+        fpsChoice == fpsDefaultIndex -> "${fpsPresets[fpsChoice]} fps (default)"
+        else -> "${fpsPresets[fpsChoice]} fps"
     }
     val encodingSummaryText =
         if (bestQuality) "Best quality" else if (fastest) "Fastest" else if (fastEncode) "Speed" else "Quality (default)"
     val codecSummaryText = if (useVp9) "VP9" else "VP8 (default)"
 
     // The Holding Pen holds videos you've added until the button below sends them to the queue.
-    val penAny = queue.any { it.inPen }
-    val penCount = queue.count { it.inPen && it.info != null }
+    val penAny = queue.any { it.inPen && it.isAudio == audio }
+    val penCount = queue.count { it.inPen && it.info != null && it.isAudio == audio }
+
+    // Audio Mode: a card that has no image asks once what to do (Add image / Continue anyway). A card
+    // that was already read when this screen first opened (restored from last time) isn't asked again.
+    val askedNoImage = remember { mutableStateListOf<Long>().also { l -> l.addAll(BatchRunner.queue.filter { it.isAudio && it.info != null }.map { it.id }) } }
+    var noImagePickFor by remember { mutableStateOf(-1L) }
+    val noImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if (noImagePickFor >= 0L && uris.isNotEmpty()) BatchRunner.setAudioImages(ctx, noImagePickFor, uris, false)
+        noImagePickFor = -1L
+    }
+    if (audio) {
+        val noImage = queue.firstOrNull {
+            it.isAudio && it.inPen && it.info != null && !it.probeFailed &&
+                it.audio?.images.isNullOrEmpty() && it.id !in askedNoImage
+        }
+        if (noImage != null) {
+            AlertDialog(
+                onDismissRequest = { askedNoImage.add(noImage.id) },
+                shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+                containerColor = P5.Ink,
+                titleContentColor = P5.White,
+                textContentColor = P5.White,
+                title = { Text("No image".uppercase(), style = MaterialTheme.typography.titleMedium) },
+                text = {
+                    Text(
+                        "\"${noImage.customName ?: noImage.name}\" has no cover art. Add an image to show while it plays, " +
+                            "or continue and it will be made with a plain black picture. " +
+                            "You can add or change the image later from the card's /// button."
+                    )
+                },
+                confirmButton = {
+                    P5Button("Add image", onClick = {
+                        askedNoImage.add(noImage.id)
+                        noImagePickFor = noImage.id
+                        noImagePicker.launch("image/*")
+                    })
+                },
+                dismissButton = { P5Button("Continue anyway", onClick = { askedNoImage.add(noImage.id) }, kind = P5Kind.Ghost) },
+            )
+        }
+    }
 
     // The Menu button floats over the scrolling page (see the end of this function), so it stays in the
     // top right wherever the page is scrolled to.
@@ -1791,7 +1934,7 @@ fun App(onMenu: () -> Unit = {}) {
             Column(Modifier.weight(1f).padding(end = 96.dp)) {
                 P5Title("WebMChan", upperCase = false)
                 Text(
-                    "4chan WebM converter".uppercase(),
+                    (if (audio) "Audio Mode" else "4chan WebM converter").uppercase(),
                     style = MaterialTheme.typography.labelMedium,
                     color = P5.RedBright,
                     modifier = Modifier.padding(top = 4.dp),
@@ -1800,8 +1943,8 @@ fun App(onMenu: () -> Unit = {}) {
         }
 
         P5Button(
-            if (queue.isEmpty()) "Choose videos" else "Add videos",
-            onClick = { picker.launch(arrayOf("video/*")) },
+            if (audio) (if (queue.none { it.isAudio }) "Choose audio files" else "Add audio files") else if (queue.none { !it.isAudio }) "Choose videos" else "Add videos",
+            onClick = { picker.launch(if (audio) arrayOf("audio/*", "video/*") else arrayOf("video/*")) },
             enabled = !cancelling, // allowed any time: new videos wait in the Holding Pen
             modifier = Modifier.fillMaxWidth(),
         )
@@ -1821,15 +1964,15 @@ fun App(onMenu: () -> Unit = {}) {
 
         // ---- Holding pen ----
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            P5SectionTitle(if (penAny) "Holding pen (${queue.count { it.inPen }})" else "Holding pen")
+            P5SectionTitle(if (penAny) "Holding pen (${queue.count { it.inPen && it.isAudio == audio }})" else "Holding pen")
             Spacer(Modifier.weight(1f))
-            if (penAny) P5Button("Clear pen", onClick = { BatchRunner.clearPen() }, kind = P5Kind.Secondary)
+            if (penAny) P5Button("Clear pen", onClick = { BatchRunner.clearPen(audio) }, kind = P5Kind.Secondary)
         }
         if (penAny) {
-            SectionNote("Newest at the top. The settings below apply to these videos when you send them to the queue.")
-            QueueCards(section = CardSection.PEN, busy = busy, liveSettings = cardSettings)
+            SectionNote("Newest at the top. The settings below apply to these $noun when you send them to the queue.")
+            QueueCards(section = CardSection.PEN, busy = busy, liveSettings = cardSettings, audio = audio)
         } else {
-            SectionNote("Choose or share videos to add them here.", headline = "Nothing waiting")
+            SectionNote(if (audio) "Choose or share audio files to add them here." else "Choose or share videos to add them here.", headline = "Nothing waiting")
         }
 
         CollapsibleSection(
@@ -1839,7 +1982,7 @@ fun App(onMenu: () -> Unit = {}) {
             onToggle = { boardsOpen = !boardsOpen },
             summaryIsError = isCustom && (!limitOk || !resOk),
         ) {
-            TARGETS.forEachIndexed { idx, t ->
+            targets.forEachIndexed { idx, t ->
                 TargetRow(
                     selected = targetIdx == idx,
                     enabled = true,
@@ -1856,7 +1999,7 @@ fun App(onMenu: () -> Unit = {}) {
                 title = "Custom",
                 subtitle = "Your own size limit and resolution, with no length limit",
             ) {
-                targetIdx = TARGETS.size
+                targetIdx = targets.size
                 removeAudio = false
             }
             if (isCustom) {
@@ -1913,13 +2056,13 @@ fun App(onMenu: () -> Unit = {}) {
         // most videos, so a newcomer can ignore them and an advanced user still has every choice.
         CollapsibleSection(
             title = "Encoding settings",
-            summary = if (fpsOk) "Defaults are fine for most videos" else "Frame rate: enter a whole number from ${Converter.MIN_FPS} to ${Converter.MAX_FPS}",
+            summary = if (fpsOk) (if (audio) "Defaults are fine for most tracks" else "Defaults are fine for most videos") else "Frame rate: enter a whole number from ${Converter.MIN_FPS} to ${Converter.MAX_FPS}",
             expanded = deepOpen,
             onToggle = { deepOpen = !deepOpen },
             summaryIsError = !fpsOk,
             slim = true,
         ) {
-            CollapsibleSection(
+            if (!audio) CollapsibleSection(
                 title = "Sound",
                 summary = audioSummaryText,
                 expanded = audioOpen,
@@ -1984,12 +2127,28 @@ fun App(onMenu: () -> Unit = {}) {
             }
 
             CollapsibleSection(
-                title = "Frame rate",
+                title = if (audio) "Image frame rate" else "Frame rate",
                 summary = fpsSummaryText,
                 expanded = fpsOpen,
                 onToggle = { fpsOpen = !fpsOpen },
                 summaryIsError = !fpsOk,
             ) {
+                if (audio) {
+                    Text(
+                        "How many times a second the picture is drawn. The picture never changes, so a low rate " +
+                            "costs almost nothing and leaves the most room for the sound. Some players and boards " +
+                            "behave better with a higher rate; the sound is the same either way.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    fpsPresets.forEachIndexed { idx, f ->
+                        TargetRow(
+                            selected = fpsChoice == idx,
+                            enabled = true,
+                            title = if (idx == fpsDefaultIndex) "$f fps (default)" else "$f fps",
+                            subtitle = if (idx == fpsDefaultIndex) "Recommended. Keeps the picture cost very small." else "A higher rate costs a little more of the size limit.",
+                        ) { fpsChoice = idx }
+                    }
+                } else {
                 Text(
                     "The most frames per second the output may have. A video that's already slower keeps its own rate; frame rates are never raised.",
                     style = MaterialTheme.typography.bodySmall
@@ -2012,12 +2171,13 @@ fun App(onMenu: () -> Unit = {}) {
                     title = "60 fps",
                     subtitle = "Smoother motion, but each second needs twice the bits for the same detail. On small size limits expect smaller frames and a rougher picture.",
                 ) { fpsChoice = 2 }
+                }
                 TargetRow(
                     selected = isCustomFps,
                     enabled = true,
                     title = "Custom",
                     subtitle = "Your own limit, ${Converter.MIN_FPS} to ${Converter.MAX_FPS} fps.",
-                ) { fpsChoice = FPS_PRESETS.size }
+                ) { fpsChoice = fpsPresets.size }
                 if (isCustomFps) {
                     OutlinedTextField(
                         value = customFps,
@@ -2037,7 +2197,7 @@ fun App(onMenu: () -> Unit = {}) {
                 }
             }
 
-            CollapsibleSection(
+            if (!audio) CollapsibleSection(
                 title = "Encoding",
                 summary = encodingSummaryText,
                 expanded = encodingOpen,
@@ -2096,9 +2256,9 @@ fun App(onMenu: () -> Unit = {}) {
             }
         }
 
-        val queueReady = queue.count { !it.inPen && it.info != null && it.status != ItemStatus.CONVERTING }
+        val queueReady = queue.count { !it.inPen && it.info != null && it.status != ItemStatus.CONVERTING && it.isAudio == audio }
         val pending = penCount + queueReady
-        val canGo = pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && resOk && !busy
+        val canGo = !otherBusy && pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && resOk && !busy
         val penReady = penCount > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && resOk && !cancelling
 
         // The running batch's progress and controls (or, when it is paused, the Resume controls).
@@ -2192,12 +2352,24 @@ fun App(onMenu: () -> Unit = {}) {
 
         // One button: with nothing running it sends the Holding Pen to the queue and starts converting;
         // while a batch runs it sends the Holding Pen to that batch.
-        if (busy) {
+        if (otherBusy) {
+            SectionNote(
+                if (audio) "Video Mode is converting right now. Only one mode can run at a time, so Audio Mode waits until it is done. You can still add audio files to the holding pen."
+                else "Audio Mode is converting right now. Only one mode can run at a time, so Video Mode waits until it is done. You can still add videos to the holding pen.",
+                headline = if (audio) "Video Mode in use" else "Audio Mode in use",
+            )
+            P5Button(
+                if (audio) "Go to Video Mode" else "Go to Audio Mode",
+                onClick = onOtherMode,
+                kind = P5Kind.Secondary,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else if (busy) {
             P5Button(
                 when (penCount) {
                     0 -> "Add to running batch"
-                    1 -> "Add 1 video to running batch"
-                    else -> "Add $penCount videos to running batch"
+                    1 -> "Add 1 ${if (audio) "track" else "video"} to running batch"
+                    else -> "Add $penCount $noun to running batch"
                 },
                 onClick = { BatchRunner.addPenToRun(cardSettings) },
                 enabled = penReady,
@@ -2205,7 +2377,7 @@ fun App(onMenu: () -> Unit = {}) {
             )
         } else {
         P5Button(
-            if (pending > 1) "Convert $pending videos" else "Convert",
+            if (pending > 1) "Convert $pending $noun" else "Convert",
             onClick = {
                 val settings = cardSettings
                 val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -2233,30 +2405,32 @@ fun App(onMenu: () -> Unit = {}) {
 
         // ---- Queue ----
         // Only shown while a video is waiting for its turn; gone entirely when there is none.
-        val queueCount = queue.count { !it.inPen && it.status != ItemStatus.CONVERTING }
+        val queueCount = queue.count { !it.inPen && it.status != ItemStatus.CONVERTING && it.isAudio == audio }
         if (queueCount > 0) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 P5SectionTitle("Queue ($queueCount)")
                 Spacer(Modifier.weight(1f))
                 if (!busy) {
-                    P5Button("Clear queue", onClick = { BatchRunner.clearQueue() }, kind = P5Kind.Secondary)
+                    P5Button("Clear queue", onClick = { BatchRunner.clearQueue(audio) }, kind = P5Kind.Secondary)
                 }
             }
-            SectionNote("Converted from the bottom up. Videos sent from the holding pen join at the top.")
-            QueueCards(section = CardSection.QUEUE, busy = busy, liveSettings = cardSettings)
+            SectionNote("Converted from the bottom up. ${if (audio) "Tracks" else "Videos"} sent from the holding pen join at the top.")
+            QueueCards(section = CardSection.QUEUE, busy = busy, liveSettings = cardSettings, audio = audio)
         }
 
         // ---- Converting ----
         Row(Modifier.fillMaxWidth()) { P5SectionTitle("Converting") }
-        if (busy) {
-            QueueCards(section = CardSection.CONVERTING, busy = busy, liveSettings = cardSettings)
+        if (otherBusy) {
+            SectionNote("Nothing is converting here.", headline = "Idle")
+        } else if (busy) {
+            QueueCards(section = CardSection.CONVERTING, busy = busy, liveSettings = cardSettings, audio = audio)
             progressBlock()
         } else {
             SectionNote("Nothing is converting.", headline = "Idle")
             if (runTotal > 1) summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
         }
 
-        val lines = logLines
+        val lines = if (otherBusy) emptyList() else logLines
         if (lines.isNotEmpty()) {
             // 6 lines tall (64 when expanded): the line height below times the lines, plus the padding.
             val logBoxHeight = with(LocalDensity.current) { (14.sp * (if (logExpanded) 64 else 6)).toDp() } + 20.dp
@@ -2302,11 +2476,11 @@ fun App(onMenu: () -> Unit = {}) {
             P5SectionTitle(if (finished.isNotEmpty()) "Finished (${finished.size})" else "Finished")
             Spacer(Modifier.weight(1f))
             if (finished.isNotEmpty()) {
-                P5Button("Clear finished", onClick = { BatchRunner.clearFinished() }, kind = P5Kind.Secondary)
+                P5Button("Clear finished", onClick = { BatchRunner.clearFinished(audio) }, kind = P5Kind.Secondary)
             }
         }
         if (finished.isEmpty()) {
-            SectionNote("Converted videos land here.", headline = "No finished videos yet")
+            SectionNote(if (audio) "Converted audio lands here." else "Converted videos land here.", headline = if (audio) "No finished audio yet" else "No finished videos yet")
         } else {
             finished.asReversed().forEach { item ->
                 key(item.id) {

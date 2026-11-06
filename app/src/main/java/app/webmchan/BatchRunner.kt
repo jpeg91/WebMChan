@@ -99,7 +99,16 @@ data class QueueItem(
      * with the picked frame (so a lost thumbnail is remade from its first frame).
      */
     val thumbSec: Double? = null,
-)
+    /**
+     * Set on an Audio Mode card: [uri] is then an audio file (or a video to take the sound from) and
+     * this holds its picture(s) and tags (see [AudioConverter]). The card goes through the same pen,
+     * queue and Finished lists as a video; the two screens each show only their own kind. A Finished
+     * card keeps it, so "Add to pen again" brings the picture(s) back too.
+     */
+    val audio: AudioSpec? = null,
+) {
+    val isAudio: Boolean get() = audio != null
+}
 
 /**
  * Thread-safe, size-capped log. ffmpeg's repeating "frame=..." status line updates in place
@@ -208,6 +217,12 @@ object BatchRunner {
     val historySourceOk = mutableStateMapOf<Long, Boolean>()
 
     var busy by mutableStateOf(false)
+
+    /**
+     * True when the batch running (or paused) is an Audio Mode one. Only one kind runs at a time; the
+     * other screen then says so instead of showing its own Convert button. Notifications use it too.
+     */
+    var runAudio by mutableStateOf(false)
         private set
 
     /** Number of probe passes currently running (new videos are probed one after another). */
@@ -407,6 +422,7 @@ object BatchRunner {
         if (interrupted) {
             busy = true
             paused = true
+            runAudio = queue.firstOrNull { !it.inPen && it.info != null && it.status == ItemStatus.WAITING }?.isAudio == true
             runTotal = queue.count { !it.inPen && it.info != null && it.status == ItemStatus.WAITING }
             notice = "WebMChan was closed while converting, so your batch has been paused. Press Resume to carry on. " +
                 "The video that was converting starts again (from its first unsaved part, if it was split)."
@@ -473,8 +489,8 @@ object BatchRunner {
             }
             for (id in toProbe) {
                 val item = queue.firstOrNull { it.id == id } ?: continue
-                val i = Converter.probe(ctx, item.uri)
-                val err = if (i == null) Converter.lastProbeError else null
+                val i = if (item.isAudio) AudioConverter.probe(ctx, item.uri)?.info else Converter.probe(ctx, item.uri)
+                val err = if (i == null) (if (item.isAudio) AudioConverter.lastProbeError else Converter.lastProbeError) else null
                 val at = queue.indexOfFirst { it.id == id }
                 if (at >= 0) {
                     // A video that was read fine before and can't be now keeps what it had.
@@ -489,6 +505,7 @@ object BatchRunner {
                 val item = queue.firstOrNull { it.id == id } ?: continue
                 val info = item.info ?: continue
                 if (item.status == ItemStatus.FAILED && item.probeFailed) continue
+                if (item.isAudio) continue // an Audio Mode card shows its own picture, not a video frame
                 if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
                 setThumb(ctx, id, item.uri, null, info.durationSec, queue, item.thumbSec)
             }
@@ -520,6 +537,7 @@ object BatchRunner {
             }
 
             Thumbnails.pruneExcept(ctx, (queue + finished + history).map { it.id }.toSet())
+            AudioArt.prune(ctx, audioArtInUse())
         } finally {
             probing--
             persist()
@@ -612,7 +630,7 @@ object BatchRunner {
     private fun sharedDir(ctx: Context) = File(ctx.filesDir, "shared")
 
     /** Copies shared videos into app storage (in the background), then adds them to the queue. */
-    fun addShared(ctx: Context, shared: List<Uri>) {
+    fun addShared(ctx: Context, shared: List<Uri>, audio: Boolean = false) {
         val appCtx = ctx.applicationContext
         appContext = appCtx
         // A second share while one is still copying adds to the same count.
@@ -627,7 +645,7 @@ object BatchRunner {
                     copyingDone++
                 }
             } finally {
-                if (copies.isNotEmpty()) addVideos(appCtx, copies, fromShare = true)
+                if (copies.isNotEmpty()) { if (audio) addAudio(appCtx, copies, fromShare = true) else addVideos(appCtx, copies, fromShare = true) }
                 copyingTotal -= shared.size
                 if (copyingTotal <= 0) {
                     copyingTotal = 0
@@ -934,6 +952,102 @@ object BatchRunner {
         }
     }
 
+    /** The picture files that some card (queue, Finished or History) still uses. */
+    private fun audioArtInUse(): Set<String> =
+        (queue + finished + history).flatMap { c -> c.audio?.images?.map { it.path } ?: emptyList() }.toSet()
+
+    /**
+     * Audio Mode: adds audio files (or videos, to take their sound) to the Holding Pen as cards. Each is
+     * read for its length, title and artist, and if it has cover art that becomes its picture (the card's
+     * "Image" menu changes it). [again] is for "Add to pen again": the picture(s) the finished card
+     * had come back with it, and the tags and cover aren't looked up again.
+     */
+    fun addAudio(ctx: Context, picked: List<Uri>, fromShare: Boolean = false, again: AudioSpec? = null) {
+        val appCtx = ctx.applicationContext
+        appContext = appCtx
+        if (picked.isEmpty()) return
+        picked.forEach { keepAccess(appCtx, it) }
+        summary = null
+        val added = picked.map { u ->
+            QueueItem(ids.incrementAndGet(), u, Converter.displayName(appCtx, u), inPen = true, audio = again ?: AudioSpec())
+        }
+        queue.addAll(added)
+        persist()
+        scope.launch {
+            probing++
+            try {
+                for (item in added) {
+                    val p = AudioConverter.probe(appCtx, item.uri)
+                    val err = if (p == null) AudioConverter.lastProbeError else null
+                    // A fresh card gets the file's own cover art as its picture, and its tags.
+                    var spec = item.audio ?: AudioSpec()
+                    if (p != null && again == null) {
+                        val cover = withContext(Dispatchers.IO) { AudioArt.embeddedCover(appCtx, item.uri)?.let { AudioArt.fromBytes(appCtx, it) } }
+                        spec = AudioSpec(
+                            images = if (cover != null) listOf(cover) else emptyList(),
+                            coverFromTags = cover != null,
+                            title = p.title,
+                            artist = p.artist,
+                        )
+                    }
+                    // The output is named "artist - title" when the file has both tags, else by the title alone, else by the file name.
+                    val named = when {
+                        again != null -> null
+                        p != null && p.artist.isNotBlank() && p.title.isNotBlank() -> "${p.artist} - ${p.title}"
+                        p != null && p.title.isNotBlank() -> p.title
+                        else -> null
+                    }?.let { OutputStorage.cleanBaseName(it) }
+                    val at = queue.indexOfFirst { it.id == item.id }
+                    if (at >= 0) {
+                        queue[at] = queue[at].copy(info = p?.info, probeFailed = p == null, audio = spec, customName = named ?: queue[at].customName)
+                        if (err != null) queue[at] = queue[at].copy(status = ItemStatus.FAILED, detail = err)
+                    } else {
+                        // Removed while reading: its new picture isn't wanted.
+                        AudioArt.prune(appCtx, audioArtInUse())
+                    }
+                    if (p != null && fromShare) joinRunningBatch(item.id)
+                }
+            } finally {
+                probing--
+                persist()
+            }
+        }
+    }
+
+    /** Audio Mode: picks pictures for a Holding Pen card. [append] adds to its pictures; otherwise they replace them. */
+    fun setAudioImages(ctx: Context, id: Long, picked: List<Uri>, append: Boolean) {
+        if (picked.isEmpty()) return
+        val appCtx = ctx.applicationContext
+        scope.launch {
+            val made = withContext(Dispatchers.IO) { picked.mapNotNull { AudioArt.fromUri(appCtx, it) } }
+            if (made.isEmpty()) {
+                notice = "Couldn't read that as a picture."
+                return@launch
+            }
+            val at = queue.indexOfFirst { it.id == id }
+            if (at < 0) {
+                AudioArt.prune(appCtx, audioArtInUse())
+                return@launch
+            }
+            val spec = queue[at].audio ?: return@launch
+            queue[at] = queue[at].copy(
+                audio = spec.copy(images = if (append) spec.images + made else made, coverFromTags = spec.coverFromTags && append),
+            )
+            AudioArt.prune(appCtx, audioArtInUse())
+            persist()
+        }
+    }
+
+    /** Audio Mode: takes every picture off a Holding Pen card (it is then made with a plain black one, or the one in Settings). */
+    fun clearAudioImages(ctx: Context, id: Long) {
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val spec = queue[at].audio ?: return
+        queue[at] = queue[at].copy(audio = spec.copy(images = emptyList(), coverFromTags = false))
+        AudioArt.prune(ctx.applicationContext, audioArtInUse())
+        persist()
+    }
+
     /**
      * A shared video, once it has been read, goes straight into the batch in progress if Settings says so
      * (with that batch's settings). With nothing running it stays in the Holding Pen, as every new video does.
@@ -944,7 +1058,7 @@ object BatchRunner {
         val at = queue.indexOfFirst { it.id == id }
         if (at < 0) return
         val item = queue[at]
-        if (!item.inPen || item.info == null || item.probeFailed) return
+        if (!item.inPen || item.info == null || item.probeFailed || item.isAudio != runAudio) return
         queue.removeAt(at)
         queue.add(item.copy(inPen = false, settings = s, status = ItemStatus.WAITING, detail = null))
         pickUpNewVideos()
@@ -968,7 +1082,7 @@ object BatchRunner {
         if (!pen && !queueMovable(queue[index])) return null
         var i = index + delta
         while (i in queue.indices) {
-            if (queue[i].inPen == pen && (pen || queueMovable(queue[i]))) return i
+            if (queue[i].inPen == pen && queue[i].isAudio == queue[index].isAudio && (pen || queueMovable(queue[i]))) return i
             i += delta
         }
         return null
@@ -1047,11 +1161,11 @@ object BatchRunner {
         persist()
     }
 
-    /** Empties the queue (not the Holding Pen). */
-    fun clearQueue() {
+    /** Empties the queue (not the Holding Pen) of the video cards, or of the Audio Mode ones when [audio]. */
+    fun clearQueue(audio: Boolean = false) {
         if (busy) return
-        val removed = queue.filter { !it.inPen }
-        queue.removeAll { !it.inPen }
+        val removed = queue.filter { !it.inPen && it.isAudio == audio }
+        queue.removeAll { !it.inPen && it.isAudio == audio }
         appContext?.let { ctx ->
             removed.forEach {
                 releaseSource(ctx, it.uri)
@@ -1135,15 +1249,16 @@ object BatchRunner {
      */
     fun addAgain(ctx: Context, finishedId: Long) {
         val item = finished.firstOrNull { it.id == finishedId } ?: history.firstOrNull { it.id == finishedId } ?: return
-        addVideos(ctx, listOf(item.uri))
+        if (item.audio != null) addAudio(ctx, listOf(item.uri), again = item.audio) else addVideos(ctx, listOf(item.uri))
     }
 
-    fun clearFinished() {
-        val removed = finished.toList()
+    /** Empties the Finished list of the video cards, or of the Audio Mode ones when [audio]. */
+    fun clearFinished(audio: Boolean = false) {
+        val removed = finished.filter { it.isAudio == audio }
         appContext?.let { ctx ->
             removed.forEach { r -> if (history.none { h -> h.id == r.id }) Thumbnails.delete(ctx, r.id) }
         }
-        finished.clear()
+        finished.removeAll { it.isAudio == audio }
         appContext?.let { ctx -> removed.map { it.uri }.distinct().forEach { releaseSource(ctx, it) } }
         pruneAnalysis()
         persist()
@@ -1166,17 +1281,18 @@ object BatchRunner {
     // ---- Running ----
 
     /** Converts every readable video in the queue, in order, with [settings]. */
-    fun start(ctx: Context, settings: Settings) {
+    fun start(ctx: Context, settings: Settings, audio: Boolean = false) {
         if (busy) return
         val appCtx = ctx.applicationContext
         appContext = appCtx
         // Everything ready in the Holding Pen goes to the queue (after anything already left there).
-        movePenToQueue(settings)
-        val todo = queue.filter { !it.inPen && it.info != null }.map { it.id }
+        movePenToQueue(settings, audio)
+        val todo = queue.filter { !it.inPen && it.info != null && it.isAudio == audio }.map { it.id }
         if (todo.isEmpty()) return
+        runAudio = audio
 
         // A new run starts with an empty Finished list, if Settings says so (History keeps the cards).
-        if (AppSettings.get(AppToggle.AUTO_CLEAR_FINISHED)) clearFinished()
+        if (AppSettings.get(AppToggle.AUTO_CLEAR_FINISHED)) clearFinished(audio)
         // The last run's finished and failed notifications have done their job.
         ConvertService.clearResults(appCtx)
         runSettings = settings
@@ -1275,8 +1391,8 @@ object BatchRunner {
      * there, so the queue's order is the order they will convert in), each fixed to [settings].
      * Returns their ids.
      */
-    private fun movePenToQueue(settings: Settings): List<Long> {
-        val moving = queue.filter { it.inPen && it.info != null }
+    private fun movePenToQueue(settings: Settings, audio: Boolean): List<Long> {
+        val moving = queue.filter { it.inPen && it.info != null && it.isAudio == audio }
         if (moving.isEmpty()) return emptyList()
         val movingIds = moving.map { it.id }.toHashSet()
         queue.removeAll { it.id in movingIds }
@@ -1287,7 +1403,7 @@ object BatchRunner {
     /** While a batch runs (or is paused): sends the Holding Pen videos to the queue, using [settings] (the ones on screen). */
     fun addPenToRun(settings: Settings) {
         if (!busy) return
-        if (movePenToQueue(settings).isEmpty()) return
+        if (movePenToQueue(settings, runAudio).isEmpty()) return
         runSettings = settings
         pickUpNewVideos()
         persist()
@@ -1328,10 +1444,10 @@ object BatchRunner {
         queue.add(item.copy(inPen = true, settings = null))
     }
 
-    /** Removes every video from the Holding Pen. */
-    fun clearPen() {
-        val removed = queue.filter { it.inPen }
-        queue.removeAll { it.inPen }
+    /** Removes every video from the Holding Pen (or every Audio Mode card, when [audio]). */
+    fun clearPen(audio: Boolean = false) {
+        val removed = queue.filter { it.inPen && it.isAudio == audio }
+        queue.removeAll { it.inPen && it.isAudio == audio }
         appContext?.let { ctx ->
             removed.forEach {
                 releaseSource(ctx, it.uri)
@@ -1381,7 +1497,7 @@ object BatchRunner {
             return
         }
         // Restored after the app stopped: nothing is running, so start the batch again.
-        val todo = queue.filter { !it.inPen && it.info != null && it.status == ItemStatus.WAITING }.map { it.id }
+        val todo = queue.filter { !it.inPen && it.info != null && it.status == ItemStatus.WAITING && it.isAudio == runAudio }.map { it.id }
         if (todo.isEmpty()) {
             finishWithoutLoop(appCtx, "Nothing left to convert.")
             return
@@ -1427,13 +1543,13 @@ object BatchRunner {
     private fun pickUpNewVideos() {
         val known = runList.toHashSet()
         val joining = queue
-            .filter { !it.inPen && it.id !in known && it.info != null && it.status == ItemStatus.WAITING }
+            .filter { !it.inPen && it.id !in known && it.info != null && it.status == ItemStatus.WAITING && it.isAudio == runAudio }
             .map { it.id }
         runList.addAll(joining)
         runTotal = runList.size
         // The progress text is only rewritten when the encoder reports back, which can take a while
         // in pass 1, so bring its "Video n of N" up to date now.
-        status = Regex("^Video (\\d+) of \\d+").replace(status) { "Video ${it.groupValues[1]} of $runTotal" }
+        status = Regex("^(Video|Track) (\\d+) of \\d+").replace(status) { "${it.groupValues[1]} ${it.groupValues[2]} of $runTotal" }
         if (joining.isNotEmpty()) persist()
     }
 
@@ -1484,7 +1600,7 @@ object BatchRunner {
                 val current = processed
                 // A function, not a fixed string: the total can grow while this video converts
                 // (a video added mid-run), and the label should follow it.
-                fun pos() = "Video $current of $runTotal"
+                fun pos() = "${if (item.isAudio) "Track" else "Video"} $current of $runTotal"
                 // From here to the end of this video, everything logged is kept for the Log page.
                 logBuffer.beginCapture()
 
@@ -1588,20 +1704,34 @@ object BatchRunner {
                             }
                         }
 
-                        val res = Converter.convert(
-                            ctx, staged!!, src, settings,
-                            startSec = startSec, clipDurationSec = clipDur,
-                            edit = item.edit,
-                            thumbSec = item.thumbSec,
-                            sourceId = item.uri.toString(),
-                            onLog = { line -> logBuffer.add(line) { logLines = it } },
-                        ) { p, s ->
+                        val onLogLine: (String) -> Unit = { line -> logBuffer.add(line) { logLines = it } }
+                        val onProgressUpdate: (Float, String) -> Unit = { p, s ->
                             progress = p
                             status = "${pos()}$partLabel: $s"
                             // A Skip/Cancel pressed before ffmpeg was running (e.g. while the
                             // video was being copied) would otherwise be missed.
                             if (skipFlag.get() || cancelAllFlag.get()) Converter.cancel()
                             notifyProgress(ctx, "${pos()}$partLabel", item.name, s, force = false)
+                        }
+                        val audioSpec = item.audio
+                        val res = if (audioSpec != null) {
+                            AudioConverter.convert(
+                                ctx, staged!!, src, settings, audioSpec,
+                                startSec = startSec, clipDurationSec = clipDur, part = part, numParts = numParts,
+                                title = audioSpec.title.ifBlank { OutputName.baseFor(item.name, null) },
+                                artist = audioSpec.artist,
+                                onLog = onLogLine, onProgress = onProgressUpdate,
+                            )
+                        } else {
+                            Converter.convert(
+                                ctx, staged!!, src, settings,
+                                startSec = startSec, clipDurationSec = clipDur,
+                                edit = item.edit,
+                                thumbSec = item.thumbSec,
+                                sourceId = item.uri.toString(),
+                                onLog = onLogLine,
+                                onProgress = onProgressUpdate,
+                            )
                         }
 
                         when (res) {
@@ -1613,7 +1743,8 @@ object BatchRunner {
                                 // app tag: "clip-Part02-MQ-WebMChan_for_Android.webm".
                                 // A name typed on the card (even while converting) replaces the source's name.
                                 val base = OutputName.baseFor(item.name, queue.firstOrNull { it.id == id }?.customName)
-                                val effortMarker = OutputName.effortMarker(settings.bestQuality, settings.fastest, settings.fastEncode)
+                                // An Audio Mode file has no effort setting to mark: "clip-A-WebMChan_for_Android.webm".
+                                val effortMarker = if (item.isAudio) "" else OutputName.effortMarker(settings.bestQuality, settings.fastest, settings.fastEncode)
                                 val outName = OutputName.build(base, part, numParts, res.audioIncluded, effortMarker)
 
                                 // What the Finished card shows is the converted file itself (its own
@@ -1625,7 +1756,7 @@ object BatchRunner {
                                     val h = res.height
                                     SourceInfo(
                                         durationSec = encodedSec,
-                                        width = (h * src.width.toDouble() / src.height / 2).toInt() * 2,
+                                        width = if (src.height > 0) (h * src.width.toDouble() / src.height / 2).toInt() * 2 else h,
                                         height = h,
                                         fps = 0.0,
                                         fpsReadable = false,
@@ -1660,7 +1791,8 @@ object BatchRunner {
                                 val savedName = withContext(Dispatchers.IO) { OutputStorage.fileName(ctx, saved.uri) } ?: outName
                                 val mb = String.format(Locale.US, "%.2f", res.bytes / 1048576.0)
                                 val detail = buildString {
-                                    append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
+                                    if (item.isAudio) append("Done: $mb MB, sound at ${res.audioKbps} kbps, picture ${res.height}p.\n")
+                                    else append("Done: $mb MB, ${res.height}p, ${res.videoKbps} kbps video.\n")
                                     append(saved.message)
                                     if (res.audioDropped) append("\nSource had no audio.")
                                     if (res.attempts > 1) append("\nTook ${res.attempts} attempts to fit the size limit.")
@@ -1684,6 +1816,8 @@ object BatchRunner {
                                         settings = settings,
                                         // Marks that the file starts with a picked thumbnail frame.
                                         thumbSec = item.thumbSec,
+                                        // An Audio Mode card stays one (and keeps its pictures, for "Add to pen again").
+                                        audio = item.audio,
                                     )
                                 finished.add(doneCard)
                                 // History keeps it even after it is removed from Finished.
@@ -1853,9 +1987,15 @@ object BatchRunner {
         val fpsText = if (src.fpsReadable) {
             String.format(Locale.US, "%.2f", src.fps).trimEnd('0').trimEnd('.') + " fps"
         } else "fps unreadable"
-        val sourceLine = "${src.width}×${src.height}, ${String.format(Locale.US, "%.1f", src.durationSec)}s, " +
-            "$fpsText, ${if (src.hasAudio) "has audio" else "no audio"}" +
-            (item.edit?.let { " (edited: ${it.describe()})" } ?: "")
+        val sourceLine = if (item.isAudio) {
+            "audio, ${String.format(Locale.US, "%.1f", src.durationSec)}s" +
+                (if (src.audioCodec.isNotBlank()) ", ${src.audioCodec}" else "") +
+                ", ${item.audio?.images?.size ?: 0} picture(s)"
+        } else {
+            "${src.width}×${src.height}, ${String.format(Locale.US, "%.1f", src.durationSec)}s, " +
+                "$fpsText, ${if (src.hasAudio) "has audio" else "no audio"}" +
+                (item.edit?.let { " (edited: ${it.describe()})" } ?: "")
+        }
         conversionLogs.add(
             ConversionLog(
                 id = item.id,
@@ -1886,6 +2026,6 @@ object BatchRunner {
         lastNotifyMs = now
         val p = progress
         val percent = if (p < 0f) null else (p * 100).toInt().coerceIn(0, 100)
-        ConvertService.postProgress(ctx, "Converting: $pos", "$name\n$step", percent)
+        ConvertService.postProgress(ctx, (if (runAudio) "Converting audio: " else "Converting: ") + pos, "$name\n$step", percent)
     }
 }

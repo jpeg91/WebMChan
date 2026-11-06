@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Audio Mode's notification backdrop: the same as notification_bg, with the red wedges in princetheme's
+  purple (see Prince in theme.kt).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="100dp"
+    android:height="100dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <path
+        android:fillColor="#FF080808"
+        android:pathData="M0,0L100,0L100,100L0,100Z" />
+    <path
+        android:fillColor="#FF3A2E6B"
+        android:pathData="M90,0L100,0L100,60Z" />
+    <path
+        android:fillColor="#FF755FBE"
+        android:pathData="M95,0L100,0L100,32Z" />
+</vector>

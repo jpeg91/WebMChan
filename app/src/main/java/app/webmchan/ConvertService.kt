@@ -146,21 +146,29 @@ class ConvertService : Service() {
          */
         private fun styledViews(
             ctx: Context, title: String, text: String, showPercent: Boolean, percent: Int?,
+            audio: Boolean = false,
         ): Pair<RemoteViews, RemoteViews> {
             val small = RemoteViews(ctx.packageName, R.layout.notification_progress_small)
             val big = RemoteViews(ctx.packageName, R.layout.notification_progress_big)
+            // Audio Mode's notification is purple (princetheme): the stripe and the backdrop's wedges.
+            if (audio) {
+                for (v in listOf(small, big)) {
+                    v.setInt(R.id.notif_stripe, "setBackgroundColor", P5.redFor(true).toArgb())
+                    v.setInt(R.id.notif_root, "setBackgroundResource", R.drawable.notification_bg_audio)
+                }
+            }
             small.setTextViewText(R.id.notif_title, title)
             small.setTextViewText(R.id.notif_text, text.lineSequence().firstOrNull() ?: text)
             big.setTextViewText(R.id.notif_title, title)
             big.setTextViewText(R.id.notif_text, text)
             if (showPercent) {
-                val counter = NotificationArt.percent(ctx, percent)
+                val counter = NotificationArt.percent(ctx, percent, audio)
                 val spoken = if (percent != null) "$percent percent" else "In progress"
                 for (v in listOf(small, big)) {
                     v.setImageViewBitmap(R.id.notif_percent, counter)
                     v.setContentDescription(R.id.notif_percent, spoken)
                 }
-                big.setImageViewBitmap(R.id.notif_bar, NotificationArt.progressBar(ctx, percent?.let { it / 100f }))
+                big.setImageViewBitmap(R.id.notif_bar, NotificationArt.progressBar(ctx, percent?.let { it / 100f }, audio))
                 big.setContentDescription(R.id.notif_bar, spoken)
             } else {
                 small.setViewVisibility(R.id.notif_percent, View.GONE)
@@ -180,7 +188,8 @@ class ConvertService : Service() {
                 PendingIntent.FLAG_IMMUTABLE
             )
             // The Settings page can turn the percentage (or hourglass) and the bar off.
-            val (small, big) = styledViews(ctx, title, text, showPercent = AppSettings.get(AppToggle.NOTIFICATION_PROGRESS), percent = percent)
+            val audio = BatchRunner.runAudio
+            val (small, big) = styledViews(ctx, title, text, showPercent = AppSettings.get(AppToggle.NOTIFICATION_PROGRESS), percent = percent, audio = audio)
             val icon = statusIcon(ctx, StatusIcon.WORKING, percent, android.R.drawable.stat_sys_download)
             return NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
                 .setSmallIcon(icon)
@@ -211,7 +220,8 @@ class ConvertService : Service() {
         /** A quiet, ordinary (not ongoing) notification while a batch is paused. */
         fun postPaused(ctx: Context, text: String) {
             ensureChannels(ctx)
-            val (small, big) = styledViews(ctx, "WebMChan: paused", text, showPercent = false, percent = null)
+            val audio = BatchRunner.runAudio
+            val (small, big) = styledViews(ctx, "WebMChan: paused", text, showPercent = false, percent = null, audio = audio)
             val icon = statusIcon(ctx, StatusIcon.PAUSED, null, android.R.drawable.ic_media_pause)
             val n = NotificationCompat.Builder(ctx, CHANNEL_PROGRESS)
                 .setSmallIcon(icon)
@@ -221,7 +231,7 @@ class ConvertService : Service() {
                 .setStyle(NotificationCompat.DecoratedCustomViewStyle())
                 .setCustomContentView(small)
                 .setCustomBigContentView(big)
-                .setColor(P5.Red.toArgb())
+                .setColor(P5.redFor(audio).toArgb())
                 .setContentIntent(openAppIntent(ctx))
                 .setOnlyAlertOnce(true)
                 .build()
@@ -240,7 +250,8 @@ class ConvertService : Service() {
         fun postFailed(ctx: Context, id: Long, name: String, message: String) {
             ensureChannels(ctx)
             val text = "$name\n${message.lineSequence().firstOrNull { it.isNotBlank() } ?: "Failed."}"
-            val (small, big) = styledViews(ctx, "WebMChan: failed", text, showPercent = false, percent = null)
+            val audio = BatchRunner.runAudio
+            val (small, big) = styledViews(ctx, "WebMChan: failed", text, showPercent = false, percent = null, audio = audio)
             val icon = statusIcon(ctx, StatusIcon.FAILED, null, android.R.drawable.stat_notify_error)
             val n = NotificationCompat.Builder(ctx, CHANNEL_DONE)
                 .setSmallIcon(icon)
@@ -264,7 +275,8 @@ class ConvertService : Service() {
          */
         fun postFinished(ctx: Context, text: String, quiet: Boolean = false) {
             ensureChannels(ctx)
-            val (small, big) = styledViews(ctx, "WebMChan", text, showPercent = false, percent = null)
+            val audio = BatchRunner.runAudio
+            val (small, big) = styledViews(ctx, if (audio) "WebMChan: audio" else "WebMChan", text, showPercent = false, percent = null, audio = audio)
             val channel = if (quiet) CHANNEL_QUIET else CHANNEL_DONE
             val icon = statusIcon(ctx, StatusIcon.DONE, null, android.R.drawable.stat_sys_download_done)
             val n = NotificationCompat.Builder(ctx, channel)
@@ -275,7 +287,7 @@ class ConvertService : Service() {
                 .setStyle(NotificationCompat.DecoratedCustomViewStyle())
                 .setCustomContentView(small)
                 .setCustomBigContentView(big)
-                .setColor(P5.Red.toArgb())
+                .setColor(P5.redFor(audio).toArgb())
                 .setContentIntent(openAppIntent(ctx))
                 .setAutoCancel(true)
                 .build()
