@@ -134,10 +134,41 @@ fun SettingsScreen(onBack: () -> Unit) {
             AppToggle.NOTIFICATION_FINISHED, AppToggle.NOTIFICATION_FAILURE,
         )
         group("While converting", AppToggle.KEEP_SCREEN_ON)
+        PlaceholderGroup()
         group(
             "Videos and cards",
             AppToggle.AUTO_CLEAR_FINISHED, AppToggle.CONFIRM_DESTRUCTIVE, AppToggle.SHARE_TO_RUNNING_BATCH,
         )
+    }
+}
+
+/** Audio Mode's placeholder picture: what a card with no image is made with (black when none is set). */
+@Composable
+private fun PlaceholderGroup() {
+    val ctx = LocalContext.current
+    val current = AudioArt.placeholder
+    var error by remember { mutableStateOf<String?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) error = if (AudioArt.setPlaceholder(ctx, uri)) null else "Couldn't read that as a picture."
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        P5SectionTitle("Audio Mode placeholder")
+        Text(
+            "The picture an Audio Mode track is made with when it has no image of its own. Plain black when none is chosen.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            if (current != null) "Placeholder: ${current.w}×${current.h} picture" else "Placeholder: plain black",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = P5.Amber) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            P5Button(if (current != null) "Change picture" else "Choose picture", onClick = { picker.launch("image/*") }, kind = P5Kind.Secondary, compact = true)
+            if (current != null) {
+                P5Button("Remove", onClick = { AudioArt.clearPlaceholder(ctx); error = null }, kind = P5Kind.Secondary, compact = true)
+            }
+        }
     }
 }
 

@@ -345,6 +345,7 @@ object BatchRunner {
         val appCtx = ctx.applicationContext
         appContext = appCtx
         AppSettings.init(appCtx)
+        AudioArt.loadPlaceholder(appCtx)
         if (restored) return
         restored = true
 
@@ -865,6 +866,66 @@ object BatchRunner {
 
     fun closeEditor() {
         editingId = -1L
+    }
+
+    // ---- Audio Mode: the trim page and the video-frame picker ----
+
+    /** The Audio Mode card open in the trim page (see AudioTools.kt), or -1. Not saved. */
+    var audioTrimId by mutableLongStateOf(-1L)
+        private set
+
+    /** The Audio Mode card open in the frame picker, or -1. Not saved. */
+    var framePickId by mutableLongStateOf(-1L)
+        private set
+
+    fun openAudioTrim(id: Long) {
+        val item = queue.firstOrNull { it.id == id } ?: return
+        if (!item.isAudio || !item.inPen || item.info == null || item.probeFailed) return
+        audioTrimId = id
+    }
+
+    fun closeAudioTrim() { audioTrimId = -1L }
+
+    fun openFramePicker(id: Long) {
+        val item = queue.firstOrNull { it.id == id } ?: return
+        if (!item.isAudio || !item.inPen || (item.info?.videoCodec ?: "").isEmpty() || item.probeFailed) return
+        framePickId = id
+    }
+
+    fun closeFramePicker() { framePickId = -1L }
+
+    /**
+     * Keeps only the stretch from [startSec] to [endSec] of an audio file (the card then plans, splits and
+     * converts as a track that long). The whole track is no edit at all.
+     */
+    fun setAudioTrim(id: Long, startSec: Double, endSec: Double) {
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val total = queue[at].info?.durationSec ?: return
+        val whole = startSec <= 0.0005 && endSec >= total - 0.0005
+        setEdit(id, if (whole) null else EditSpec(listOf(EditClip(startSec, endSec))))
+    }
+
+    /** Audio Mode: the frame of a video source at [sec] becomes the card's one picture. */
+    fun setAudioFrame(ctx: Context, id: Long, sec: Double) {
+        val appCtx = ctx.applicationContext
+        val uri = queue.firstOrNull { it.id == id }?.uri ?: return
+        scope.launch {
+            val img = withContext(Dispatchers.IO) { AudioArt.frameAt(appCtx, uri, sec)?.let { AudioArt.fromBytes(appCtx, it) } }
+            if (img == null) {
+                notice = "Couldn't get that frame."
+                return@launch
+            }
+            val at = queue.indexOfFirst { it.id == id }
+            if (at < 0) {
+                AudioArt.prune(appCtx, audioArtInUse())
+                return@launch
+            }
+            val spec = queue[at].audio ?: return@launch
+            queue[at] = queue[at].copy(audio = spec.copy(images = listOf(img), coverFromTags = false))
+            AudioArt.prune(appCtx, audioArtInUse())
+            persist()
+        }
     }
 
     // ---- The thumbnail picker ----
@@ -1737,7 +1798,9 @@ object BatchRunner {
                         val res = if (audioSpec != null) {
                             AudioConverter.convert(
                                 ctx, staged!!, src, settings, audioSpec,
-                                startSec = startSec, clipDurationSec = clipDur, part = part, numParts = numParts,
+                                // A trimmed track: the edit's start is where the track begins in the file.
+                                startSec = startSec + (item.edit?.clips?.firstOrNull()?.startSec ?: 0.0),
+                                clipDurationSec = clipDur ?: src.durationSec, part = part, numParts = numParts,
                                 title = audioSpec.title.ifBlank { OutputName.baseFor(item.name, null) },
                                 artist = audioSpec.artist,
                                 onLog = onLogLine, onProgress = onProgressUpdate,

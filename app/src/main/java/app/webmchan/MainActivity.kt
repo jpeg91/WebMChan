@@ -193,6 +193,15 @@ class MainActivity : ComponentActivity() {
                     if (editingId >= 0L) {
                         P5Background(base = P5.RedDeep) { EditorScreen(itemId = editingId, onClose = { BatchRunner.closeEditor() }) }
                     }
+                    // Audio Mode's trim page and video-frame picker, opened from an audio card's /// menu.
+                    val audioTrimId = BatchRunner.audioTrimId
+                    if (audioTrimId >= 0L) {
+                        P5Background(base = P5.RedDeep) { AudioTrimScreen(itemId = audioTrimId, onClose = { BatchRunner.closeAudioTrim() }) }
+                    }
+                    val framePickId = BatchRunner.framePickId
+                    if (framePickId >= 0L) {
+                        P5Background(base = P5.RedDeep) { FramePickScreen(itemId = framePickId, onClose = { BatchRunner.closeFramePicker() }) }
+                    }
                     // The thumbnail picker, opened from the same card button. Also a page of its own, on top.
                     val thumbPickId = BatchRunner.thumbPickId
                     if (thumbPickId >= 0L) {
@@ -712,6 +721,16 @@ internal fun QueueRow(
                         modifier = Modifier.background(P5.White),
                     ) {
                         if (isAudio) {
+                            DropdownMenuItem(
+                                text = { Text("Trim audio", color = P5.Black) },
+                                onClick = { showCardMenu = false; onEdit() },
+                            )
+                            if ((i?.videoCodec ?: "").isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Pick frame from video", color = P5.Black) },
+                                    onClick = { showCardMenu = false; BatchRunner.openFramePicker(item.id) },
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("Add image", color = P5.Black) },
                                 onClick = { showCardMenu = false; appendPictures = true; picturePicker.launch("image/*") },
@@ -1564,7 +1583,7 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
                 onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
                 showReturn = section == CardSection.QUEUE,
                 onReturn = { BatchRunner.returnToPen(item.id) },
-                onEdit = { BatchRunner.openEditor(item.id) },
+                onEdit = { if (item.isAudio) BatchRunner.openAudioTrim(item.id) else BatchRunner.openEditor(item.id) },
                 onThumbnail = { BatchRunner.openThumbPicker(item.id) },
                 isNext = item.id == nextId,
                 sweep = if (sweeping && item.status == ItemStatus.WAITING && item.info != null && !item.probeFailed) {
@@ -2023,7 +2042,7 @@ fun App(
                 text = {
                     Text(
                         "\"${first.customName ?: first.name}\"" + (if (more > 0) " and $more more have" else " has") +
-                            " no image. Add one to show while it plays, or continue and a plain black picture is used. " +
+                            " no image. Add one to show while it plays, or continue and the placeholder picture is used (black, unless you chose one in Settings). " +
                             "An image can also be added or changed from a card's /// button."
                     )
                 },

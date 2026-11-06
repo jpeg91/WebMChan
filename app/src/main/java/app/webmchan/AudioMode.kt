@@ -10,6 +10,9 @@ import android.graphics.Matrix
 import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFprobeKit
@@ -135,7 +138,8 @@ object AudioFit {
         val t = settings.tuning
         val parts = Converter.partsFor(info.durationSec, settings.maxDurationSec, t, extraParts)
         val partSec = min(info.durationSec / parts, Converter.effectiveMaxSec(settings.maxDurationSec, t)).coerceAtLeast(0.1)
-        val images = spec?.images.orEmpty()
+        // With no picture the placeholder (Settings) is used, else a black square.
+        val images = spec?.images.orEmpty().ifEmpty { listOfNotNull(AudioArt.placeholder) }
         val (w, h) = frameSize(images, settings.minWidth, settings.minHeight)
         val kbps = audioKbps(settings.limitBytes, partSec, videoBytes(w, h, images.size, partSec))
         return PartEstimate(parts, partSec, 0, h, kbps, 0.0, 0.0)
@@ -146,6 +150,58 @@ object AudioFit {
 object AudioArt {
     private const val DIR = "audioart"
     private const val BLANK = "blank.jpg"
+    private const val PLACEHOLDER = "placeholder.jpg"
+
+    /** The picture chosen in Settings for cards that have none; null = plain black. Read from app storage by [loadPlaceholder]. */
+    var placeholder by mutableStateOf<AudioImage?>(null)
+        private set
+
+    fun loadPlaceholder(ctx: Context) {
+        val f = File(dir(ctx), PLACEHOLDER)
+        placeholder = if (f.length() > 0L) {
+            val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(f.absolutePath, b)
+            if (b.outWidth > 0 && b.outHeight > 0) AudioImage(f.absolutePath, b.outWidth, b.outHeight) else null
+        } else null
+    }
+
+    /** Makes the picked picture the placeholder. false if it can't be read as a picture. */
+    fun setPlaceholder(ctx: Context, uri: Uri): Boolean {
+        val img = fromUri(ctx, uri) ?: return false
+        val dest = File(dir(ctx), PLACEHOLDER)
+        File(img.path).copyTo(dest, overwrite = true)
+        File(img.path).delete()
+        placeholder = AudioImage(dest.absolutePath, img.w, img.h)
+        return true
+    }
+
+    fun clearPlaceholder(ctx: Context) {
+        File(dir(ctx), PLACEHOLDER).delete()
+        placeholder = null
+    }
+
+    /** The picture a card with none is made with: the placeholder, else black. */
+    fun fallback(ctx: Context): AudioImage {
+        if (placeholder == null) loadPlaceholder(ctx)
+        return placeholder ?: blank(ctx)
+    }
+
+    /** The frame of the video [uri] at [sec], as the bytes of a JPEG; null if it can't be got. */
+    fun frameAt(ctx: Context, uri: Uri, sec: Double): ByteArray? {
+        val r = MediaMetadataRetriever()
+        return try {
+            if (uri.scheme == "file") r.setDataSource(uri.path) else r.setDataSource(ctx, uri)
+            val bmp = r.getFrameAtTime((sec * 1_000_000.0).toLong(), MediaMetadataRetriever.OPTION_CLOSEST) ?: return null
+            val out = java.io.ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.JPEG, 92, out)
+            bmp.recycle()
+            out.toByteArray()
+        } catch (_: Throwable) {
+            null
+        } finally {
+            try { r.release() } catch (_: Throwable) { }
+        }
+    }
 
     /** Pictures are stored no bigger than this on their longest side (twice the video's size, so there is room to scale). */
     private const val STORE_EDGE = 1440
@@ -287,7 +343,7 @@ object AudioArt {
     /** Deletes the pictures no card uses any more ([keep] holds the paths still in use). */
     fun prune(ctx: Context, keep: Set<String>) {
         File(ctx.filesDir, DIR).listFiles()?.forEach {
-            if (it.name != BLANK && it.absolutePath !in keep) it.delete()
+            if (it.name != BLANK && it.name != PLACEHOLDER && it.absolutePath !in keep) it.delete()
         }
     }
 }
@@ -333,11 +389,28 @@ object AudioConverter {
             }
             var codec = ""
             var streamTags: JSONObject? = null
+            // A real picture track (not an mp3's cover art, which also shows up as a "video" stream).
+            var vW = 0
+            var vH = 0
+            var vCodec = ""
+            var vFps = 0.0
             for (s in info.streams) {
-                if (s.type == "audio") {
+                if (s.type == "audio" && codec.isEmpty()) {
                     codec = s.codec ?: ""
                     streamTags = s.allProperties?.optJSONObject("tags")
-                    break
+                } else if (s.type == "video" && vCodec.isEmpty()) {
+                    val cover = s.allProperties?.optJSONObject("disposition")?.optInt("attached_pic", 0) == 1
+                    val w = s.width?.toInt() ?: 0
+                    val h = s.height?.toInt() ?: 0
+                    if (!cover && w > 0 && h > 0) {
+                        vW = w; vH = h; vCodec = s.codec ?: "video"
+                        // "30/1" or "30000/1001"
+                        vFps = (s.averageFrameRate ?: "").split('/').let { p ->
+                            val a = p.getOrNull(0)?.toDoubleOrNull() ?: 0.0
+                            val b = p.getOrNull(1)?.toDoubleOrNull() ?: 1.0
+                            if (b > 0.0) a / b else 0.0
+                        }
+                    }
                 }
             }
             if (codec.isEmpty()) {
@@ -349,7 +422,8 @@ object AudioConverter {
             val bytes = info.size?.toLongOrNull() ?: 0L
             AudioProbe(
                 info = SourceInfo(
-                    durationSec = dur, width = 0, height = 0, fps = 0.0, hasAudio = true, fpsReadable = false,
+                    durationSec = dur, width = vW, height = vH, fps = vFps, hasAudio = true, fpsReadable = vFps > 0.0,
+                    videoCodec = vCodec,
                     fileBytes = bytes,
                     container = (info.format ?: "").substringBefore(',').uppercase(Locale.US),
                     audioCodec = codec,
@@ -396,7 +470,7 @@ object AudioConverter {
             if (duration < 0.1) return@withContext ConvertResult.Fail("There is nothing to convert in this part.")
 
             // The pictures that are really there; with none, the plain black one.
-            val images = spec.images.filter { File(it.path).length() > 0 }.ifEmpty { listOf(AudioArt.blank(ctx)) }
+            val images = spec.images.filter { File(it.path).length() > 0 }.ifEmpty { listOf(AudioArt.fallback(ctx)) }
             val (w, h) = AudioFit.frameSize(images, settings.minWidth, settings.minHeight)
             val fps = Converter.clampFps(settings.targetFps)
             val videoBytes = AudioFit.videoBytes(w, h, images.size, duration)
