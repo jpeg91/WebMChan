@@ -177,6 +177,10 @@ object BatchStore {
                     put("vk", it.videoKbps)
                     put("ac", it.audioCodec)
                     put("pv", it.probeVersion)
+                    put("ct", it.colorTransfer)
+                    put("cm", it.colorMatrix)
+                    put("cr", it.colorRange)
+                    put("ak", it.audioSourceKbps)
                 }
             )
         }
@@ -200,6 +204,10 @@ object BatchStore {
                     audioCodec = it.optString("ac", ""),
                     // Absent in files saved before the probe read rotation (version 1).
                     probeVersion = it.optInt("pv", 1),
+                    colorTransfer = it.optString("ct", ""),
+                    colorMatrix = it.optString("cm", ""),
+                    colorRange = it.optString("cr", ""),
+                    audioSourceKbps = it.optInt("ak", 0),
                 )
             },
             probeFailed = o.optBoolean("probeFailed", false),

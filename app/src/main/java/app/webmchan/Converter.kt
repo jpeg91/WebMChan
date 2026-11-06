@@ -55,6 +55,12 @@ data class SourceInfo(
      * is probed again when the app starts.
      */
     val probeVersion: Int = PROBE_VERSION,
+    /** The video stream's ffprobe colour properties ("smpte2084", "bt709", "pc" ...); empty when not given. */
+    val colorTransfer: String = "",
+    val colorMatrix: String = "",
+    val colorRange: String = "",
+    /** Audio Mode: the audio stream's own bitrate in kbps (0 when not known), which the output's is capped relative to. */
+    val audioSourceKbps: Int = 0,
 ) {
     companion object {
         /**
@@ -62,7 +68,7 @@ data class SourceInfo(
          * flagged "rotate 90" reads as portrait. Version 1 gave the stored size, which is the wrong
          * way round for those and made their size and aspect ratio come out wrong.
          */
-        const val PROBE_VERSION = 2
+        const val PROBE_VERSION = 3
     }
 }
 
@@ -572,9 +578,15 @@ object Converter {
         var vCodec = ""
         var vKbps = 0
         var aCodec = ""
+        var cTransfer = ""
+        var cMatrix = ""
+        var cRange = ""
         for (s in info.streams) {
             when (s.type) {
                 "video" -> if (w == 0) {
+                    cTransfer = s.allProperties?.optString("color_transfer", "") ?: ""
+                    cMatrix = s.allProperties?.optString("color_space", "") ?: ""
+                    cRange = s.allProperties?.optString("color_range", "") ?: ""
                     w = s.width?.toInt() ?: 0
                     h = s.height?.toInt() ?: 0
                     // A phone video is often stored sideways with a "rotate" flag; ffmpeg (and every
@@ -601,8 +613,37 @@ object Converter {
             videoCodec = vCodec,
             videoKbps = vKbps,
             audioCodec = aCodec,
+            colorTransfer = cTransfer,
+            colorMatrix = cMatrix,
+            colorRange = cRange,
         )
     }
+
+    /**
+     * Whether this FFmpeg build can tone-map HDR to ordinary video (needs zscale, from libzimg). Found out once,
+     * by running a tiny test, because a filter the build lacks would fail the whole conversion.
+     */
+    @Volatile
+    private var toneMapKnown: Boolean? = null
+
+    private fun canToneMap(): Boolean {
+        toneMapKnown?.let { return it }
+        val ok = try {
+            val s = FFmpegKit.executeWithArguments(
+                arrayOf("-hide_banner", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-vf", HDR_TO_SDR, "-f", "null", "-")
+            )
+            ReturnCode.isSuccess(s.returnCode)
+        } catch (_: Throwable) {
+            false
+        }
+        toneMapKnown = ok
+        return ok
+    }
+
+    /** HDR (PQ or HLG, BT.2020) turned into ordinary BT.709 video, so it doesn't come out dark and washed out. */
+    private const val HDR_TO_SDR =
+        "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0," +
+            "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
 
     /**
      * How far the video stream must be turned clockwise to play upright: 0, 90, 180 or 270. Newer
@@ -1070,6 +1111,11 @@ object Converter {
 
                 // What happens to the picture: crop, frame rate cap, size. The picked thumbnail frame gets the
                 // same, except the frame rate (it is one still frame), so it ends up the same size.
+                // Colour: HDR sources are tone-mapped to ordinary video when this build can; a full-range source is
+                // turned into the usual limited range (the output is tagged as limited range, see below).
+                val isHdr = src.colorTransfer == "smpte2084" || src.colorTransfer == "arib-std-b67"
+                val toneMap = isHdr && canToneMap()
+                val fullRange = !isHdr && src.colorRange == "pc"
                 fun pictureFilters(withFps: Boolean): String = buildList {
                     // The crop comes first, so every later step (frame rate, size) works on the cropped picture.
                     if (cropFilter != null) add(cropFilter)
@@ -1086,8 +1132,11 @@ object Converter {
                     } else if (height < src.height || src.height > 1080) {
                         add("scale=-2:$height")
                     }
+                    // Last, so the work is done on the picture at its final (smaller) size.
+                    if (toneMap) add(HDR_TO_SDR) else if (fullRange) add("scale=in_range=full:out_range=limited")
                 }.joinToString(",").ifEmpty { "null" }
                 val filters = pictureFilters(true)
+                if (isHdr) onLog(if (toneMap) "   HDR source (${src.colorTransfer}): tone-mapped to ordinary video" else "   HDR source (${src.colorTransfer}): this build can't tone-map, so it is kept as HDR")
 
                 // Pass 1 only analyses the picture, so what it finds doesn't depend on the bitrate being
                 // aimed for. The analysis is therefore named after the video and everything that shapes
@@ -1154,6 +1203,15 @@ object Converter {
                     listOf("-r", "%.5f".format(java.util.Locale.US, graphRate), "-fps_mode", "cfr")
                 } else emptyList()
 
+                // What the picture is, as the output says it: ordinary BT.709 unless the source is standard-definition
+                // (BT.601, which it keeps) or HDR that couldn't be tone-mapped (which it keeps, so players still read it right).
+                val soft = src.colorMatrix == "bt470bg" || src.colorMatrix == "smpte170m"
+                val (tagSpace, tagPrimaries, tagTransfer) = when {
+                    isHdr && !toneMap -> Triple(src.colorMatrix.ifBlank { "bt2020nc" }, "bt2020", src.colorTransfer)
+                    soft -> Triple("smpte170m", "smpte170m", "smpte170m")
+                    else -> Triple("bt709", "bt709", "bt709")
+                }
+
                 val common = listOf("-hide_banner", "-y") +
                     sourceArgs +
                     listOf(
@@ -1165,7 +1223,7 @@ object Converter {
                         // tells a strict player to decode the YUV pixels as if they were RGB, producing
                         // wrong colours) even though the pixels themselves are normal YUV. bt709/tv is
                         // the standard tag for ordinary SDR video and matches what the encoder produces.
-                        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+                        "-colorspace", tagSpace, "-color_primaries", tagPrimaries, "-color_trc", tagTransfer,
                         "-color_range", "tv",
                     ) + (if (settings.useVp9) {
                     listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +

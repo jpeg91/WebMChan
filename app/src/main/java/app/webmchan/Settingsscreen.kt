@@ -71,6 +71,11 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
         "autoClearFinished", false, "Clear Finished cards when a new run starts",
         "The Finished list starts empty each run. The cards stay in History.",
     ),
+    AUDIO_LOGO(
+        "audioLogo", true, "WebMChan text on blank pictures",
+        "In Audio Mode, a track made with the plain black picture (no image, and no placeholder chosen) gets the word " +
+            "\"WebMChan\" in the bottom-left corner. Off leaves the picture completely black.",
+    ),
     CONFIRM_DESTRUCTIVE(
         "confirmDestructive", true, "Confirm before destructive actions",
         "Asks first before Cancel / Cancel all, Delete file, and Remove card (or Remove from history).",
@@ -135,6 +140,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         )
         group("While converting", AppToggle.KEEP_SCREEN_ON)
         PlaceholderGroup()
+        group("Audio Mode", AppToggle.AUDIO_LOGO)
         group(
             "Videos and cards",
             AppToggle.AUTO_CLEAR_FINISHED, AppToggle.CONFIRM_DESTRUCTIVE, AppToggle.SHARE_TO_RUNNING_BATCH,

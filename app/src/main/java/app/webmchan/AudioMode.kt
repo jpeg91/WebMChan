@@ -119,6 +119,19 @@ object AudioFit {
         return min(MAX_KBPS.toDouble(), floor(kbps)).toInt()
     }
 
+    /** How far above the source's own audio bitrate the output may go: more gives no better sound, so the room is left unused. */
+    const val SOURCE_CAP_FACTOR = 1.5
+
+    /** The first encode aims this much above what the sums give: Vorbis comes out about 10% under the bitrate asked for. */
+    const val FIRST_TRY_BOOST = 1.07
+
+    /** The highest audio bitrate worth giving a track whose own audio is [info]: above the original's, never above [MAX_KBPS]. */
+    fun capKbps(info: SourceInfo): Int {
+        val own = info.audioSourceKbps
+        if (own <= 0) return MAX_KBPS
+        return min(MAX_KBPS, max(MIN_KBPS, kotlin.math.ceil(own * SOURCE_CAP_FACTOR).toInt()))
+    }
+
     /** Mono below 48 kbps, else stereo. */
     fun channels(kbps: Int): Int = if (kbps < 48) 1 else 2
 
@@ -141,7 +154,7 @@ object AudioFit {
         // With no picture the placeholder (Settings) is used, else a black square.
         val images = spec?.images.orEmpty().ifEmpty { listOfNotNull(AudioArt.placeholder) }
         val (w, h) = frameSize(images, settings.minWidth, settings.minHeight)
-        val kbps = audioKbps(settings.limitBytes, partSec, videoBytes(w, h, images.size, partSec))
+        val kbps = min(capKbps(info), audioKbps(settings.limitBytes, partSec, videoBytes(w, h, images.size, partSec)))
         return PartEstimate(parts, partSec, 0, h, kbps, 0.0, 0.0)
     }
 }
@@ -303,16 +316,17 @@ object AudioArt {
         else -> fileName
     }
 
+    /** How far from the picture's edge a corner text sits, for a picture [h] tall. */
+    fun cornerMargin(h: Int): Int = max(6, (h * 0.035f).roundToInt())
+
     /**
-     * Draws the title card: [text] bottom-right on a dark translucent plate, on a transparent picture the size of
-     * the video, saved as a PNG at [file] (laid over the picture by ffmpeg's overlay).
+     * Draws [text] white on a dark plate, as a small JPEG at [file] (just the plate, no transparent surround,
+     * because this FFmpeg build has no PNG decoder). ffmpeg lays it over a corner of the picture (see
+     * [AudioConverter.convert]). [h] is the video's height, which sets the text size; [maxW] the widest the plate may be.
      */
-    fun drawTitleCard(file: File, text: String, w: Int, h: Int) {
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val margin = max(6f, h * 0.035f)
+    fun drawTextPlate(file: File, text: String, h: Int, maxW: Int) {
         val pad = max(4f, h * 0.016f)
-        val maxTextW = w * 0.8f - 2 * pad
+        val maxTextW = maxW * 0.8f - 2 * pad
         val paint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -326,17 +340,15 @@ object AudioArt {
             paint.textSize = size
         }
         val shown = android.text.TextUtils.ellipsize(text, paint, maxTextW, android.text.TextUtils.TruncateAt.END).toString()
-        val tw = paint.measureText(shown)
         val fm = paint.fontMetrics
-        val th = fm.descent - fm.ascent
-        val right = w - margin
-        val bottom = h - margin
-        val left = right - tw - 2 * pad
-        val top = bottom - th - 2 * pad
-        val plate = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 0, 0, 0) }
-        c.drawRoundRect(left, top, right, bottom, pad, pad, plate)
-        c.drawText(shown, left + pad, bottom - pad - fm.descent, paint)
-        file.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        // Even sizes, so the plate sits cleanly on the video's chroma grid.
+        val pw = (((paint.measureText(shown) + 2 * pad) / 2f).roundToInt() * 2).coerceAtLeast(2)
+        val ph = ((((fm.descent - fm.ascent) + 2 * pad) / 2f).roundToInt() * 2).coerceAtLeast(2)
+        val bmp = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.rgb(24, 24, 24))
+        c.drawText(shown, pad, ph - pad - fm.descent, paint)
+        file.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
         bmp.recycle()
     }
 
@@ -362,7 +374,8 @@ object AudioConverter {
     private const val CUT_FADE_SEC = 0.02
 
     private const val BEST_FILE = "audio-best.webm"
-    private const val CARD_FILE = "audio-titlecard.png"
+    private const val CARD_FILE = "audio-titlecard.jpg"
+    private const val LOGO_FILE = "audio-logo.jpg"
 
     private fun fmt(x: Double) = String.format(Locale.US, "%.3f", x)
 
@@ -394,10 +407,12 @@ object AudioConverter {
             var vH = 0
             var vCodec = ""
             var vFps = 0.0
+            var audioKbps = 0
             for (s in info.streams) {
                 if (s.type == "audio" && codec.isEmpty()) {
                     codec = s.codec ?: ""
                     streamTags = s.allProperties?.optJSONObject("tags")
+                    audioKbps = ((s.bitrate?.toLongOrNull() ?: 0L) / 1000).toInt()
                 } else if (s.type == "video" && vCodec.isEmpty()) {
                     val cover = s.allProperties?.optJSONObject("disposition")?.optInt("attached_pic", 0) == 1
                     val w = s.width?.toInt() ?: 0
@@ -420,10 +435,13 @@ object AudioConverter {
             val formatTags = info.allProperties?.optJSONObject("format")?.optJSONObject("tags")
             fun tag(key: String) = tagOf(formatTags, key).ifBlank { tagOf(streamTags, key) }
             val bytes = info.size?.toLongOrNull() ?: 0L
+            // Many audio files give no bitrate for the stream itself; for a file that is only sound, the whole file's is the same thing.
+            if (audioKbps <= 0 && vCodec.isEmpty()) audioKbps = ((info.bitrate?.toLongOrNull() ?: 0L) / 1000).toInt()
             AudioProbe(
                 info = SourceInfo(
                     durationSec = dur, width = vW, height = vH, fps = vFps, hasAudio = true, fpsReadable = vFps > 0.0,
                     videoCodec = vCodec,
+                    audioSourceKbps = audioKbps,
                     fileBytes = bytes,
                     container = (info.format ?: "").substringBefore(',').uppercase(Locale.US),
                     audioCodec = codec,
@@ -475,6 +493,8 @@ object AudioConverter {
             val fps = Converter.clampFps(settings.targetFps)
             val videoBytes = AudioFit.videoBytes(w, h, images.size, duration)
             var kbps = AudioFit.audioKbps(settings.limitBytes, duration, videoBytes)
+            // Never above the original's quality plus some margin (more would only fill the file).
+            val capKbps = AudioFit.capKbps(src)
             if (kbps < AudioFit.MIN_KBPS) {
                 return@withContext ConvertResult.Fail(
                     "This part is %.0f s long, too long for the size limit at a listenable quality. Split the track into more parts.".format(Locale.US, duration)
@@ -484,19 +504,33 @@ object AudioConverter {
             onLog("   picture: ${w}×${h}, ${images.size} image${if (images.size == 1) "" else "s"}, $fps fps, $codec")
             onLog(
                 "   size limit ${settings.limitBytes} bytes; the picture is expected to take about ${videoBytes.toLong()}; " +
-                    "first try: audio at $kbps kbps"
+                    "first try: audio at ${min(capKbps, (kbps * AudioFit.FIRST_TRY_BOOST).toInt())} kbps" +
+                    (if (capKbps < AudioFit.MAX_KBPS) " (the original's sound is ${src.audioSourceKbps} kbps, so no more than $capKbps is used)" else "")
             )
+            // The encoder comes out about 10% under the bitrate it is asked for, so the first try asks for a little more.
+            kbps = min(capKbps, (kbps * AudioFit.FIRST_TRY_BOOST).toInt())
             if (kbps < AudioFit.WARN_KBPS) onLog("   note: below ${AudioFit.WARN_KBPS} kbps the sound loses quality; more parts would give it more room")
 
             val segSec = duration / images.size
-            // The title card (Settings): drawn once as a transparent picture and laid over the video.
+            val margin = AudioArt.cornerMargin(h)
+            // Small pictures laid over the video: the title card (Settings) bottom-right, and the "WebMChan" text
+            // bottom-left when the picture is the plain black one. Each is a JPEG of just its plate (this FFmpeg
+            // build can't read PNG), put in place by the overlay filter.
+            class Overlay(val file: File, val position: String, val enable: String)
+            val overlays = ArrayList<Overlay>()
             val cardSec = settings.titleCardSec
-            val cardFile = File(ctx.cacheDir, CARD_FILE)
-            val cardOn = cardSec != 0
-            if (cardOn) {
+            if (cardSec != 0) {
                 val text = AudioArt.cardText(spec, title)
-                AudioArt.drawTitleCard(cardFile, text, w, h)
+                val f = File(ctx.cacheDir, CARD_FILE)
+                AudioArt.drawTextPlate(f, text, h, w)
+                overlays.add(Overlay(f, "W-w-$margin:H-h-$margin", if (cardSec == AudioFit.CARD_WHOLE) "" else ":enable='lt(t,$cardSec)'"))
                 onLog("   title card: \"$text\" ${if (cardSec == AudioFit.CARD_WHOLE) "for the whole track" else "for the first $cardSec s"}")
+            }
+            val blankPicture = spec.images.none { File(it.path).length() > 0 } && AudioArt.placeholder == null
+            if (blankPicture && AppSettings.get(AppToggle.AUDIO_LOGO)) {
+                val f = File(ctx.cacheDir, LOGO_FILE)
+                AudioArt.drawTextPlate(f, "WebMChan", h, w)
+                overlays.add(Overlay(f, "$margin:H-h-$margin", ""))
             }
             val gop = max(2, fps * AudioFit.KEYFRAME_SEC)
             val cutFades = ArrayList<String>()
@@ -506,11 +540,16 @@ object AudioConverter {
             }
 
             // One filter graph: each picture fitted into the frame on black, held at the frame rate, then joined end to end.
-            val base = if (cardOn) "vbase" else "vout"
+            // The pictures are JPEGs (full-range, BT.601), so they are turned into ordinary video colours (limited-range,
+            // BT.709) through RGB with every setting stated, rather than left to the defaults: without that the
+            // output came out tagged full-range with a "gbr" colour matrix, which players show dark and washed out.
+            val toRgb = "scale=in_range=pc:in_color_matrix=bt601"
+            val toVideo = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"
+            val base = if (overlays.isEmpty()) "vout" else "vbase"
             val graph = buildString {
                 for (n in images.indices) {
-                    append("[${n + 1}:v]scale=$w:$h:force_original_aspect_ratio=decrease,")
-                    append("pad=$w:$h:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=$fps,format=yuv420p[v$n];")
+                    append("[${n + 1}:v]scale=$w:$h:force_original_aspect_ratio=decrease:in_range=pc:in_color_matrix=bt601,format=rgb24,")
+                    append("pad=$w:$h:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=$fps,$toVideo[v$n];")
                 }
                 if (images.size == 1) {
                     append("[v0]null[$base]")
@@ -518,9 +557,13 @@ object AudioConverter {
                     for (n in images.indices) append("[v$n]")
                     append("concat=n=${images.size}:v=1:a=0[$base]")
                 }
-                if (cardOn) {
-                    val enable = if (cardSec == AudioFit.CARD_WHOLE) "" else ":enable='lt(t,$cardSec)'"
-                    append(";[$base][${images.size + 1}:v]overlay=0:0$enable,format=yuv420p[vout]")
+                var current = base
+                for ((k, o) in overlays.withIndex()) {
+                    val input = images.size + 1 + k
+                    val last = k == overlays.lastIndex
+                    append(";[$input:v]$toRgb,format=rgb24,$toVideo[ov$k]")
+                    append(";[$current][ov$k]overlay=${o.position}${o.enable}[${if (last) "vout" else "vm$k"}]")
+                    current = "vm$k"
                 }
             }
 
@@ -541,7 +584,7 @@ object AudioConverter {
                 args.addAll(listOf("-hide_banner", "-y"))
                 args.addAll(listOf("-ss", fmt(startSec), "-t", fmt(duration), "-i", input.absolutePath))
                 for (img in images) args.addAll(listOf("-loop", "1", "-framerate", fps.toString(), "-t", fmt(segSec), "-i", img.path))
-                if (cardOn) args.addAll(listOf("-loop", "1", "-framerate", fps.toString(), "-t", fmt(duration), "-i", cardFile.absolutePath))
+                for (o in overlays) args.addAll(listOf("-loop", "1", "-framerate", fps.toString(), "-t", fmt(duration), "-i", o.file.absolutePath))
                 args.addAll(listOf("-filter_complex", graph, "-map", "[vout]", "-map", "0:a:0", "-map_metadata", "-1", "-map_chapters", "-1"))
                 if (t.maxThreads > 0) args.addAll(listOf("-threads", t.maxThreads.toString()))
                 if (settings.useVp9) {
@@ -550,6 +593,8 @@ object AudioConverter {
                     args.addAll(listOf("-c:v", "libvpx", "-b:v", "400k", "-crf", "30", "-auto-alt-ref", "0", "-cpu-used", "4", "-deadline", "good"))
                 }
                 args.addAll(listOf("-g", gop.toString(), "-pix_fmt", "yuv420p"))
+                // Say what the picture is: ordinary video colours.
+                args.addAll(listOf("-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"))
                 args.addAll(listOf("-c:a", "libvorbis", "-b:a", "${kbps}k", "-ac", AudioFit.channels(kbps).toString()))
                 val hz = AudioFit.sampleRate(kbps)
                 if (hz > 0) args.addAll(listOf("-ar", hz.toString()))
@@ -579,8 +624,8 @@ object AudioConverter {
                         bestKbps = kbps
                     } else out.delete()
                     // Done when it is within about 7% of the limit, at the top bitrate, or out of tries.
-                    if (size >= settings.limitBytes * 0.93 || kbps >= AudioFit.MAX_KBPS || attempt >= MAX_TRIES) break
-                    val next = min(AudioFit.MAX_KBPS.toDouble(), kbps * (settings.limitBytes * 0.975 / size)).toInt()
+                    if (size >= settings.limitBytes * 0.93 || kbps >= capKbps || attempt >= MAX_TRIES) break
+                    val next = min(capKbps.toDouble(), kbps * (settings.limitBytes * 0.975 / size)).toInt()
                     if (next <= kbps + 2) break
                     onLog("   room to spare: trying ${next} kbps")
                     kbps = next
@@ -628,5 +673,6 @@ object AudioConverter {
     fun clearWorkFiles(ctx: Context) {
         File(ctx.cacheDir, BEST_FILE).delete()
         File(ctx.cacheDir, CARD_FILE).delete()
+        File(ctx.cacheDir, LOGO_FILE).delete()
     }
 }

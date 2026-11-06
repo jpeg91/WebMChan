@@ -1760,7 +1760,7 @@ object BatchRunner {
                         notifyProgress(ctx, "${pos()}$partLabel", item.name, "Starting…", force = true)
 
                         if (staged == null) {
-                            logBuffer.add("   copying video to app cache…") { logLines = it }
+                            logBuffer.add(if (item.isAudio) "   copying audio to app cache…" else "   copying video to app cache…") { logLines = it }
                             val st = Converter.stageSource(
                                 ctx, item.uri,
                                 shouldStop = { skipFlag.get() || cancelAllFlag.get() },
