@@ -319,37 +319,103 @@ object AudioArt {
     /** How far from the picture's edge a corner text sits, for a picture [h] tall. */
     fun cornerMargin(h: Int): Int = max(6, (h * 0.035f).roundToInt())
 
-    /**
-     * Draws [text] white on a dark plate, as a small JPEG at [file] (just the plate, no transparent surround,
-     * because this FFmpeg build has no PNG decoder). ffmpeg lays it over a corner of the picture (see
-     * [AudioConverter.convert]). [h] is the video's height, which sets the text size; [maxW] the widest the plate may be.
-     */
-    fun drawTextPlate(file: File, text: String, h: Int, maxW: Int) {
-        val pad = max(4f, h * 0.016f)
-        val maxTextW = maxW * 0.8f - 2 * pad
-        val paint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-        }
-        // Starts at a size that suits the frame and shrinks until the line fits; if it still doesn't, it is cut with "…".
-        var size = max(12f, h * 0.05f)
-        val smallest = max(9f, h * 0.025f)
-        paint.textSize = size
-        while (paint.measureText(text) > maxTextW && size > smallest) {
-            size -= 1f
-            paint.textSize = size
-        }
-        val shown = android.text.TextUtils.ellipsize(text, paint, maxTextW, android.text.TextUtils.TruncateAt.END).toString()
-        val fm = paint.fontMetrics
-        // Even sizes, so the plate sits cleanly on the video's chroma grid.
-        val pw = (((paint.measureText(shown) + 2 * pad) / 2f).roundToInt() * 2).coerceAtLeast(2)
-        val ph = ((((fm.descent - fm.ascent) + 2 * pad) / 2f).roundToInt() * 2).coerceAtLeast(2)
-        val bmp = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        c.drawColor(Color.rgb(24, 24, 24))
-        c.drawText(shown, pad, ph - pad - fm.descent, paint)
+    private val PURPLE = Color.rgb(0x75, 0x5F, 0xBE)
+    private val PURPLE_DEEP = Color.rgb(0x3A, 0x2E, 0x6B)
+
+    private fun heavyItalic(): android.graphics.Typeface =
+        android.graphics.Typeface.create("sans-serif-black", android.graphics.Typeface.ITALIC)
+
+    private fun even(x: Float): Int = ((x / 2f).roundToInt() * 2).coerceAtLeast(2)
+
+    private fun save(file: File, bmp: Bitmap) {
         file.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
         bmp.recycle()
+    }
+
+    /**
+     * Draws the "WebMChan" mark as a small JPEG at [file]: heavy italic white letters on a slanted purple plate
+     * with a deeper purple shadow, on pure black (so on the black picture it is made for, only the mark shows).
+     * Returns the width of the picture in pixels. [h] is the video's height, which sets the size. JPEG, because
+     * this FFmpeg build has no PNG decoder; ffmpeg lays it over the video's bottom-left corner.
+     */
+    fun drawLogo(file: File, h: Int): Int {
+        val pad = max(4f, h * 0.018f)
+        val shadow = max(2f, h * 0.008f)
+        val paint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            typeface = heavyItalic()
+            textSize = max(12f, h * 0.06f)
+            letterSpacing = 0.04f
+        }
+        val text = "WebMChan"
+        val fm = paint.fontMetrics
+        val tw = paint.measureText(text)
+        val th = fm.descent - fm.ascent
+        val slant = th * 0.28f
+        val w = even(tw + 2 * pad + slant + shadow + 2)
+        val hh = even(th + 2 * pad + shadow + 2)
+        val bmp = Bitmap.createBitmap(w, hh, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.BLACK)
+        val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        val plateW = tw + 2 * pad + slant
+        val plateH = th + 2 * pad
+        fun plate(dx: Float, dy: Float): android.graphics.Path = android.graphics.Path().apply {
+            moveTo(dx + slant, dy)
+            lineTo(dx + plateW, dy)
+            lineTo(dx + plateW - slant, dy + plateH)
+            lineTo(dx, dy + plateH)
+            close()
+        }
+        fill.color = PURPLE_DEEP
+        c.drawPath(plate(shadow, shadow), fill)
+        fill.color = PURPLE
+        c.drawPath(plate(0f, 0f), fill)
+        c.drawText(text, pad + slant / 2f, pad - fm.ascent, paint)
+        save(file, bmp)
+        return w
+    }
+
+    /**
+     * Draws the title card as a small JPEG at [file]: [text] in heavy italic white on pure black, right-aligned, with a
+     * slanted purple bar down its left side. The text is a little smaller than the old plain one and wraps onto a
+     * second or third line (ending in "…" if still too long) rather than running wider than [maxPlateW] pixels
+     * (the room left beside the "WebMChan" mark, when there is one). [h] is the video's height.
+     */
+    fun drawTitleCard(file: File, text: String, h: Int, maxPlateW: Int) {
+        val pad = max(4f, h * 0.016f)
+        val bar = max(3f, h * 0.012f)
+        val paint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            typeface = heavyItalic()
+            textSize = max(10f, h * 0.04f)
+        }
+        val slant = paint.textSize * 0.3f
+        val textW = max(20, (maxPlateW - 2 * pad - bar - slant).toInt())
+        val layout = android.text.StaticLayout.Builder.obtain(text, 0, text.length, paint, textW)
+            .setAlignment(android.text.Layout.Alignment.ALIGN_OPPOSITE)
+            .setMaxLines(3)
+            .setEllipsize(android.text.TextUtils.TruncateAt.END)
+            .setIncludePad(false)
+            .build()
+        var widest = 0f
+        for (n in 0 until layout.lineCount) widest = max(widest, layout.getLineWidth(n))
+        val w = even(widest + 2 * pad + bar + slant)
+        val hh = even(layout.height + 2 * pad)
+        val bmp = Bitmap.createBitmap(w, hh, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.BLACK)
+        val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = PURPLE }
+        val bs = hh * 0.12f
+        c.drawPath(android.graphics.Path().apply {
+            moveTo(bar + bs, 0f); lineTo(2 * bar + bs, 0f); lineTo(2 * bar, hh.toFloat()); lineTo(bar, hh.toFloat()); close()
+        }, fill)
+        c.save()
+        // The block of lines sits against the right edge; each line is right-aligned within it.
+        c.translate(w - pad - textW.toFloat(), pad)
+        layout.draw(c)
+        c.restore()
+        save(file, bmp)
     }
 
     /** Deletes the pictures no card uses any more ([keep] holds the paths still in use). */
@@ -518,19 +584,23 @@ object AudioConverter {
             // build can't read PNG), put in place by the overlay filter.
             class Overlay(val file: File, val position: String, val enable: String)
             val overlays = ArrayList<Overlay>()
+            // The "WebMChan" mark first: the title card needs to know how much room it leaves.
+            var logoW = 0
+            val blankPicture = spec.images.none { File(it.path).length() > 0 } && AudioArt.placeholder == null
+            if (blankPicture && AppSettings.get(AppToggle.AUDIO_LOGO)) {
+                val f = File(ctx.cacheDir, LOGO_FILE)
+                logoW = AudioArt.drawLogo(f, h)
+                overlays.add(Overlay(f, "$margin:H-h-$margin", ""))
+            }
             val cardSec = settings.titleCardSec
             if (cardSec != 0) {
                 val text = AudioArt.cardText(spec, title)
                 val f = File(ctx.cacheDir, CARD_FILE)
-                AudioArt.drawTextPlate(f, text, h, w)
+                // Beside the mark, the card keeps clear of it; alone it may take most of the width.
+                val room = if (logoW > 0) w - 3 * margin - logoW else (w * 0.8f).toInt()
+                AudioArt.drawTitleCard(f, text, h, room)
                 overlays.add(Overlay(f, "W-w-$margin:H-h-$margin", if (cardSec == AudioFit.CARD_WHOLE) "" else ":enable='lt(t,$cardSec)'"))
                 onLog("   title card: \"$text\" ${if (cardSec == AudioFit.CARD_WHOLE) "for the whole track" else "for the first $cardSec s"}")
-            }
-            val blankPicture = spec.images.none { File(it.path).length() > 0 } && AudioArt.placeholder == null
-            if (blankPicture && AppSettings.get(AppToggle.AUDIO_LOGO)) {
-                val f = File(ctx.cacheDir, LOGO_FILE)
-                AudioArt.drawTextPlate(f, "WebMChan", h, w)
-                overlays.add(Overlay(f, "$margin:H-h-$margin", ""))
             }
             val gop = max(2, fps * AudioFit.KEYFRAME_SEC)
             val cutFades = ArrayList<String>()
