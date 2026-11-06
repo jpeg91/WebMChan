@@ -46,6 +46,8 @@ data class AudioSpec(
     /** From the file's tags; empty when it has none. */
     val title: String = "",
     val artist: String = "",
+    /** The words on the title card when the card is typed over; blank = the default (artist - title, else the title or file name). */
+    val cardText: String = "",
 )
 
 /** What reading an audio file found. */
@@ -64,6 +66,18 @@ object AudioFit {
 
     /** Below this the card warns that the sound will lose quality. */
     const val WARN_KBPS = 128
+
+    /** [Settings.titleCardSec] value for "the whole track". */
+    const val CARD_WHOLE = -1
+
+    /** The choices on the settings page: seconds on screen (0 = off, [CARD_WHOLE] = whole track). */
+    val CARD_OPTIONS = listOf(0, 5, 10, 30, CARD_WHOLE)
+
+    fun cardLabel(sec: Int): String = when (sec) {
+        0 -> "Off"
+        CARD_WHOLE -> "Whole track"
+        else -> "First $sec s"
+    }
 
     /** The longest side of the picture, in pixels (a board's minimum resolution can push it higher). */
     const val MAX_EDGE = 720
@@ -222,6 +236,54 @@ object AudioArt {
         }
     }
 
+    /**
+     * The words for a card's title card: the typed text if there is one, else "artist - title" when the file
+     * has both tags, else the title, else [fileName] (already without its extension).
+     */
+    fun cardText(spec: AudioSpec, fileName: String): String = when {
+        spec.cardText.isNotBlank() -> spec.cardText
+        spec.artist.isNotBlank() && spec.title.isNotBlank() -> "${spec.artist} - ${spec.title}"
+        spec.title.isNotBlank() -> spec.title
+        else -> fileName
+    }
+
+    /**
+     * Draws the title card: [text] bottom-right on a dark translucent plate, on a transparent picture the size of
+     * the video, saved as a PNG at [file] (laid over the picture by ffmpeg's overlay).
+     */
+    fun drawTitleCard(file: File, text: String, w: Int, h: Int) {
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val margin = max(6f, h * 0.035f)
+        val pad = max(4f, h * 0.016f)
+        val maxTextW = w * 0.8f - 2 * pad
+        val paint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        // Starts at a size that suits the frame and shrinks until the line fits; if it still doesn't, it is cut with "…".
+        var size = max(12f, h * 0.05f)
+        val smallest = max(9f, h * 0.025f)
+        paint.textSize = size
+        while (paint.measureText(text) > maxTextW && size > smallest) {
+            size -= 1f
+            paint.textSize = size
+        }
+        val shown = android.text.TextUtils.ellipsize(text, paint, maxTextW, android.text.TextUtils.TruncateAt.END).toString()
+        val tw = paint.measureText(shown)
+        val fm = paint.fontMetrics
+        val th = fm.descent - fm.ascent
+        val right = w - margin
+        val bottom = h - margin
+        val left = right - tw - 2 * pad
+        val top = bottom - th - 2 * pad
+        val plate = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 0, 0, 0) }
+        c.drawRoundRect(left, top, right, bottom, pad, pad, plate)
+        c.drawText(shown, left + pad, bottom - pad - fm.descent, paint)
+        file.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        bmp.recycle()
+    }
+
     /** Deletes the pictures no card uses any more ([keep] holds the paths still in use). */
     fun prune(ctx: Context, keep: Set<String>) {
         File(ctx.filesDir, DIR).listFiles()?.forEach {
@@ -244,6 +306,7 @@ object AudioConverter {
     private const val CUT_FADE_SEC = 0.02
 
     private const val BEST_FILE = "audio-best.webm"
+    private const val CARD_FILE = "audio-titlecard.png"
 
     private fun fmt(x: Double) = String.format(Locale.US, "%.3f", x)
 
@@ -352,6 +415,15 @@ object AudioConverter {
             if (kbps < AudioFit.WARN_KBPS) onLog("   note: below ${AudioFit.WARN_KBPS} kbps the sound loses quality; more parts would give it more room")
 
             val segSec = duration / images.size
+            // The title card (Settings): drawn once as a transparent picture and laid over the video.
+            val cardSec = settings.titleCardSec
+            val cardFile = File(ctx.cacheDir, CARD_FILE)
+            val cardOn = cardSec != 0
+            if (cardOn) {
+                val text = AudioArt.cardText(spec, title)
+                AudioArt.drawTitleCard(cardFile, text, w, h)
+                onLog("   title card: \"$text\" ${if (cardSec == AudioFit.CARD_WHOLE) "for the whole track" else "for the first $cardSec s"}")
+            }
             val gop = max(2, fps * AudioFit.KEYFRAME_SEC)
             val cutFades = ArrayList<String>()
             if (numParts > 1) {
@@ -360,16 +432,21 @@ object AudioConverter {
             }
 
             // One filter graph: each picture fitted into the frame on black, held at the frame rate, then joined end to end.
+            val base = if (cardOn) "vbase" else "vout"
             val graph = buildString {
                 for (n in images.indices) {
                     append("[${n + 1}:v]scale=$w:$h:force_original_aspect_ratio=decrease,")
                     append("pad=$w:$h:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=$fps,format=yuv420p[v$n];")
                 }
                 if (images.size == 1) {
-                    append("[v0]null[vout]")
+                    append("[v0]null[$base]")
                 } else {
                     for (n in images.indices) append("[v$n]")
-                    append("concat=n=${images.size}:v=1:a=0[vout]")
+                    append("concat=n=${images.size}:v=1:a=0[$base]")
+                }
+                if (cardOn) {
+                    val enable = if (cardSec == AudioFit.CARD_WHOLE) "" else ":enable='lt(t,$cardSec)'"
+                    append(";[$base][${images.size + 1}:v]overlay=0:0$enable,format=yuv420p[vout]")
                 }
             }
 
@@ -390,6 +467,7 @@ object AudioConverter {
                 args.addAll(listOf("-hide_banner", "-y"))
                 args.addAll(listOf("-ss", fmt(startSec), "-t", fmt(duration), "-i", input.absolutePath))
                 for (img in images) args.addAll(listOf("-loop", "1", "-framerate", fps.toString(), "-t", fmt(segSec), "-i", img.path))
+                if (cardOn) args.addAll(listOf("-loop", "1", "-framerate", fps.toString(), "-t", fmt(duration), "-i", cardFile.absolutePath))
                 args.addAll(listOf("-filter_complex", graph, "-map", "[vout]", "-map", "0:a:0", "-map_metadata", "-1", "-map_chapters", "-1"))
                 if (t.maxThreads > 0) args.addAll(listOf("-threads", t.maxThreads.toString()))
                 if (settings.useVp9) {
@@ -475,5 +553,6 @@ object AudioConverter {
     /** Deletes the leftovers of an interrupted encode. */
     fun clearWorkFiles(ctx: Context) {
         File(ctx.cacheDir, BEST_FILE).delete()
+        File(ctx.cacheDir, CARD_FILE).delete()
     }
 }

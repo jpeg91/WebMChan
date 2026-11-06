@@ -1038,6 +1038,26 @@ object BatchRunner {
         }
     }
 
+    /** Audio Mode: takes one picture off a Holding Pen card (by its place in the card's pictures). */
+    fun removeAudioImage(ctx: Context, id: Long, index: Int) {
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val spec = queue[at].audio ?: return
+        if (index !in spec.images.indices) return
+        queue[at] = queue[at].copy(audio = spec.copy(images = spec.images.filterIndexed { n, _ -> n != index }, coverFromTags = false))
+        AudioArt.prune(ctx.applicationContext, audioArtInUse())
+        persist()
+    }
+
+    /** Audio Mode: the words on a card's title card. Blank goes back to the default. */
+    fun setAudioCardText(id: Long, text: String) {
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0) return
+        val spec = queue[at].audio ?: return
+        queue[at] = queue[at].copy(audio = spec.copy(cardText = text.trim()))
+        persist()
+    }
+
     /** Audio Mode: takes every picture off a Holding Pen card (it is then made with a plain black one, or the one in Settings). */
     fun clearAudioImages(ctx: Context, id: Long) {
         val at = queue.indexOfFirst { it.id == id }

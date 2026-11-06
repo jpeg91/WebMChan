@@ -76,7 +76,7 @@ object BatchStore {
                 images.add(AudioImage(a.optString(0, ""), a.optInt(1, 0), a.optInt(2, 0)))
             }
         }
-        return AudioSpec(images, o.optBoolean("cover", false), o.optString("title", ""), o.optString("artist", ""))
+        return AudioSpec(images, o.optBoolean("cover", false), o.optString("title", ""), o.optString("artist", ""), o.optString("tc", ""))
     }
 
     /** null if there is no edit, or it can't be read (the card then simply has none). */
@@ -129,6 +129,7 @@ object BatchStore {
                     put("cover", a.coverFromTags)
                     put("title", a.title)
                     put("artist", a.artist)
+                    put("tc", a.cardText)
                 }
             )
         }
@@ -152,6 +153,7 @@ object BatchStore {
                     put("custom", it.isCustom)
                     put("ak", it.audioKbps)
                     put("am", it.audioMode)
+                    put("tcs", it.titleCardSec)
                     put("cw", it.customWidth)
                     put("ch", it.customHeight)
                     put("label", it.targetLabel)
@@ -244,6 +246,7 @@ object BatchStore {
                         audioKbps = it.optInt("ak", Converter.DEFAULT_AUDIO_KBPS),
                         // Absent in files saved before Audio Mode: a video card.
                         audioMode = it.optBoolean("am", false),
+                        titleCardSec = it.optInt("tcs", 0),
                         // Absent in files saved by older versions: no custom resolution.
                         customWidth = it.optInt("cw", 0),
                         customHeight = it.optInt("ch", 0),

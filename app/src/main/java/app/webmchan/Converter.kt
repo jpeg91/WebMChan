@@ -118,6 +118,8 @@ data class Settings(
      * and [keepAudio] is always true.
      */
     val audioMode: Boolean = false,
+    /** Audio Mode: the title card in the bottom-right corner. 0 = off, [AudioFit.CARD_WHOLE] = the whole track, else the seconds it stays on screen. */
+    val titleCardSec: Int = 0,
 ) {
     /** True when the Custom target has a resolution of its own (so the automatic pick is bypassed). */
     val hasCustomSize: Boolean get() = customWidth > 0 || customHeight > 0

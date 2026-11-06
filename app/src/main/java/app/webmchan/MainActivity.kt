@@ -448,6 +448,9 @@ internal fun QueueRow(
     val isAudio = item.audio != null
     // Audio Mode: picking pictures for the card (added to its pictures, or replacing them).
     var appendPictures by remember { mutableStateOf(true) }
+    // Audio Mode: the dialog that edits the words of the card's title card.
+    var showCardText by remember { mutableStateOf(false) }
+    var cardTextEdit by remember { mutableStateOf("") }
     val picturePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         if (uris.isNotEmpty()) BatchRunner.setAudioImages(ctx, item.id, uris, appendPictures)
     }
@@ -719,10 +722,18 @@ internal fun QueueRow(
                             )
                             if (item.audio?.images?.isNotEmpty() == true) {
                                 DropdownMenuItem(
-                                    text = { Text("Remove image", color = P5.Black) },
+                                    text = { Text(if ((item.audio?.images?.size ?: 0) > 1) "Remove all images" else "Remove image", color = P5.Black) },
                                     onClick = { showCardMenu = false; BatchRunner.clearAudioImages(ctx, item.id) },
                                 )
                             }
+                            DropdownMenuItem(
+                                text = { Text("Title card text", color = P5.Black) },
+                                onClick = {
+                                    showCardMenu = false
+                                    cardTextEdit = item.audio?.let { AudioArt.cardText(it, OutputName.baseFor(item.name, null)) } ?: ""
+                                    showCardText = true
+                                },
+                            )
                         } else {
                             DropdownMenuItem(
                                 text = { Text("Edit", color = P5.Black) },
@@ -736,6 +747,83 @@ internal fun QueueRow(
                     }
                 }
             }
+        }
+
+        // Audio Mode: with several images, a strip of them, each with a button to take it off. They are spread
+        // equally across the video in this order.
+        val stripImages = item.audio?.images.orEmpty()
+        if (isAudio && item.inPen && !finishedCard && !inHistory && stripImages.size > 1) {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                stripImages.forEachIndexed { n, im ->
+                    val bmp by produceState<ImageBitmap?>(null, im.path) {
+                        value = withContext(Dispatchers.IO) {
+                            BitmapFactory.decodeFile(im.path, BitmapFactory.Options().apply { inSampleSize = 4 })?.asImageBitmap()
+                        }
+                    }
+                    Box(Modifier.size(width = 56.dp, height = 44.dp).clip(CutCornerShape(topStart = 6.dp, bottomEnd = 6.dp)).background(Color.Black)) {
+                        bmp?.let { Image(it, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
+                        Text(
+                            "${n + 1}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = P5.White,
+                            modifier = Modifier.align(Alignment.BottomStart).background(Color.Black.copy(alpha = 0.65f)).padding(horizontal = 3.dp),
+                        )
+                        Text(
+                            "✕",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = P5.White,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .background(Color.Black.copy(alpha = 0.65f))
+                                .clickable { BatchRunner.removeAudioImage(ctx, item.id, n) }
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+            }
+            Text(
+                "Shown in this order, each for an equal share of the length.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        if (showCardText) {
+            AlertDialog(
+                onDismissRequest = { showCardText = false },
+                shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+                containerColor = P5.Ink,
+                titleContentColor = P5.White,
+                textContentColor = P5.White,
+                title = { Text("Title card text".uppercase(), style = MaterialTheme.typography.titleMedium) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "The words shown in the bottom-right corner when the title card is on (see Encoding settings > Title card). " +
+                                "Leave it empty to go back to the artist and title.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        OutlinedTextField(
+                            value = cardTextEdit,
+                            onValueChange = { cardTextEdit = it },
+                            singleLine = true,
+                            shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
+                        )
+                    }
+                },
+                confirmButton = {
+                    P5Button("Save", onClick = {
+                        showCardText = false
+                        // Typing the default back in is the same as leaving it empty.
+                        val default = item.audio?.let { AudioArt.cardText(it.copy(cardText = ""), OutputName.baseFor(item.name, null)) }
+                        BatchRunner.setAudioCardText(item.id, if (cardTextEdit.trim() == default) "" else cardTextEdit)
+                    })
+                },
+                dismissButton = { P5Button("Cancel", onClick = { showCardText = false }, kind = P5Kind.Ghost) },
+            )
         }
 
         // What this video is (or was) converted with. Once it's been sent to the queue it is fixed
@@ -1361,7 +1449,8 @@ private fun settingsBrief(s: Settings): String =
     if (s.audioMode) {
         "${formatLimit(s.limitBytes)} · " +
             (if (s.maxDurationSec > 0) "≤ ${s.maxDurationSec} s · " else "") +
-            "best sound that fits · picture ${s.targetFps} fps · ${if (s.useVp9) "VP9" else "VP8"}"
+            "best sound that fits · picture ${s.targetFps} fps · ${if (s.useVp9) "VP9" else "VP8"}" +
+            (if (s.titleCardSec != 0) " · title card: ${AudioFit.cardLabel(s.titleCardSec).lowercase()}" else "")
     } else
     "${formatLimit(s.limitBytes)} · " +
         (if (s.maxDurationSec > 0) "≤ ${s.maxDurationSec} s · " else "") +
@@ -1566,8 +1655,11 @@ fun App(
     var fpsChoice by remember {
         mutableIntStateOf(prefs.getInt("${pre}fps_choice", fpsDefaultIndex).coerceIn(0, fpsPresets.size))
     }
+    // Audio Mode: how long the title card stays on screen (an index into AudioFit.CARD_OPTIONS; 0 = off).
+    var cardChoice by remember { mutableIntStateOf(prefs.getInt("${pre}title_card", 0).coerceIn(0, AudioFit.CARD_OPTIONS.lastIndex)) }
+    var cardOpen by remember { mutableStateOf(false) }
     var customFps by remember { mutableStateOf(prefs.getString("${pre}custom_fps", if (audio) "2" else "30") ?: (if (audio) "2" else "30")) }
-    LaunchedEffect(targetIdx, customMb, customW, customH, removeAudio, audioKbps, fastEncode, useVp9, fastest, bestQuality, fpsChoice, customFps) {
+    LaunchedEffect(targetIdx, customMb, customW, customH, removeAudio, audioKbps, fastEncode, useVp9, fastest, bestQuality, fpsChoice, customFps, cardChoice) {
         prefs.edit()
             .putInt("${pre}target_idx", targetIdx)
             .putString("${pre}custom_mb", customMb)
@@ -1581,6 +1673,7 @@ fun App(
             .putBoolean("${pre}best_quality", bestQuality)
             .putInt("${pre}fps_choice", fpsChoice)
             .putString("${pre}custom_fps", customFps)
+            .putInt("${pre}title_card", cardChoice)
             .apply()
     }
 
@@ -1843,6 +1936,7 @@ fun App(
         customHeight = customHeight,
         audioKbps = audioKbps,
         audioMode = audio,
+        titleCardSec = if (audio) AudioFit.CARD_OPTIONS[cardChoice] else 0,
     )
     // The editor (a page of its own) shows what an edit does to the conversion with these.
     if (!audio) SideEffect { BatchRunner.liveSettings = cardSettings }
@@ -1879,22 +1973,48 @@ fun App(
     val penAny = queue.any { it.inPen && it.isAudio == audio }
     val penCount = queue.count { it.inPen && it.info != null && it.isAudio == audio }
 
-    // Audio Mode: a card that has no image asks once what to do (Add image / Continue anyway). A card
-    // that was already read when this screen first opened (restored from last time) isn't asked again.
-    val askedNoImage = remember { mutableStateListOf<Long>().also { l -> l.addAll(BatchRunner.queue.filter { it.isAudio && it.info != null }.map { it.id }) } }
+    // Starts a run: asks for notification permission first when that is still needed (see startRun).
+    val beginConvert: () -> Unit = {
+        val settings = cardSettings
+        val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        if (needsAsk) {
+            // Asked before and Android won't show the prompt again = refused twice.
+            val activity = ctx as? Activity
+            explainerBlocked = prefs.getBoolean("asked_notifications", false) &&
+                activity != null &&
+                !ActivityCompat.shouldShowRequestPermissionRationale(
+                    activity, Manifest.permission.POST_NOTIFICATIONS
+                )
+            pendingSettings = settings
+            showNotificationExplainer = true
+        } else {
+            startRun(settings)
+        }
+    }
+
+    // Audio Mode: pressing Convert with cards that have no image asks first (Add image / Continue anyway),
+    // so there is a chance to set it right. Each card is asked about once; continuing makes it with a black picture.
+    val askedNoImage = remember { mutableStateListOf<Long>() }
+    var showNoImage by remember { mutableStateOf(false) }
     var noImagePickFor by remember { mutableStateOf(-1L) }
     val noImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         if (noImagePickFor >= 0L && uris.isNotEmpty()) BatchRunner.setAudioImages(ctx, noImagePickFor, uris, false)
         noImagePickFor = -1L
     }
-    if (audio) {
-        val noImage = queue.firstOrNull {
-            it.isAudio && it.inPen && it.info != null && !it.probeFailed &&
-                it.audio?.images.isNullOrEmpty() && it.id !in askedNoImage
-        }
-        if (noImage != null) {
+    val withoutImage = queue.filter {
+        it.isAudio && it.info != null && !it.probeFailed && it.status == ItemStatus.WAITING &&
+            it.audio?.images.isNullOrEmpty() && it.id !in askedNoImage
+    }
+    if (audio && showNoImage) {
+        val first = withoutImage.firstOrNull()
+        if (first == null) {
+            showNoImage = false
+        } else {
+            val more = withoutImage.size - 1
             AlertDialog(
-                onDismissRequest = { askedNoImage.add(noImage.id) },
+                onDismissRequest = { showNoImage = false },
                 shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
                 containerColor = P5.Ink,
                 titleContentColor = P5.White,
@@ -1902,19 +2022,25 @@ fun App(
                 title = { Text("No image".uppercase(), style = MaterialTheme.typography.titleMedium) },
                 text = {
                     Text(
-                        "\"${noImage.customName ?: noImage.name}\" has no cover art. Add an image to show while it plays, " +
-                            "or continue and it will be made with a plain black picture. " +
-                            "You can add or change the image later from the card's /// button."
+                        "\"${first.customName ?: first.name}\"" + (if (more > 0) " and $more more have" else " has") +
+                            " no image. Add one to show while it plays, or continue and a plain black picture is used. " +
+                            "An image can also be added or changed from a card's /// button."
                     )
                 },
                 confirmButton = {
                     P5Button("Add image", onClick = {
-                        askedNoImage.add(noImage.id)
-                        noImagePickFor = noImage.id
+                        showNoImage = false
+                        noImagePickFor = first.id
                         noImagePicker.launch("image/*")
                     })
                 },
-                dismissButton = { P5Button("Continue anyway", onClick = { askedNoImage.add(noImage.id) }, kind = P5Kind.Ghost) },
+                dismissButton = {
+                    P5Button("Continue anyway", onClick = {
+                        showNoImage = false
+                        askedNoImage.addAll(withoutImage.map { it.id })
+                        beginConvert()
+                    }, kind = P5Kind.Ghost)
+                },
             )
         }
     }
@@ -2197,6 +2323,31 @@ fun App(
                 }
             }
 
+            if (audio) CollapsibleSection(
+                title = "Title card",
+                summary = AudioFit.cardLabel(AudioFit.CARD_OPTIONS[cardChoice]),
+                expanded = cardOpen,
+                onToggle = { cardOpen = !cardOpen },
+            ) {
+                Text(
+                    "Shows the artist and title (or the file name) in the bottom-right corner of the picture. " +
+                        "Each card's /// menu can change its words. Off by default.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                AudioFit.CARD_OPTIONS.forEachIndexed { idx, sec ->
+                    TargetRow(
+                        selected = cardChoice == idx,
+                        enabled = true,
+                        title = if (sec == 0) "Off (default)" else if (sec == AudioFit.CARD_WHOLE) "Whole track" else "First $sec seconds",
+                        subtitle = when (sec) {
+                            0 -> "No title on the picture."
+                            AudioFit.CARD_WHOLE -> "Stays on screen for the whole file."
+                            else -> "Shown at the start of each file, then it goes away."
+                        },
+                    ) { cardChoice = idx }
+                }
+            }
+
             if (!audio) CollapsibleSection(
                 title = "Encoding",
                 summary = encodingSummaryText,
@@ -2379,23 +2530,8 @@ fun App(
         P5Button(
             if (pending > 1) "Convert $pending $noun" else "Convert",
             onClick = {
-                val settings = cardSettings
-                val needsAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                    ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
-                    PackageManager.PERMISSION_GRANTED
-                if (needsAsk) {
-                    // Asked before and Android won't show the prompt again = refused twice.
-                    val activity = ctx as? Activity
-                    explainerBlocked = prefs.getBoolean("asked_notifications", false) &&
-                        activity != null &&
-                        !ActivityCompat.shouldShowRequestPermissionRationale(
-                            activity, Manifest.permission.POST_NOTIFICATIONS
-                        )
-                    pendingSettings = settings
-                    showNotificationExplainer = true
-                } else {
-                    startRun(settings)
-                }
+                // Audio Mode: cards that have no image (the pen's, not yet asked about) get the warning first.
+                if (audio && withoutImage.any { c -> c.inPen }) showNoImage = true else beginConvert()
             },
             enabled = canGo,
             modifier = Modifier.fillMaxWidth(),
