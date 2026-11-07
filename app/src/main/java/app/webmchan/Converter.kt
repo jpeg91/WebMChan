@@ -1299,6 +1299,7 @@ object Converter {
                     val pass1Out = if (useGraph && audioOn) {
                         listOf("-pass", "1", "-map", "[aout]", "-c:a", "pcm_s16le", "-f", "null", "/dev/null")
                     } else listOf("-pass", "1", "-an", "-f", "null", "/dev/null")
+                    val pass1Started = android.os.SystemClock.elapsedRealtime()
                     val p1 = FFmpegKit.executeWithArguments((common + pass1Out).toTypedArray())
                     if (ReturnCode.isCancel(p1.returnCode)) return@withContext ConvertResult.Cancelled
                     if (!ReturnCode.isSuccess(p1.returnCode)) {
@@ -1310,6 +1311,7 @@ object Converter {
                         return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
                     }
                     pass1.markValid(pass1Key)
+                    onLog("   pass 1 took ${elapsedText(android.os.SystemClock.elapsedRealtime() - pass1Started)}")
                 }
 
                 onLog("-- pass 2/2: encoding")
@@ -1319,6 +1321,7 @@ object Converter {
                     listOf("-map", if (useGraph) "[aout]" else "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString()) +
                         (if (audioHz > 0) listOf("-ar", audioHz.toString()) else emptyList())
                 } else listOf("-an")
+                val pass2Started = android.os.SystemClock.elapsedRealtime()
                 val p2 = FFmpegKit.executeWithArguments(
                     (common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)).toTypedArray()
                 )
@@ -1332,6 +1335,7 @@ object Converter {
                     return@withContext ConvertResult.Fail("Encoding failed (pass 2).\n${tail(p2.allLogsAsString)}")
                 }
 
+                onLog("   pass 2 took ${elapsedText(android.os.SystemClock.elapsedRealtime() - pass2Started)}")
                 val size = out.length()
                 lastSize = size
                 lastVideoKbps = vKbps
@@ -1794,6 +1798,12 @@ object Converter {
     /** Input seeking: fast (keyframe-based demux seek), and frame-accurate because we re-encode. */
     private fun seekArgs(startSec: Double): List<String> =
         if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()
+
+    /** How long a pass took, for the log: "42 s" or "4 min 12 s". */
+    private fun elapsedText(ms: Long): String {
+        val total = (ms / 1000).coerceAtLeast(0)
+        return if (total < 60) "$total s" else "${total / 60} min ${total % 60} s"
+    }
 
     private fun tail(s: String?): String = s?.takeLast(400)?.trim().orEmpty()
 
