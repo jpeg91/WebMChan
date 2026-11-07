@@ -1,3 +1,4 @@
+// #batchstore
 package app.webmchan
 
 import android.content.Context
@@ -73,7 +74,7 @@ object BatchStore {
         if (arr != null) {
             for (n in 0 until arr.length()) {
                 val a = arr.optJSONArray(n) ?: continue
-                images.add(AudioImage(a.optString(0, ""), a.optInt(1, 0), a.optInt(2, 0)))
+                images.add(AudioImage(a.optString(0, ""), a.optInt(1, 0), a.optInt(2, 0), a.optInt(3, 0) == 1, a.optDouble(4, 0.0), a.optDouble(5, 0.0)))
             }
         }
         return AudioSpec(images, o.optBoolean("cover", false), o.optString("title", ""), o.optString("artist", ""), o.optString("tc", ""))
@@ -125,7 +126,7 @@ object BatchStore {
             put(
                 "audio",
                 JSONObject().apply {
-                    put("images", JSONArray().apply { a.images.forEach { im -> put(JSONArray().put(im.path).put(im.w).put(im.h)) } })
+                    put("images", JSONArray().apply { a.images.forEach { im -> put(JSONArray().put(im.path).put(im.w).put(im.h).put(if (im.animated) 1 else 0).put(im.fps).put(im.loopSec)) } })
                     put("cover", a.coverFromTags)
                     put("title", a.title)
                     put("artist", a.artist)

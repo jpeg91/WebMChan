@@ -37,8 +37,19 @@ import kotlin.math.roundToInt
  * the sound can have, and the encoder.
  */
 
-/** One picture on an Audio Mode card: a copy in app storage (see [AudioArt]), so it outlives the picker's access. */
-data class AudioImage(val path: String, val w: Int, val h: Int)
+/**
+ * One picture on an Audio Mode card: a copy in app storage (see [AudioArt]), so it outlives the picker's access.
+ * A still is a JPEG. An animated GIF ([animated]) is kept as the GIF file itself, with its average frame rate
+ * ([fps]) and the length of one run through it ([loopSec]) read when it was picked.
+ */
+data class AudioImage(
+    val path: String,
+    val w: Int,
+    val h: Int,
+    val animated: Boolean = false,
+    val fps: Double = 0.0,
+    val loopSec: Double = 0.0,
+)
 
 /** What makes a card an Audio Mode card. The audio file itself is the card's [QueueItem.uri]. */
 data class AudioSpec(
@@ -51,7 +62,10 @@ data class AudioSpec(
     val artist: String = "",
     /** The words on the title card when the card is typed over; blank = the default (artist - title, else the title or file name). */
     val cardText: String = "",
-)
+) {
+    /** True when one of the pictures is an animated GIF: the card is then made by the GIF encoder (see [GifFit]). */
+    val hasGif: Boolean get() = images.any { it.animated }
+}
 
 /** What reading an audio file found. */
 data class AudioProbe(val info: SourceInfo, val title: String, val artist: String)
@@ -154,6 +168,13 @@ object AudioFit {
         // With no picture the placeholder (Settings) is used, else a black square.
         val images = spec?.images.orEmpty().ifEmpty { listOfNotNull(AudioArt.placeholder) }
         val (w, h) = frameSize(images, settings.minWidth, settings.minHeight)
+        // A card with an animated GIF is planned by GifFit: the GIF video takes a share of the limit.
+        val gifFps = GifFit.frameRate(images)
+        if (gifFps > 0) {
+            val plan = GifFit.plan(settings.limitBytes, partSec, w, h, gifFps, capKbps(info))
+            val bpp = GifFit.bitsPerPixel(plan.videoKbps, w, h, gifFps)
+            return PartEstimate(parts, partSec, plan.videoKbps, h, plan.audioKbps, bpp, bpp)
+        }
         val kbps = min(capKbps(info), audioKbps(settings.limitBytes, partSec, videoBytes(w, h, images.size, partSec)))
         return PartEstimate(parts, partSec, 0, h, kbps, 0.0, 0.0)
     }
@@ -180,7 +201,7 @@ object AudioArt {
 
     /** Makes the picked picture the placeholder. false if it can't be read as a picture. */
     fun setPlaceholder(ctx: Context, uri: Uri): Boolean {
-        val img = fromUri(ctx, uri) ?: return false
+        val img = fromUri(ctx, uri, allowAnimated = false) ?: return false
         val dest = File(dir(ctx), PLACEHOLDER)
         File(img.path).copyTo(dest, overwrite = true)
         File(img.path).delete()
@@ -223,12 +244,62 @@ object AudioArt {
 
     fun dir(ctx: Context): File = File(ctx.filesDir, DIR).also { it.mkdirs() }
 
-    /** A picture from a picked file (any format the phone can show). null if it can't be read as a picture. */
-    fun fromUri(ctx: Context, uri: Uri): AudioImage? = try {
+    /** Why the last picture picked couldn't be used (a GIF this FFmpeg build can't read, say); null if it was fine or the reason is the general one. */
+    @Volatile
+    var lastImportError: String? = null
+        private set
+
+    /** Forgets [lastImportError]: called before a set of pictures is picked, so a refusal can be told from an earlier one. */
+    fun clearImportError() {
+        lastImportError = null
+    }
+
+    /** Set once a GIF has been decoded: the FFmpeg build has the GIF decoder, so it isn't tested again. */
+    @Volatile
+    private var gifDecoderOk = false
+
+    /**
+     * A picture from a picked file (any format the phone can show). null if it can't be read as a picture.
+     * An animated GIF is kept as the GIF itself (unless [allowAnimated] is false, for the placeholder, which
+     * takes its first picture instead); a GIF with only one picture is an ordinary still.
+     */
+    fun fromUri(ctx: Context, uri: Uri, allowAnimated: Boolean = true): AudioImage? = try {
         val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        if (bytes == null || bytes.isEmpty() || bytes.size > MAX_BYTES) null else fromBytes(ctx, bytes)
+        if (bytes == null || bytes.isEmpty() || bytes.size > MAX_BYTES) {
+            null
+        } else {
+            val gif = if (allowAnimated) GifReader.parse(bytes)?.takeIf { it.animated } else null
+            if (gif != null) fromGif(ctx, bytes, gif) else fromBytes(ctx, bytes)
+        }
     } catch (_: Exception) {
         null
+    }
+
+    /** An animated GIF kept as it is. null (with [lastImportError] set) if this FFmpeg build can't decode it. */
+    private fun fromGif(ctx: Context, bytes: ByteArray, info: GifInfo): AudioImage? {
+        val file = File(dir(ctx), "art-${System.currentTimeMillis()}-${counter.incrementAndGet()}.gif")
+        file.writeBytes(bytes)
+        if (!canDecodeGif(file)) {
+            file.delete()
+            lastImportError = "Couldn't use that GIF: this build of FFmpeg couldn't decode it."
+            return null
+        }
+        return AudioImage(file.absolutePath, info.width, info.height, animated = true, fps = info.fps, loopSec = info.durationSec)
+    }
+
+    /** Whether FFmpeg can decode the first picture of [file]: the real test that the GIF decoder is in this build. */
+    private fun canDecodeGif(file: File): Boolean {
+        if (gifDecoderOk) return true
+        val ok = try {
+            val session = FFmpegKit.executeWithArguments(
+                arrayOf("-v", "quiet", "-i", file.absolutePath, "-frames:v", "1", "-f", "null", "-")
+            )
+            ReturnCode.isSuccess(session.returnCode)
+        } catch (_: Throwable) {
+            false
+        }
+        if (ok) gifDecoderOk = true
+        return ok
     }
 
     /** A picture from the bytes of an image file (a cover art, say). null if it can't be read as a picture. */
@@ -555,6 +626,13 @@ object AudioConverter {
 
             // The pictures that are really there; with none, the plain black one.
             val images = spec.images.filter { File(it.path).length() > 0 }.ifEmpty { listOf(AudioArt.fallback(ctx)) }
+            // A card with an animated GIF is made by its own encoder: the GIF video needs a bitrate of its own.
+            if (images.any { it.animated }) {
+                return@withContext convertGif(
+                    ctx, input, src, settings, spec, images, startSec, duration, part, numParts, title, artist,
+                    out, best, onLog, onProgress,
+                )
+            }
             val (w, h) = AudioFit.frameSize(images, settings.minWidth, settings.minHeight)
             val fps = Converter.clampFps(settings.targetFps)
             val videoBytes = AudioFit.videoBytes(w, h, images.size, duration)
@@ -737,6 +815,207 @@ object AudioConverter {
             // The best file is handed to the caller when it succeeded; on any other ending it is not wanted.
             // (The caller deletes the returned file itself once it has been saved.)
         }
+    }
+
+    /**
+     * The encoder for a card with an animated GIF among its pictures. Same file layout as [convert] (the
+     * pictures spread equally across the track, then the title card), but:
+     * - the frame rate is the highest of the GIFs' own, not the Settings one;
+     * - each GIF loops for its whole share of the track, over black (or white, see Settings) where it is transparent;
+     * - the size limit is shared out by [GifFit.plan]: sound first, at a good quality, the GIF video gets the rest;
+     * - a try that comes out over the limit lowers the GIF video's bitrate first, the sound's only once the
+     *   video is at its floor ([GifFit.lower]); one with room to spare raises them again ([GifFit.raise]).
+     */
+    private fun convertGif(
+        ctx: Context,
+        input: File,
+        src: SourceInfo,
+        settings: Settings,
+        spec: AudioSpec,
+        images: List<AudioImage>,
+        startSec: Double,
+        duration: Double,
+        part: Int,
+        numParts: Int,
+        title: String,
+        artist: String,
+        out: File,
+        best: File,
+        onLog: (String) -> Unit,
+        onProgress: (fraction: Float, status: String) -> Unit,
+    ): ConvertResult {
+        val t = settings.tuning
+        val (w, h) = AudioFit.frameSize(images, settings.minWidth, settings.minHeight)
+        val fps = GifFit.frameRate(images)
+        val capKbps = AudioFit.capKbps(src)
+        val videoCap = GifFit.videoCapKbps(w, h, fps)
+        val plan = GifFit.plan(settings.limitBytes, duration, w, h, fps, capKbps)
+        var videoKbps = plan.videoKbps
+        var audioKbps = plan.audioKbps
+        if (audioKbps < AudioFit.MIN_KBPS) {
+            return ConvertResult.Fail(
+                "This part is %.0f s long, too long for the size limit with a GIF in it. Split the track into more parts.".format(Locale.US, duration)
+            )
+        }
+        val white = AppSettings.get(AppToggle.GIF_WHITE_BACKGROUND)
+        val codec = if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"
+        onLog("   GIF mode: ${w}×${h}, ${images.size} image${if (images.size == 1) "" else "s"} (${images.count { it.animated }} animated), $fps fps (the highest GIF's), $codec")
+        for ((n, im) in images.withIndex()) {
+            if (im.animated) onLog("   image ${n + 1}: GIF ${im.w}×${im.h}, %.1f fps, one loop %.2f s, repeated for its whole share".format(Locale.US, im.fps, im.loopSec))
+        }
+        onLog("   transparent GIF pixels are shown over ${if (white) "white" else "black"}")
+        onLog(
+            "   size limit ${settings.limitBytes} bytes; first try: GIF video at $videoKbps kbps (about " +
+                "${(GifFit.videoShare(videoKbps, duration, settings.limitBytes) * 100).toInt()}% of the limit), audio at $audioKbps kbps"
+        )
+        if (audioKbps < AudioFit.WARN_KBPS) onLog("   note: below ${AudioFit.WARN_KBPS} kbps the sound loses quality; more parts would give it more room")
+        if (GifFit.bitsPerPixel(videoKbps, w, h, fps) < GifFit.ROUGH_BPP) onLog("   note: the GIF gets very little video bitrate and will look rough; more parts would give it more room")
+
+        val segSec = duration / images.size
+        val margin = AudioArt.cornerMargin(h)
+        // The title card (Settings), bottom-right, as in the plain encoder.
+        class Overlay(val file: File, val position: String, val enable: String)
+        val overlays = ArrayList<Overlay>()
+        val cardSec = settings.titleCardSec
+        if (cardSec != 0) {
+            val text = AudioArt.cardText(spec, title)
+            val f = File(ctx.cacheDir, CARD_FILE)
+            AudioArt.drawTitleCard(f, text, h, (w * 0.8f).toInt())
+            overlays.add(Overlay(f, "W-w-$margin:H-h-$margin", if (cardSec == AudioFit.CARD_WHOLE) "" else ":enable='lt(t,$cardSec)'"))
+            onLog("   title card: \"$text\" ${if (cardSec == AudioFit.CARD_WHOLE) "for the whole track" else "for the first $cardSec s"}")
+        }
+        val gop = max(2, fps * GifFit.KEYFRAME_SEC)
+        val cutFades = ArrayList<String>()
+        if (numParts > 1) {
+            if (part > 1) cutFades.add("afade=t=in:st=0:d=${fmt(CUT_FADE_SEC)}")
+            if (part < numParts) cutFades.add("afade=t=out:st=${fmt(max(0.0, duration - CUT_FADE_SEC))}:d=${fmt(CUT_FADE_SEC)}")
+        }
+
+        // One filter graph, as in the plain encoder (see convert for the colour handling of the still pictures).
+        // A GIF is laid over a plain background of the frame's size, centred and scaled to fit; the background
+        // sets the frame rate, so the GIF's own uneven timing is sampled onto an even grid.
+        val toRgb = "scale=in_range=pc:in_color_matrix=bt601"
+        val toVideo = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"
+        val base = if (overlays.isEmpty()) "vout" else "vbase"
+        val bg = if (white) "white" else "black"
+        val graph = buildString {
+            for ((n, im) in images.withIndex()) {
+                if (im.animated) {
+                    append("color=c=$bg:s=${w}x$h:r=$fps,format=rgba[bg$n];")
+                    append("[${n + 1}:v]fps=$fps,format=rgba,scale=$w:$h:force_original_aspect_ratio=decrease,setsar=1[g$n];")
+                    append("[bg$n][g$n]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1:format=rgb,format=rgb24,$toVideo[v$n];")
+                } else {
+                    append("[${n + 1}:v]scale=$w:$h:force_original_aspect_ratio=decrease:in_range=pc:in_color_matrix=bt601,format=rgb24,")
+                    append("pad=$w:$h:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=$fps,$toVideo[v$n];")
+                }
+            }
+            if (images.size == 1) {
+                append("[v0]null[$base]")
+            } else {
+                for (n in images.indices) append("[v$n]")
+                append("concat=n=${images.size}:v=1:a=0[$base]")
+            }
+            var current = base
+            for ((k, o) in overlays.withIndex()) {
+                val idx = images.size + 1 + k
+                val last = k == overlays.lastIndex
+                append(";[$idx:v]$toRgb,format=rgb24,$toVideo[ov$k]")
+                append(";[$current][ov$k]overlay=${o.position}${o.enable}[${if (last) "vout" else "vm$k"}]")
+                current = "vm$k"
+            }
+        }
+
+        var bestSize = 0L
+        var bestVideo = 0
+        var bestAudio = 0
+        var attemptsUsed = 0
+        var attempt = 0
+        while (attempt < GifFit.MAX_TRIES) {
+            attempt++
+            attemptsUsed = attempt
+            out.delete()
+            val label = "Attempt $attempt/${GifFit.MAX_TRIES}: Encoding GIF video ($videoKbps kbps) and audio ($audioKbps kbps)"
+            onProgress(0f, label)
+            FFmpegKitConfig.enableStatisticsCallback { st ->
+                val frac = (st.time.toDouble() / 1000.0 / duration).coerceIn(0.0, 1.0)
+                onProgress(frac.toFloat(), label)
+            }
+            val args = ArrayList<String>()
+            args.addAll(listOf("-hide_banner", "-y"))
+            args.addAll(listOf("-ss", fmt(startSec), "-t", fmt(duration), "-i", input.absolutePath))
+            for (im in images) {
+                if (im.animated) args.addAll(listOf("-stream_loop", "-1", "-t", fmt(segSec), "-i", im.path))
+                else args.addAll(listOf("-loop", "1", "-framerate", fps.toString(), "-t", fmt(segSec), "-i", im.path))
+            }
+            for (o in overlays) args.addAll(listOf("-loop", "1", "-framerate", fps.toString(), "-t", fmt(duration), "-i", o.file.absolutePath))
+            args.addAll(listOf("-filter_complex", graph, "-map", "[vout]", "-map", "0:a:0", "-map_metadata", "-1", "-map_chapters", "-1"))
+            if (t.maxThreads > 0) args.addAll(listOf("-threads", t.maxThreads.toString()))
+            if (settings.useVp9) {
+                args.addAll(listOf("-c:v", "libvpx-vp9", "-b:v", "${videoKbps}k", "-row-mt", "1", "-cpu-used", "4", "-deadline", "good"))
+            } else {
+                args.addAll(listOf("-c:v", "libvpx", "-b:v", "${videoKbps}k", "-auto-alt-ref", "0", "-cpu-used", "4", "-deadline", "good"))
+            }
+            args.addAll(listOf("-g", gop.toString(), "-pix_fmt", "yuv420p"))
+            args.addAll(listOf("-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"))
+            args.addAll(listOf("-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", AudioFit.channels(audioKbps).toString()))
+            val hz = AudioFit.sampleRate(audioKbps)
+            if (hz > 0) args.addAll(listOf("-ar", hz.toString()))
+            if (cutFades.isNotEmpty()) args.addAll(listOf("-af", cutFades.joinToString(",")))
+            if (title.isNotBlank()) args.addAll(listOf("-metadata", "title=$title"))
+            if (artist.isNotBlank()) args.addAll(listOf("-metadata", "artist=$artist"))
+            args.addAll(listOf("-t", fmt(duration), "-f", "webm", out.absolutePath))
+
+            val session = FFmpegKit.executeWithArguments(args.toTypedArray())
+            if (ReturnCode.isCancel(session.returnCode)) return ConvertResult.Cancelled
+            if (!ReturnCode.isSuccess(session.returnCode)) {
+                if (bestSize > 0L) break // an earlier try fit; keep it
+                return ConvertResult.Fail("Encoding failed.\n${tail(session.allLogsAsString)}")
+            }
+            val size = out.length()
+            if (size <= 0L) {
+                if (bestSize > 0L) break
+                return ConvertResult.Fail("Encoding produced an empty file.")
+            }
+            onLog("== Attempt $attempt result: $size bytes (GIF video $videoKbps kbps, audio $audioKbps kbps; limit ${settings.limitBytes})")
+
+            if (size <= settings.limitBytes) {
+                if (size > bestSize) {
+                    best.delete()
+                    if (!out.renameTo(best)) { out.copyTo(best, overwrite = true); out.delete() }
+                    bestSize = size
+                    bestVideo = videoKbps
+                    bestAudio = audioKbps
+                } else out.delete()
+                if (size >= settings.limitBytes * 0.93 || attempt >= GifFit.MAX_TRIES) break
+                val next = GifFit.raise(videoKbps, audioKbps, size, settings.limitBytes, duration, videoCap, capKbps) ?: break
+                onLog("   room to spare: trying ${next.videoKbps} kbps video, ${next.audioKbps} kbps audio")
+                videoKbps = next.videoKbps
+                audioKbps = next.audioKbps
+            } else {
+                out.delete()
+                if (bestSize > 0L) break // we already hold a fit; a higher try that overshoots isn't needed
+                val next = GifFit.lower(videoKbps, audioKbps, size, settings.limitBytes, duration)
+                    ?: return ConvertResult.Fail("This part doesn't fit the size limit with a GIF in it at a listenable quality. Split the track into more parts.")
+                onLog("   over the limit: trying ${next.videoKbps} kbps video, ${next.audioKbps} kbps audio" +
+                    (if (next.videoKbps == GifFit.MIN_VIDEO_KBPS && next.audioKbps < audioKbps) " (the video is at its lowest, so the sound is lowered too)" else ""))
+                videoKbps = next.videoKbps
+                audioKbps = next.audioKbps
+            }
+        }
+        if (bestSize <= 0L) {
+            return ConvertResult.Fail("Couldn't make the file fit the size limit. Split the track into more parts.")
+        }
+        return ConvertResult.Ok(
+            file = best,
+            bytes = bestSize,
+            height = h,
+            videoKbps = bestVideo,
+            trimmed = false,
+            audioDropped = false,
+            audioIncluded = true,
+            attempts = attemptsUsed,
+            audioKbps = bestAudio,
+        )
     }
 
     /** Deletes the leftovers of an interrupted encode. */

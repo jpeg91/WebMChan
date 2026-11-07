@@ -76,6 +76,11 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
         "In Audio Mode, a track made with the plain black picture (no image, and no placeholder chosen) gets the word " +
             "\"WebMChan\" in the bottom-left corner. Off leaves the picture completely black.",
     ),
+    GIF_WHITE_BACKGROUND(
+        "gifWhiteBackground", false, "White behind transparent GIFs",
+        "In Audio Mode, the see-through parts of an animated GIF are shown over black. On shows them over white instead. " +
+            "Applies to tracks converted from now on."
+    ),
     CONFIRM_DESTRUCTIVE(
         "confirmDestructive", true, "Confirm before destructive actions",
         "Asks first before Cancel / Cancel all, Delete file, and Remove card (or Remove from history).",
@@ -140,7 +145,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         )
         group("While converting", AppToggle.KEEP_SCREEN_ON)
         PlaceholderGroup()
-        group("Audio Mode", AppToggle.AUDIO_LOGO)
+        group("Audio Mode", AppToggle.AUDIO_LOGO, AppToggle.GIF_WHITE_BACKGROUND)
         group(
             "Videos and cards",
             AppToggle.AUTO_CLEAR_FINISHED, AppToggle.CONFIRM_DESTRUCTIVE, AppToggle.SHARE_TO_RUNNING_BATCH,

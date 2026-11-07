@@ -1080,11 +1080,14 @@ object BatchRunner {
         if (picked.isEmpty()) return
         val appCtx = ctx.applicationContext
         scope.launch {
+            AudioArt.clearImportError()
             val made = withContext(Dispatchers.IO) { picked.mapNotNull { AudioArt.fromUri(appCtx, it) } }
             if (made.isEmpty()) {
-                notice = "Couldn't read that as a picture."
+                notice = AudioArt.lastImportError ?: "Couldn't read that as a picture."
                 return@launch
             }
+            // Some were used and some not (a GIF this build can't read, say): say so.
+            if (made.size < picked.size) notice = AudioArt.lastImportError ?: "Some of those couldn't be read as pictures."
             val at = queue.indexOfFirst { it.id == id }
             if (at < 0) {
                 AudioArt.prune(appCtx, audioArtInUse())

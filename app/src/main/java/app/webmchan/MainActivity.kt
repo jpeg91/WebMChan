@@ -790,6 +790,14 @@ internal fun QueueRow(
                             color = P5.White,
                             modifier = Modifier.align(Alignment.BottomStart).background(Color.Black.copy(alpha = 0.65f)).padding(horizontal = 3.dp),
                         )
+                        if (im.animated) {
+                            Text(
+                                "GIF",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = P5.White,
+                                modifier = Modifier.align(Alignment.BottomEnd).background(Color.Black.copy(alpha = 0.65f)).padding(horizontal = 3.dp),
+                            )
+                        }
                         Text(
                             "✕",
                             style = MaterialTheme.typography.labelMedium,
@@ -872,6 +880,8 @@ internal fun QueueRow(
             val minParts = Converter.partCount(i.durationSec, maxDuration, t)
             val maxParts = Converter.maxPartCount(i.durationSec, maxDuration, t)
             val est = if (isAudio) AudioFit.estimate(i, settings, item.extraParts, item.audio) else Converter.estimate(i, settings, item.extraParts)
+            // Audio Mode: a card with an animated GIF (made by its own encoder, see GifFit).
+            val gifSpec = item.audio?.takeIf { it.hasGif }
             val numParts = est.parts
             // Only when the board's limit forces the split. A clip already under the limit that
             // was split further with the stepper just shows its part count on the stepper row.
@@ -905,7 +915,8 @@ internal fun QueueRow(
             val partSecText = String.format(Locale.US, "%.1f", est.partSec)
             val estimateText = buildString {
                 append("Expected conversion output: ")
-                if (isAudio) append("sound at ${est.audioKbps}kbps, picture ${est.height}p")
+                if (gifSpec != null) append("sound at ${est.audioKbps}kbps, GIF video at ${est.videoKbps}kbps, picture ${est.height}p at ${GifFit.frameRate(gifSpec.images)} fps")
+                else if (isAudio) append("sound at ${est.audioKbps}kbps, picture ${est.height}p")
                 else append("${est.height}p at ${est.videoKbps}kbps")
             }
             val panelShape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp)
@@ -943,6 +954,19 @@ internal fun QueueRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = P5.Amber,
                     modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            if (gifSpec != null) {
+                // How much of the size limit the GIF video is planned to take, and a warning when that is very little for the picture.
+                val share = (GifFit.videoShare(est.videoKbps, est.partSec, settings.limitBytes) * 100).toInt()
+                val rough = est.bitsPerPixel < GifFit.ROUGH_BPP
+                Text(
+                    "The GIF loops for its whole share of the length and takes about $share% of the size limit " +
+                        "(sound keeps its quality first; if the file comes out too big, the GIF's quality is lowered before the sound's)." +
+                        (if (rough) " That is very little for this picture size, so the GIF will look rough. More parts would give it more room." else ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (rough || share >= 60) warnColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
             if (isAudio && est.audioKbps < AudioFit.WARN_KBPS) {
@@ -1918,9 +1942,14 @@ fun App(
 
     // The frame rate cap. A Custom entry that isn't a whole number in range can't be used: Convert
     // stays disabled until it is fixed, and in the meantime the cards use the default.
+    // Audio Mode: a card with an animated GIF always uses its GIF's own frame rate (the highest of its GIFs), whatever is chosen
+    // here. When every card in the Holding Pen has one, the choices are locked.
+    val gifInPen = audio && queue.any { it.inPen && it.isAudio && it.audio?.hasGif == true }
+    val plainInPen = audio && queue.any { it.inPen && it.isAudio && it.audio?.hasGif != true }
+    val fpsLocked = gifInPen && !plainInPen
     val isCustomFps = fpsChoice >= fpsPresets.size
     val customFpsValue: Int? = customFps.trim().toIntOrNull()?.takeIf { it in Converter.MIN_FPS..Converter.MAX_FPS }
-    val fpsOk = !isCustomFps || customFpsValue != null
+    val fpsOk = fpsLocked || !isCustomFps || customFpsValue != null
 
     // The Custom resolution. Each side may be left empty; one that is filled in has to be a whole
     // number in range, or Convert stays disabled until it is fixed.
@@ -1978,6 +2007,7 @@ fun App(
         else -> "On · sound is kept at ${Converter.audioLabel(audioKbps)}"
     }
     val fpsSummaryText = when {
+        fpsLocked -> "Locked · each card uses its GIF's frame rate"
         isCustomFps && customFpsValue == null ->
             "Custom · enter a whole number from ${Converter.MIN_FPS} to ${Converter.MAX_FPS}"
         isCustomFps -> "Custom · up to $customFpsValue fps"
@@ -2285,10 +2315,23 @@ fun App(
                             "behave better with a higher rate; the sound is the same either way.",
                         style = MaterialTheme.typography.bodySmall
                     )
+                    if (gifInPen) {
+                        Text(
+                            if (fpsLocked) {
+                                "Every card in the Holding Pen has an animated GIF, so each one uses its GIFs' own frame rate: " +
+                                    "the highest of the GIFs on that card. These choices are locked."
+                            } else {
+                                "A card with an animated GIF always uses its GIFs' own frame rate (the highest of the GIFs on that card). " +
+                                    "These choices only apply to cards without one."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = P5.Amber,
+                        )
+                    }
                     fpsPresets.forEachIndexed { idx, f ->
                         TargetRow(
                             selected = fpsChoice == idx,
-                            enabled = true,
+                            enabled = !fpsLocked,
                             title = if (idx == fpsDefaultIndex) "$f fps (default)" else "$f fps",
                             subtitle = if (idx == fpsDefaultIndex) "Recommended. Keeps the picture cost very small." else "A higher rate costs a little more of the size limit.",
                         ) { fpsChoice = idx }
@@ -2319,7 +2362,7 @@ fun App(
                 }
                 TargetRow(
                     selected = isCustomFps,
-                    enabled = true,
+                    enabled = !fpsLocked,
                     title = "Custom",
                     subtitle = "Your own limit, ${Converter.MIN_FPS} to ${Converter.MAX_FPS} fps.",
                 ) { fpsChoice = fpsPresets.size }
@@ -2336,7 +2379,7 @@ fun App(
                         },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
-                        enabled = true,
+                        enabled = !fpsLocked,
                         shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp),
                     )
                 }
