@@ -108,6 +108,30 @@ private const val FPS_DEFAULT_INDEX = 1
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // TEMPORARY crash finder (remove once the start-up crash is fixed): a crash is written to a file, and the
+        // next launch shows it as plain text instead of starting the app. Open the app twice to see it.
+        val crashFile = java.io.File(filesDir, "last_crash.txt")
+        if (crashFile.exists()) {
+            val report = try { crashFile.readText() } catch (_: Exception) { "(couldn't read the crash file)" }
+            crashFile.delete()
+            val view = android.widget.TextView(this).apply {
+                text = "WebMChan crashed last time. Send this text to Claude (long-press to select and copy):\n\n$report"
+                textSize = 11f
+                setTextIsSelectable(true)
+                setTextColor(android.graphics.Color.WHITE)
+                setPadding(24, 64, 24, 24)
+            }
+            setContentView(android.widget.ScrollView(this).apply {
+                setBackgroundColor(android.graphics.Color.BLACK)
+                addView(view)
+            })
+            return
+        }
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try { crashFile.writeText(android.util.Log.getStackTraceString(error)) } catch (_: Throwable) { }
+            previousHandler?.uncaughtException(thread, error)
+        }
         // Bring back the queue and Finished list from last time (does nothing if already loaded).
         BatchRunner.restore(applicationContext)
         // The on/off switches from the Settings page.
