@@ -385,6 +385,8 @@ fun P5Tag(text: String, color: Color, modifier: Modifier = Modifier, filled: Boo
             text.uppercase(),
             color = if (filled) (if (color == P5.Red || color == P5.Black) P5.White else P5.Black) else color,
             style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp),
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
