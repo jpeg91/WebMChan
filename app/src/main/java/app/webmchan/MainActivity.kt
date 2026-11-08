@@ -96,14 +96,14 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /** The frame rate caps offered as presets. Custom follows them in the radio list. */
-private val FPS_PRESETS = listOf(24, 30, 60)
+private val FPS_PRESETS = listOf(10, 15, 24, 30, 60)
 
 /** Audio Mode: how often the (still) picture is drawn. */
 private val AUDIO_FPS_PRESETS = listOf(1, 2, 5, 10, 24)
 private const val AUDIO_FPS_DEFAULT_INDEX = 1
 
 /** Index into [FPS_PRESETS] of the default (30). */
-private const val FPS_DEFAULT_INDEX = 1
+private const val FPS_DEFAULT_INDEX = 3
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1730,10 +1730,9 @@ private fun ConvertingControls(
         }
         return
     }
-    // The buttons keep their own width (short labels, small type); the row only scrolls on a very narrow
-    // screen, so none is cut off.
+    // However many buttons there are, they share the full width equally (each text shrinks to fit if needed).
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         P5Button(
@@ -1742,6 +1741,7 @@ private fun ConvertingControls(
             enabled = pauseRequest != PauseRequest.NOW,
             kind = P5Kind.Secondary,
             dense = true,
+            modifier = Modifier.weight(1f),
         )
         P5Button(
             if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after",
@@ -1749,20 +1749,22 @@ private fun ConvertingControls(
             enabled = pauseRequest != PauseRequest.NOW,
             kind = P5Kind.Secondary,
             dense = true,
+            modifier = Modifier.weight(1f),
         )
         // A split video: Skip part drops just the part being encoded and carries on with the next one.
         // With other videos waiting there is also Skip video (the whole video).
         if (currentParts > 1) {
-            P5Button("Skip part", onClick = { BatchRunner.skipPart() }, kind = P5Kind.Secondary, dense = true)
+            P5Button("Skip part", onClick = { BatchRunner.skipPart() }, kind = P5Kind.Secondary, dense = true, modifier = Modifier.weight(1f))
         }
         if (runTotal > 1) {
-            P5Button("Skip video", onClick = { BatchRunner.skipCurrent() }, kind = P5Kind.Secondary, dense = true)
+            P5Button("Skip video", onClick = { BatchRunner.skipCurrent() }, kind = P5Kind.Secondary, dense = true, modifier = Modifier.weight(1f))
         }
         P5Button(
             if (runTotal > 1) "Cancel all" else "Cancel",
             onClick = onCancel,
             kind = P5Kind.Secondary,
             dense = true,
+            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -2009,7 +2011,7 @@ private fun EncodingAndCodecSections(
             selected = !bestQuality && !fastEncode && !fastest,
             enabled = true,
             title = "Quality (default)",
-            subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
+            subtitle = "Targets the ideal balance between image quality and encode speed. Highly recommended for anything 'live action'.",
             onClick = onPickQuality,
         )
         TargetRow(
@@ -2047,7 +2049,7 @@ private fun EncodingAndCodecSections(
             selected = useVp9,
             enabled = true,
             title = "VP9",
-            subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
+            subtitle = "Much slower to convert. Newer standard. Should look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
             onClick = onPickVp9,
         )
     }
@@ -2134,7 +2136,11 @@ fun App(
     var bestQuality by remember { mutableStateOf(prefs.getBoolean("${pre}best_quality", false)) }
     // Index into FPS_PRESETS; FPS_PRESETS.size means "Custom".
     var fpsChoice by remember {
-        mutableIntStateOf(prefs.getInt("${pre}fps_choice", fpsDefaultIndex).coerceIn(0, fpsPresets.size))
+        // Video mode used to offer 24/30/60 (indexes 0-2, Custom 3); 10 and 15 now come first, so an older saved
+        // index moves up by two. The "_v2" flag records that the saved index is already in the new numbering.
+        val saved = prefs.getInt("${pre}fps_choice", fpsDefaultIndex)
+        val migrated = if (!audio && !prefs.getBoolean("${pre}fps_choice_v2", false) && prefs.contains("${pre}fps_choice")) saved + 2 else saved
+        mutableIntStateOf(migrated.coerceIn(0, fpsPresets.size))
     }
     // Audio Mode: how long the title card stays on screen (an index into AudioFit.CARD_OPTIONS; 0 = off).
     var cardChoice by remember { mutableIntStateOf(prefs.getInt("${pre}title_card", 0).coerceIn(0, AudioFit.CARD_OPTIONS.lastIndex)) }
@@ -2153,6 +2159,7 @@ fun App(
             .putBoolean("${pre}fastest", fastest)
             .putBoolean("${pre}best_quality", bestQuality)
             .putInt("${pre}fps_choice", fpsChoice)
+            .putBoolean("${pre}fps_choice_v2", true)
             .putString("${pre}custom_fps", customFps)
             .putInt("${pre}title_card", cardChoice)
             .apply()
@@ -2680,21 +2687,33 @@ fun App(
                 TargetRow(
                     selected = fpsChoice == 0,
                     enabled = true,
-                    title = "24 fps",
-                    subtitle = "Film standard. Fewer frames means more detail in each one on a tight limit. A 30 or 60 fps source loses frames unevenly, so motion can look slightly juddery.",
+                    title = "10 fps",
+                    subtitle = "Good for slide shows, where the picture changes only now and then and every frame can carry far more detail.",
                 ) { fpsChoice = 0 }
                 TargetRow(
                     selected = fpsChoice == 1,
                     enabled = true,
-                    title = "30 fps (default)",
-                    subtitle = "Recommended. A good balance of smooth motion and detail.",
+                    title = "15 fps",
+                    subtitle = "Good for low frame rate animation, where each drawing is held for a few frames anyway.",
                 ) { fpsChoice = 1 }
                 TargetRow(
                     selected = fpsChoice == 2,
                     enabled = true,
+                    title = "24 fps",
+                    subtitle = "Film standard. Fewer frames means more detail in each one on a tight limit. A 30 or 60 fps source loses frames unevenly, so motion can look slightly juddery.",
+                ) { fpsChoice = 2 }
+                TargetRow(
+                    selected = fpsChoice == 3,
+                    enabled = true,
+                    title = "30 fps (default)",
+                    subtitle = "Recommended. A good balance of smooth motion and detail.",
+                ) { fpsChoice = 3 }
+                TargetRow(
+                    selected = fpsChoice == 4,
+                    enabled = true,
                     title = "60 fps",
                     subtitle = "Smoother motion, but each second needs twice the bits for the same detail. On small size limits expect smaller frames and a rougher picture.",
-                ) { fpsChoice = 2 }
+                ) { fpsChoice = 4 }
                 }
                 TargetRow(
                     selected = isCustomFps,
