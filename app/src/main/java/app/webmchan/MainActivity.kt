@@ -381,7 +381,7 @@ private fun fpsLabel(i: SourceInfo, finished: Boolean): String = when {
  * ("Attempt 1/4, pass 2/2: encoding ...") and the progress (below 0 = the stage can't say).
  */
 private fun runStage(status: String, progress: Float): RunLook = when {
-    status.contains("Encoding audio") -> if (progress >= 1f) RunLook.FINISHING else RunLook.ENCODING
+    status.contains("Encoding audio") || status.contains("Encoding GIF") -> if (progress >= 1f) RunLook.FINISHING else RunLook.ENCODING
     status.contains("pass 1/2") -> RunLook.ANALYSING
     status.contains("pass 2/2") -> if (progress >= 1f) RunLook.FINISHING else RunLook.ENCODING
     status.endsWith("Done") -> RunLook.FINISHING
