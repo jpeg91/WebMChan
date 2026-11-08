@@ -276,6 +276,7 @@ object BatchRunner {
     var currentParts by mutableIntStateOf(0)
         private set
     var logLines by mutableStateOf<List<String>>(emptyList())
+        private set
 
     /** The plain-words messages for the bubble above the log, for the video being converted (see [UserNote]). */
     var notes by mutableStateOf<List<UserNote>>(emptyList())
@@ -289,7 +290,6 @@ object BatchRunner {
     private fun clearNotes() {
         synchronized(notesLock) { notes = emptyList() }
     }
-        private set
 
     /**
      * The last few conversions with their complete logs, oldest first, for the Log page
