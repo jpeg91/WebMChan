@@ -703,14 +703,14 @@ internal fun QueueRow(
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
-                        // On its own line above the status tag: beside it, the running percentage left it no room.
-                        if ((item.edit != null || item.thumbSec != null) && !finishedCard) {
-                            Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                if (item.edit != null) P5Tag("Edited", P5.RedBright)
-                                if (item.thumbSec != null) P5Tag("Thumbnail", P5.RedBright)
-                            }
-                        }
-                        Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // Every tag gets its own line, in one vertical stack, left-aligned: never side by side.
+                        Column(
+                            Modifier.padding(top = 2.dp),
+                            horizontalAlignment = Alignment.Start,
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            if (item.edit != null && !finishedCard) P5Tag("Edited", P5.RedBright)
+                            if (item.thumbSec != null && !finishedCard) P5Tag("Thumbnail", P5.RedBright)
                             P5Tag(
                                 state,
                                 tagColor,
