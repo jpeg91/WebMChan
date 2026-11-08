@@ -1696,6 +1696,292 @@ private fun LogPanel(
     }
 }
 
+/** Why notifications are wanted, shown before Android's own permission prompt. */
+@Composable
+private fun NotificationExplainerDialog(
+    blocked: Boolean,
+    onSkip: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onAskPermission: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onSkip,
+        shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+        containerColor = P5.Ink,
+        titleContentColor = P5.White,
+        textContentColor = P5.White,
+        title = { Text("Notification permission".uppercase(), style = MaterialTheme.typography.titleMedium) },
+        text = {
+            Text(
+                "Notification permission is required for background conversion. " +
+                    "Without it, you'll have to stare at WebMChan until it's done." +
+                    if (blocked) {
+                        "\n\nAndroid won't show the permission prompt again, so you'll need to turn " +
+                            "notifications on for WebMChan in Android's settings."
+                    } else ""
+            )
+        },
+        confirmButton = {
+            P5Button(
+                if (blocked) "Grant Notification Permission" else "Continue",
+                onClick = {
+                    if (blocked) {
+                        try {
+                            ctx.startActivity(
+                                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                            )
+                        } catch (_: Exception) {
+                        }
+                        onOpenSettings()
+                    } else {
+                        ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE)
+                            .edit().putBoolean("asked_notifications", true).apply()
+                        onAskPermission()
+                    }
+                },
+            )
+        },
+        dismissButton = { P5Button("Skip", onClick = onSkip, kind = P5Kind.Ghost) },
+    )
+}
+
+/**
+ * Android may stop an app in the background to save battery, which would end a long conversion part-way.
+ * We explain, then open Android's own battery screen for the person to allow it (this needs no permission).
+ * The run starts either way ([onProceed]), so the tap is never lost.
+ */
+@Composable
+private fun BatteryNagDialog(onProceed: () -> Unit) {
+    val ctx = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onProceed,
+        shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+        containerColor = P5.Ink,
+        titleContentColor = P5.White,
+        textContentColor = P5.White,
+        title = { Text("Unrestricted battery use".uppercase(), style = MaterialTheme.typography.titleMedium) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "To save battery, Android can stop WebMChan while it is in the background, which ends a " +
+                        "long conversion part-way. Allowing unrestricted battery use stops that.\n\n" +
+                        "The button below opens Android's battery settings. Then:\n" +
+                        "1. Find WebMChan (switch the list to \"All apps\" if you can't see it).\n" +
+                        "2. Choose \"Don't optimise\" (some phones say \"Unrestricted\").\n" +
+                        "3. Come back here. Your conversion carries on meanwhile.\n\n" +
+                        "On some phones it is under Settings > Apps > WebMChan > Battery instead."
+                )
+                P5Button(
+                    "Don't ask again",
+                    onClick = {
+                        ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE)
+                            .edit().putBoolean("battery_nag_off", true).apply()
+                        onProceed()
+                    },
+                    kind = P5Kind.Ghost,
+                )
+            }
+        },
+        confirmButton = {
+            P5Button(
+                "Open battery settings",
+                onClick = {
+                    try {
+                        ctx.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    } catch (_: Exception) {
+                        // Not on every phone: the app's own info page has the same Battery entry.
+                        try {
+                            ctx.startActivity(
+                                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                                    .setData(Uri.parse("package:${ctx.packageName}"))
+                            )
+                        } catch (_: Exception) {
+                        }
+                    }
+                    onProceed()
+                },
+            )
+        },
+        dismissButton = { P5Button("Later", onClick = onProceed, kind = P5Kind.Ghost) },
+    )
+}
+
+/** Shown once, the first time Best quality is chosen. */
+@Composable
+private fun BestQualityNoticeDialog(onGotIt: () -> Unit) {
+    val ctx = LocalContext.current
+    val gotIt = {
+        ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE).edit().putBoolean("best_notice_seen", true).apply()
+        onGotIt()
+    }
+    AlertDialog(
+        onDismissRequest = gotIt,
+        shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+        containerColor = P5.Ink,
+        titleContentColor = P5.White,
+        textContentColor = P5.White,
+        title = { Text("Best quality".uppercase(), style = MaterialTheme.typography.titleMedium) },
+        text = {
+            Text(
+                "This mode can take a very long time. It encodes each video up to " +
+                    "${TuningStore.current.bestMaxAttempts} times with slower settings, so expect a warm phone " +
+                    "that may slow itself down to cool off, and heavy use of battery and memory.\n\n" +
+                    "Plug the phone in and keep it somewhere cool. Long or high resolution videos are " +
+                    "the heaviest, and VP9 is slower again.\n\n" +
+                    "This notice is only shown once."
+            )
+        },
+        confirmButton = { P5Button("Got it", onClick = gotIt) },
+    )
+}
+
+/** The Finished list: converted videos newest first, and Share all. */
+@Composable
+private fun FinishedSection(
+    finished: List<QueueItem>,
+    audio: Boolean,
+    busy: Boolean,
+    maxDuration: Int,
+    isCustom: Boolean,
+    minW: Int,
+    minH: Int,
+    settings: Settings,
+) {
+    val ctx = LocalContext.current
+    // Finished videos land here from the converting section, newest at the top.
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        P5SectionTitle(if (finished.isNotEmpty()) "Finished (${finished.size})" else "Finished")
+        Spacer(Modifier.weight(1f))
+        if (finished.isNotEmpty()) {
+            P5Button("Clear finished", onClick = { BatchRunner.clearFinished(audio) }, kind = P5Kind.Secondary)
+        }
+    }
+    if (finished.isEmpty()) {
+        SectionNote(if (audio) "Converted audio lands here." else "Converted videos land here.", headline = if (audio) "No finished audio yet" else "No finished videos yet")
+        return
+    }
+    finished.asReversed().forEach { item ->
+        key(item.id) {
+            QueueRow(
+                item = item,
+                busy = busy,
+                maxDuration = maxDuration,
+                isCustom = isCustom,
+                minW = minW,
+                minH = minH,
+                settings = settings,
+                showControls = false,
+            )
+        }
+    }
+    val savedUris = finished.mapNotNull { it.savedUri }
+    if (savedUris.size > 1) {
+        P5Button(
+            "Share all (${savedUris.size})",
+            kind = P5Kind.Secondary,
+            onClick = {
+                val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                    type = "video/webm"
+                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(savedUris))
+                    clipData = ClipData.newRawUri("webm", savedUris[0]).also { cd ->
+                        savedUris.drop(1).forEach { cd.addItem(ClipData.Item(it)) }
+                    }
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                ctx.startActivity(Intent.createChooser(send, "Share webm files"))
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** The Encoding (Best quality / Quality / Speed / Fastest) and Codec groups of the settings. */
+@Composable
+private fun EncodingAndCodecSections(
+    audio: Boolean,
+    bestQuality: Boolean,
+    fastEncode: Boolean,
+    fastest: Boolean,
+    useVp9: Boolean,
+    fastestOffered: Boolean,
+    encodingOpen: Boolean,
+    onToggleEncoding: () -> Unit,
+    encodingSummary: String,
+    codecOpen: Boolean,
+    onToggleCodec: () -> Unit,
+    codecSummary: String,
+    onPickBest: () -> Unit,
+    onPickQuality: () -> Unit,
+    onPickSpeed: () -> Unit,
+    onPickFastest: () -> Unit,
+    onPickVp8: () -> Unit,
+    onPickVp9: () -> Unit,
+) {
+    if (!audio) CollapsibleSection(
+        title = "Encoding",
+        summary = encodingSummary,
+        expanded = encodingOpen,
+        onToggle = onToggleEncoding,
+    ) {
+        TargetRow(
+            selected = bestQuality,
+            enabled = true,
+            title = "Best quality",
+            subtitle = "The highest quality that fits, however long it takes. Much slower than Quality: it " +
+                "encodes again and again until the file is within about 2% of the size limit. " +
+                "VP9 (under Codec) gives better quality still, but is slower again.",
+            onClick = onPickBest,
+        )
+        TargetRow(
+            selected = !bestQuality && !fastEncode && !fastest,
+            enabled = true,
+            title = "Quality (default)",
+            subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
+            onClick = onPickQuality,
+        )
+        TargetRow(
+            selected = !bestQuality && fastEncode && !fastest,
+            enabled = true,
+            title = "Speed",
+            subtitle = "Faster than Quality mode, only slightly softer detail.",
+            onClick = onPickSpeed,
+        )
+        if (fastestOffered) {
+            TargetRow(
+                selected = !bestQuality && fastest,
+                enabled = true,
+                title = "Fastest",
+                subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
+                onClick = onPickFastest,
+            )
+        }
+    }
+
+    CollapsibleSection(
+        title = "Codec",
+        summary = codecSummary,
+        expanded = codecOpen,
+        onToggle = onToggleCodec,
+    ) {
+        TargetRow(
+            selected = !useVp9,
+            enabled = true,
+            title = "VP8 (default)",
+            subtitle = "Recommended default. Fastest. It just works.",
+            onClick = onPickVp8,
+        )
+        TargetRow(
+            selected = useVp9,
+            enabled = true,
+            title = "VP9",
+            subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
+            onClick = onPickVp9,
+        )
+    }
+}
+
 @Composable
 fun App(
     onMenu: () -> Unit = {},
@@ -1876,48 +2162,19 @@ fun App(
             pendingSettings?.let { startRun(it) }
             pendingSettings = null
         }
-        AlertDialog(
-            onDismissRequest = skip,
-            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
-            containerColor = P5.Ink,
-            titleContentColor = P5.White,
-            textContentColor = P5.White,
-            title = { Text("Notification permission".uppercase(), style = MaterialTheme.typography.titleMedium) },
-            text = {
-                Text(
-                    "Notification permission is required for background conversion. " +
-                        "Without it, you'll have to stare at WebMChan until it's done." +
-                        if (explainerBlocked) {
-                            "\n\nAndroid won't show the permission prompt again, so you'll need to turn " +
-                                "notifications on for WebMChan in Android's settings."
-                        } else ""
-                )
+        NotificationExplainerDialog(
+            blocked = explainerBlocked,
+            onSkip = skip,
+            onOpenSettings = {
+                showNotificationExplainer = false
+                // Don't lose the tap: start converting now.
+                pendingSettings?.let { startRun(it) }
+                pendingSettings = null
             },
-            confirmButton = {
-                P5Button(
-                    if (explainerBlocked) "Grant Notification Permission" else "Continue",
-                    onClick = {
-                        showNotificationExplainer = false
-                        if (explainerBlocked) {
-                            try {
-                                ctx.startActivity(
-                                    Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
-                                )
-                            } catch (_: Exception) {
-                            }
-                            // Don't lose the tap: start converting now.
-                            pendingSettings?.let { startRun(it) }
-                            pendingSettings = null
-                        } else {
-                            ctx.getSharedPreferences("webmchan", Context.MODE_PRIVATE)
-                                .edit().putBoolean("asked_notifications", true).apply()
-                            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        }
-                    },
-                )
+            onAskPermission = {
+                showNotificationExplainer = false
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
             },
-            dismissButton = { P5Button("Skip", onClick = skip, kind = P5Kind.Ghost) },
         )
     }
 
@@ -1931,83 +2188,12 @@ fun App(
             batterySettings?.let { BatchRunner.start(ctx, it, audio) }
             batterySettings = null
         }
-        AlertDialog(
-            onDismissRequest = proceed,
-            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
-            containerColor = P5.Ink,
-            titleContentColor = P5.White,
-            textContentColor = P5.White,
-            title = { Text("Unrestricted battery use".uppercase(), style = MaterialTheme.typography.titleMedium) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        "To save battery, Android can stop WebMChan while it is in the background, which ends a " +
-                            "long conversion part-way. Allowing unrestricted battery use stops that.\n\n" +
-                            "The button below opens Android's battery settings. Then:\n" +
-                            "1. Find WebMChan (switch the list to \"All apps\" if you can't see it).\n" +
-                            "2. Choose \"Don't optimise\" (some phones say \"Unrestricted\").\n" +
-                            "3. Come back here. Your conversion carries on meanwhile.\n\n" +
-                            "On some phones it is under Settings > Apps > WebMChan > Battery instead."
-                    )
-                    P5Button(
-                        "Don't ask again",
-                        onClick = {
-                            prefs.edit().putBoolean("battery_nag_off", true).apply()
-                            proceed()
-                        },
-                        kind = P5Kind.Ghost,
-                    )
-                }
-            },
-            confirmButton = {
-                P5Button(
-                    "Open battery settings",
-                    onClick = {
-                        try {
-                            ctx.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                        } catch (_: Exception) {
-                            // Not on every phone: the app's own info page has the same Battery entry.
-                            try {
-                                ctx.startActivity(
-                                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                                        .setData(Uri.parse("package:${ctx.packageName}"))
-                                )
-                            } catch (_: Exception) {
-                            }
-                        }
-                        proceed()
-                    },
-                )
-            },
-            dismissButton = { P5Button("Later", onClick = proceed, kind = P5Kind.Ghost) },
-        )
+        BatteryNagDialog(onProceed = proceed)
     }
 
     // Shown once, the first time Best quality is chosen.
     if (showBestNotice) {
-        val gotIt = {
-            showBestNotice = false
-            prefs.edit().putBoolean("best_notice_seen", true).apply()
-        }
-        AlertDialog(
-            onDismissRequest = gotIt,
-            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
-            containerColor = P5.Ink,
-            titleContentColor = P5.White,
-            textContentColor = P5.White,
-            title = { Text("Best quality".uppercase(), style = MaterialTheme.typography.titleMedium) },
-            text = {
-                Text(
-                    "This mode can take a very long time. It encodes each video up to " +
-                        "${TuningStore.current.bestMaxAttempts} times with slower settings, so expect a warm phone " +
-                        "that may slow itself down to cool off, and heavy use of battery and memory.\n\n" +
-                        "Plug the phone in and keep it somewhere cool. Long or high resolution videos are " +
-                        "the heaviest, and VP9 is slower again.\n\n" +
-                        "This notice is only shown once."
-                )
-            },
-            confirmButton = { P5Button("Got it", onClick = gotIt) },
-        )
+        BestQualityNoticeDialog(onGotIt = { showBestNotice = false })
     }
 
     val target: Target? = targets.getOrNull(targetIdx)
@@ -2489,65 +2675,30 @@ fun App(
                 }
             }
 
-            if (!audio) CollapsibleSection(
-                title = "Encoding",
-                summary = encodingSummaryText,
-                expanded = encodingOpen,
-                onToggle = { encodingOpen = !encodingOpen },
-            ) {
-                TargetRow(
-                    selected = bestQuality,
-                    enabled = true,
-                    title = "Best quality",
-                    subtitle = "The highest quality that fits, however long it takes. Much slower than Quality: it " +
-                        "encodes again and again until the file is within about 2% of the size limit. " +
-                        "VP9 (under Codec) gives better quality still, but is slower again.",
-                ) {
+            EncodingAndCodecSections(
+                audio = audio,
+                bestQuality = bestQuality,
+                fastEncode = fastEncode,
+                fastest = fastest,
+                useVp9 = useVp9,
+                fastestOffered = fastestOffered,
+                encodingOpen = encodingOpen,
+                onToggleEncoding = { encodingOpen = !encodingOpen },
+                encodingSummary = encodingSummaryText,
+                codecOpen = codecOpen,
+                onToggleCodec = { codecOpen = !codecOpen },
+                codecSummary = codecSummaryText,
+                onPickBest = {
                     bestQuality = true; fastEncode = false; fastest = false
                     // A heads-up the first time only: this mode runs hot and long.
                     if (!prefs.getBoolean("best_notice_seen", false)) showBestNotice = true
-                }
-                TargetRow(
-                    selected = !bestQuality && !fastEncode && !fastest,
-                    enabled = true,
-                    title = "Quality (default)",
-                    subtitle = "Best detail, slowest transcode. Highly recommended for anything 'live action'.",
-                ) { bestQuality = false; fastEncode = false; fastest = false }
-                TargetRow(
-                    selected = !bestQuality && fastEncode && !fastest,
-                    enabled = true,
-                    title = "Speed",
-                    subtitle = "Faster than Quality mode, only slightly softer detail.",
-                ) { bestQuality = false; fastEncode = true; fastest = false }
-                if (fastestOffered) {
-                    TargetRow(
-                        selected = !bestQuality && fastest,
-                        enabled = true,
-                        title = "Fastest",
-                        subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
-                    ) { bestQuality = false; fastEncode = false; fastest = true }
-                }
-            }
-
-            CollapsibleSection(
-                title = "Codec",
-                summary = codecSummaryText,
-                expanded = codecOpen,
-                onToggle = { codecOpen = !codecOpen },
-            ) {
-                TargetRow(
-                    selected = !useVp9,
-                    enabled = true,
-                    title = "VP8 (default)",
-                    subtitle = "Recommended default. Fastest. It just works.",
-                ) { useVp9 = false }
-                TargetRow(
-                    selected = useVp9,
-                    enabled = true,
-                    title = "VP9",
-                    subtitle = "Much slower to convert. Newer standard. May look better. Low compatibility on older devices. Mostly included here as 'future proofing'",
-                ) { useVp9 = true }
-            }
+                },
+                onPickQuality = { bestQuality = false; fastEncode = false; fastest = false },
+                onPickSpeed = { bestQuality = false; fastEncode = true; fastest = false },
+                onPickFastest = { bestQuality = false; fastEncode = false; fastest = true },
+                onPickVp8 = { useVp9 = false },
+                onPickVp9 = { useVp9 = true },
+            )
         }
 
         val queueReady = queue.count { !it.inPen && it.info != null && it.status != ItemStatus.CONVERTING && it.isAudio == audio }
@@ -2719,51 +2870,16 @@ fun App(
         }
 
         // ---- Finished ----
-        // Finished videos land here from the converting section, newest at the top.
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            P5SectionTitle(if (finished.isNotEmpty()) "Finished (${finished.size})" else "Finished")
-            Spacer(Modifier.weight(1f))
-            if (finished.isNotEmpty()) {
-                P5Button("Clear finished", onClick = { BatchRunner.clearFinished(audio) }, kind = P5Kind.Secondary)
-            }
-        }
-        if (finished.isEmpty()) {
-            SectionNote(if (audio) "Converted audio lands here." else "Converted videos land here.", headline = if (audio) "No finished audio yet" else "No finished videos yet")
-        } else {
-            finished.asReversed().forEach { item ->
-                key(item.id) {
-                    QueueRow(
-                        item = item,
-                        busy = busy,
-                        maxDuration = maxDuration,
-                        isCustom = isCustom,
-                        minW = minW,
-                        minH = minH,
-                        settings = cardSettings,
-                        showControls = false,
-                    )
-                }
-            }
-            val savedUris = finished.mapNotNull { it.savedUri }
-            if (savedUris.size > 1) {
-                P5Button(
-                    "Share all (${savedUris.size})",
-                    kind = P5Kind.Secondary,
-                    onClick = {
-                        val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                            type = "video/webm"
-                            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(savedUris))
-                            clipData = ClipData.newRawUri("webm", savedUris[0]).also { cd ->
-                                savedUris.drop(1).forEach { cd.addItem(ClipData.Item(it)) }
-                            }
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        ctx.startActivity(Intent.createChooser(send, "Share webm files"))
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        }
+        FinishedSection(
+            finished = finished,
+            audio = audio,
+            busy = busy,
+            maxDuration = maxDuration,
+            isCustom = isCustom,
+            minW = minW,
+            minH = minH,
+            settings = cardSettings,
+        )
         Spacer(Modifier.height(8.dp))
     }
     P5Button(
