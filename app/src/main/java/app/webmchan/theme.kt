@@ -321,11 +321,15 @@ fun P5Button(
             ),
         contentAlignment = Alignment.Center,
     ) {
+        // A dense button shares its row's width with its neighbours, so its text shrinks a step at a time
+        // until it fits (never below 6.5sp) rather than being cut off.
+        var denseSize by remember(label) { mutableStateOf(10f) }
         Text(
             label.uppercase(),
             color = textColor,
+            onTextLayout = { if (dense && it.hasVisualOverflow && denseSize > 6.5f) denseSize -= 0.5f },
             style = if (dense) {
-                MaterialTheme.typography.labelLarge.copy(fontSize = 10.sp, lineHeight = 12.sp, letterSpacing = 0.2.sp)
+                MaterialTheme.typography.labelLarge.copy(fontSize = denseSize.sp, lineHeight = (denseSize * 1.2f).sp, letterSpacing = 0.2.sp)
             } else if (compact) {
                 MaterialTheme.typography.labelLarge.copy(fontSize = 11.sp, lineHeight = 13.sp, letterSpacing = 0.2.sp)
             } else MaterialTheme.typography.labelLarge,
