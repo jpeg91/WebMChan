@@ -283,8 +283,18 @@ object BatchRunner {
         private set
     private val notesLock = Any()
 
+    private var lockNoteShownThisRun = false
+
     private fun addNote(text: String, attention: Boolean) {
-        synchronized(notesLock) { notes = (notes + UserNote(text, attention)).takeLast(200) }
+        var shown = text
+        if (text == NoteText.LOCK_SCREEN) {
+            if (lockNoteShownThisRun) return
+            lockNoteShownThisRun = true
+            val notifying = appContext?.let { androidx.core.app.NotificationManagerCompat.from(it).areNotificationsEnabled() } ?: false
+            shown = "You can lock the screen or leave the app while this runs." +
+                if (notifying) " A notification shows progress." else ""
+        }
+        synchronized(notesLock) { notes = (notes + UserNote(shown, attention)).takeLast(200) }
     }
 
     private fun clearNotes() {
@@ -1396,6 +1406,7 @@ object BatchRunner {
         runSettings = settings
 
         summary = null
+        lockNoteShownThisRun = false
         runTotal = todo.size
         runList.clear()
         runList.addAll(todo)

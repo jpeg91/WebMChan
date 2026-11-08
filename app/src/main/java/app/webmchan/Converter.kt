@@ -1378,6 +1378,8 @@ object Converter {
                         (if (audioHz > 0) listOf("-ar", audioHz.toString()) else emptyList())
                 } else listOf("-an")
                 pass2StartMs = android.os.SystemClock.elapsedRealtime()
+                // A long wait is starting (pass 2 is the long part): worth saying the phone can be put down.
+                if (attempt == 1 && estimatedPass2Sec > 0.0 && (best || estimatedPass2Sec > 120.0)) onNote(NoteText.LOCK_SCREEN, false)
                 val p2 = FFmpegKit.executeWithArguments(
                     (common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)).toTypedArray()
                 )

@@ -12,6 +12,12 @@ data class UserNote(val text: String, val attention: Boolean = false)
 
 /** Small helpers for writing the numbers in a note. */
 object NoteText {
+    /**
+     * Not shown as it is: the converter sends this when a long wait begins, and [BatchRunner] turns it into the
+     * "you can lock the screen" message (once per run, and only mentioning the notification if there is one).
+     */
+    const val LOCK_SCREEN = "\u0001lock-screen"
+
     /** "5.9 MB" (the size limits are in binary megabytes, so 6 MB is 6291456 bytes). */
     fun mb(bytes: Long): String = "%.1f MB".format(Locale.US, bytes / 1048576.0)
 

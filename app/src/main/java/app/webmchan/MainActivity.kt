@@ -1646,8 +1646,10 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
 }
 
 /**
- * The speech bubble and the log under it. Kept out of [App] on purpose: that function is so long that adding
- * to it any further made the Android verifier reject it (a VerifyError at start-up).
+ * What the Converting section shows under the card being converted: the speech bubble (with the run's
+ * status line above its message), the log, and the progress bar directly under the log. Kept out of [App]
+ * on purpose: that function is so long that adding to it made the Android verifier reject it (a
+ * VerifyError at start-up).
  */
 @Composable
 private fun LogPanel(
@@ -1655,43 +1657,112 @@ private fun LogPanel(
     listState: androidx.compose.foundation.lazy.LazyListState,
     expanded: Boolean,
     onToggleExpanded: () -> Unit,
+    busy: Boolean,
+    paused: Boolean,
+    pauseRequest: PauseRequest,
+    notice: String?,
+    status: String,
+    progress: Float,
+    sweep: () -> Float,
 ) {
     val clipboard = LocalClipboardManager.current
-    LogBubble(BatchRunner.notes)
-    if (lines.isEmpty()) return
-    // 6 lines tall (64 when expanded): the line height below times the lines, plus the padding.
-    val logBoxHeight = with(LocalDensity.current) { (14.sp * (if (expanded) 64 else 6)).toDp() } + 20.dp
-    LazyColumn(
-        state = listState,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(logBoxHeight)
-            .clip(CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
-            .background(Color.Black)
-            .border(1.5.dp, P5.Line, CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
-            .padding(10.dp),
-    ) {
-        items(lines.size) { idx ->
-            Text(
-                lines[idx],
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
-                lineHeight = 14.sp,
-            )
+    // What the buttons are doing right now is said in the bubble too, in place of the latest message.
+    val live: String? = when {
+        !busy -> null
+        paused -> "Paused. " + (notice ?: "Nothing is converting. Press Resume to carry on.")
+        pauseRequest == PauseRequest.NOW -> "Pausing…"
+        pauseRequest == PauseRequest.AFTER -> "Will pause when this video has finished."
+        else -> null
+    }
+    LogBubble(BatchRunner.notes, header = if (busy) status else null, live = live)
+    if (lines.isNotEmpty()) {
+        // 3 lines tall (64 when expanded): the line height below times the lines, plus the padding.
+        val logBoxHeight = with(LocalDensity.current) { (14.sp * (if (expanded) 64 else 3)).toDp() } + 20.dp
+        val logShape = CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(logBoxHeight)
+                .clip(logShape)
+                .background(Color.Black)
+                .border(1.5.dp, P5.Line, logShape),
+        ) {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(10.dp)) {
+                items(lines.size) { idx ->
+                    Text(
+                        lines[idx],
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp,
+                    )
+                }
+            }
+            Row(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .background(Color.Black.copy(alpha = 0.75f)),
+            ) {
+                LogCopyButton(onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) })
+                LogSizeButton(expanded = expanded, onClick = onToggleExpanded)
+            }
         }
     }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (busy && !paused) {
+        if (progress < 0f) P5Progress(progress = sweep) else P5Progress(progress = { progress })
+    }
+}
+
+/** Pause, skip and cancel, directly under the card being converted (or Resume / Cancel all when paused). */
+@Composable
+private fun ConvertingControls(
+    paused: Boolean,
+    pauseRequest: PauseRequest,
+    currentParts: Int,
+    runTotal: Int,
+    canResume: Boolean,
+    onResume: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    if (paused) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            P5Button("Resume", onClick = onResume, enabled = canResume, modifier = Modifier.weight(1f))
+            P5Button("Cancel all", onClick = { BatchRunner.cancelAll() }, kind = P5Kind.Secondary, modifier = Modifier.weight(1f))
+        }
+        return
+    }
+    // The buttons keep their own width (short labels, small type); the row only scrolls on a very narrow
+    // screen, so none is cut off.
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         P5Button(
-            "Copy log",
-            onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) },
+            "Pause now",
+            onClick = { BatchRunner.pauseNow() },
+            enabled = pauseRequest != PauseRequest.NOW,
             kind = P5Kind.Secondary,
-            modifier = Modifier.weight(1f),
+            dense = true,
         )
         P5Button(
-            if (expanded) "Shrink log" else "Expand log",
-            onClick = onToggleExpanded,
+            if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after",
+            onClick = { BatchRunner.pauseAfter() },
+            enabled = pauseRequest != PauseRequest.NOW,
             kind = P5Kind.Secondary,
-            modifier = Modifier.weight(1f),
+            dense = true,
+        )
+        // A split video: Skip part drops just the part being encoded and carries on with the next one.
+        // With other videos waiting there is also Skip video (the whole video).
+        if (currentParts > 1) {
+            P5Button("Skip part", onClick = { BatchRunner.skipPart() }, kind = P5Kind.Secondary, dense = true)
+        }
+        if (runTotal > 1) {
+            P5Button("Skip video", onClick = { BatchRunner.skipCurrent() }, kind = P5Kind.Secondary, dense = true)
+        }
+        P5Button(
+            if (runTotal > 1) "Cancel all" else "Cancel",
+            onClick = onCancel,
+            kind = P5Kind.Secondary,
+            dense = true,
         )
     }
 }
@@ -2706,95 +2777,6 @@ fun App(
         val canGo = !otherBusy && pending > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && resOk && !busy
         val penReady = penCount > 0 && probing == 0 && copyingTotal == 0 && limitOk && fpsOk && resOk && !cancelling
 
-        // The running batch's progress and controls (or, when it is paused, the Resume controls).
-        val progressBlock: @Composable () -> Unit = {
-            if (paused) {
-                Text("Paused", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    notice ?: "Nothing is converting. Press Resume to carry on.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    P5Button(
-                        "Resume",
-                        onClick = { BatchRunner.resume(ctx, cardSettings) },
-                        enabled = probing == 0 && !cancelling,
-                        modifier = Modifier.weight(1f),
-                    )
-                    P5Button(
-                        "Cancel all",
-                        onClick = { BatchRunner.cancelAll() },
-                        kind = P5Kind.Secondary,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            } else {
-            if (progress < 0f) {
-                P5Progress(progress = { pass1Sweep })
-            } else {
-                P5Progress(progress = { progress })
-            }
-            Text(status, style = MaterialTheme.typography.bodySmall)
-            when (pauseRequest) {
-                PauseRequest.NOW -> Text("Pausing…", style = MaterialTheme.typography.bodySmall)
-                PauseRequest.AFTER -> Text(
-                    "Will pause when this video has finished.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                PauseRequest.NONE -> {}
-            }
-            // Pause, skip and cancel share one small row. The buttons keep their own width (short
-            // labels, small type); the row only scrolls on a very narrow screen, so none is cut off.
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                P5Button(
-                    "Pause now",
-                    onClick = { BatchRunner.pauseNow() },
-                    enabled = pauseRequest != PauseRequest.NOW,
-                    kind = P5Kind.Secondary,
-                    dense = true,
-                )
-                P5Button(
-                    if (pauseRequest == PauseRequest.AFTER) "Undo pause" else "Pause after",
-                    onClick = { BatchRunner.pauseAfter() },
-                    enabled = pauseRequest != PauseRequest.NOW,
-                    kind = P5Kind.Secondary,
-                    dense = true,
-                )
-                // A split video: Skip part drops just the part being encoded and carries on with the
-                // next one. With other videos waiting there is also Skip video (the whole video).
-                if (currentParts > 1) {
-                    P5Button(
-                        "Skip part",
-                        onClick = { BatchRunner.skipPart() },
-                        kind = P5Kind.Secondary,
-                        dense = true,
-                    )
-                }
-                if (runTotal > 1) {
-                    P5Button(
-                        "Skip video",
-                        onClick = { BatchRunner.skipCurrent() },
-                        kind = P5Kind.Secondary,
-                        dense = true,
-                    )
-                }
-                P5Button(
-                    if (runTotal > 1) "Cancel all" else "Cancel",
-                    onClick = { if (AppSettings.get(AppToggle.CONFIRM_DESTRUCTIVE)) showCancelConfirm = true else BatchRunner.cancelAll() },
-                    kind = P5Kind.Secondary,
-                    dense = true,
-                )
-            }
-            Text(
-                "You can lock the screen or leave the app while this runs. A notification shows progress.",
-                style = MaterialTheme.typography.bodySmall
-            )
-            }
-        }
-
         // One button: with nothing running it sends the Holding Pen to the queue and starts converting;
         // while a batch runs it sends the Holding Pen to that batch.
         if (otherBusy) {
@@ -2854,7 +2836,15 @@ fun App(
             SectionNote("Nothing is converting here.", headline = "Idle")
         } else if (busy) {
             QueueCards(section = CardSection.CONVERTING, busy = busy, liveSettings = cardSettings, audio = audio)
-            progressBlock()
+            ConvertingControls(
+                paused = paused,
+                pauseRequest = pauseRequest,
+                currentParts = currentParts,
+                runTotal = runTotal,
+                canResume = probing == 0 && !cancelling,
+                onResume = { BatchRunner.resume(ctx, cardSettings) },
+                onCancel = { if (AppSettings.get(AppToggle.CONFIRM_DESTRUCTIVE)) showCancelConfirm = true else BatchRunner.cancelAll() },
+            )
         } else {
             SectionNote("Nothing is converting.", headline = "Idle")
             if (runTotal > 1) summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
@@ -2866,6 +2856,13 @@ fun App(
                 listState = logListState,
                 expanded = logExpanded,
                 onToggleExpanded = { logExpanded = !logExpanded },
+                busy = busy,
+                paused = paused,
+                pauseRequest = pauseRequest,
+                notice = notice,
+                status = status,
+                progress = progress,
+                sweep = { pass1Sweep },
             )
         }
 

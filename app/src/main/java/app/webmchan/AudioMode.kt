@@ -981,6 +981,8 @@ object AudioConverter {
             if (artist.isNotBlank()) args.addAll(listOf("-metadata", "artist=$artist"))
             args.addAll(listOf("-t", fmt(duration), "-f", "webm", out.absolutePath))
 
+            // GIF cards take a while: say once per run that the phone can be put down (see NoteText.LOCK_SCREEN).
+            if (attempt == 1) onNote(NoteText.LOCK_SCREEN, false)
             val session = FFmpegKit.executeWithArguments(args.toTypedArray())
             if (ReturnCode.isCancel(session.returnCode)) return ConvertResult.Cancelled
             if (!ReturnCode.isSuccess(session.returnCode)) {
