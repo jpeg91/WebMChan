@@ -108,14 +108,17 @@ private const val FPS_DEFAULT_INDEX = 1
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // TEMPORARY crash finder (remove once the start-up crash is fixed): a crash is written to a file, and the
-        // next launch shows it as plain text instead of starting the app. Open the app twice to see it.
+        // Crash viewer: a crash is written to a file, and the next launch shows it as plain text instead of
+        // starting the app (open the app twice to see it), so it can be copied and reported without adb.
         val crashFile = java.io.File(filesDir, "last_crash.txt")
         if (crashFile.exists()) {
             val report = try { crashFile.readText() } catch (_: Exception) { "(couldn't read the crash file)" }
             crashFile.delete()
             val view = android.widget.TextView(this).apply {
-                text = "WebMChan crashed last time. Send this text to Claude (long-press to select and copy):\n\n$report"
+                text = "WebMChan crashed last time.\n\n" +
+                    "Open the app again to carry on. If it keeps crashing, uninstall and reinstall it. " +
+                    "If it still won't stop, please report it on GitHub and include the text below " +
+                    "(long-press it to select and copy).\n\n$report"
                 textSize = 11f
                 setTextIsSelectable(true)
                 setTextColor(android.graphics.Color.WHITE)
@@ -1642,6 +1645,57 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
     }
 }
 
+/**
+ * The speech bubble and the log under it. Kept out of [App] on purpose: that function is so long that adding
+ * to it any further made the Android verifier reject it (a VerifyError at start-up).
+ */
+@Composable
+private fun LogPanel(
+    lines: List<String>,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    LogBubble(BatchRunner.notes)
+    if (lines.isEmpty()) return
+    // 6 lines tall (64 when expanded): the line height below times the lines, plus the padding.
+    val logBoxHeight = with(LocalDensity.current) { (14.sp * (if (expanded) 64 else 6)).toDp() } + 20.dp
+    LazyColumn(
+        state = listState,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(logBoxHeight)
+            .clip(CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
+            .background(Color.Black)
+            .border(1.5.dp, P5.Line, CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
+            .padding(10.dp),
+    ) {
+        items(lines.size) { idx ->
+            Text(
+                lines[idx],
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+            )
+        }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        P5Button(
+            "Copy log",
+            onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) },
+            kind = P5Kind.Secondary,
+            modifier = Modifier.weight(1f),
+        )
+        P5Button(
+            if (expanded) "Shrink log" else "Expand log",
+            onClick = onToggleExpanded,
+            kind = P5Kind.Secondary,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
 @Composable
 fun App(
     onMenu: () -> Unit = {},
@@ -1764,9 +1818,7 @@ fun App(
     var pass1Sweep by remember { mutableFloatStateOf(0f) }
 
     // Where output is saved. Empty custom-dir state means the default Download/WebMChan/.
-
     val logListState = rememberLazyListState()
-    val clipboard = LocalClipboardManager.current
     // The log box is 6 lines tall, or 64 when expanded.
     var logExpanded by remember { mutableStateOf(false) }
 
@@ -2657,46 +2709,14 @@ fun App(
             if (runTotal > 1) summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
         }
 
-        if (!otherBusy) LogBubble(BatchRunner.notes)
-        val lines = if (otherBusy) emptyList() else logLines
-        if (lines.isNotEmpty()) {
-            // 6 lines tall (64 when expanded): the line height below times the lines, plus the padding.
-            val logBoxHeight = with(LocalDensity.current) { (14.sp * (if (logExpanded) 64 else 6)).toDp() } + 20.dp
-            LazyColumn(
-                state = logListState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(logBoxHeight)
-                    .clip(CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
-                    .background(Color.Black)
-                    .border(1.5.dp, P5.Line, CutCornerShape(topStart = 12.dp, bottomEnd = 12.dp))
-                    .padding(10.dp),
-            ) {
-                items(lines.size) { idx ->
-                    Text(
-                        lines[idx],
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        lineHeight = 14.sp,
-                    )
-                }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                P5Button(
-                    "Copy log",
-                    onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) },
-                    kind = P5Kind.Secondary,
-                    modifier = Modifier.weight(1f),
-                )
-                P5Button(
-                    if (logExpanded) "Shrink log" else "Expand log",
-                    onClick = { logExpanded = !logExpanded },
-                    kind = P5Kind.Secondary,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+        if (!otherBusy) {
+            LogPanel(
+                lines = logLines,
+                listState = logListState,
+                expanded = logExpanded,
+                onToggleExpanded = { logExpanded = !logExpanded },
+            )
         }
-
 
         // ---- Finished ----
         // Finished videos land here from the converting section, newest at the top.
