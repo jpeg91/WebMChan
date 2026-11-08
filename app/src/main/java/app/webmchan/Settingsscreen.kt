@@ -85,6 +85,11 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
         "confirmDestructive", true, "Confirm before destructive actions",
         "Asks first before Cancel / Cancel all, Delete file, and Remove card (or Remove from history).",
     ),
+    FASTEST_MODE(
+        "fastestMode", false, "Offer Fastest mode",
+        "Adds Fastest to the encoding choices on the main screen: the quickest conversion, with softer detail " +
+            "and smaller frames. Off keeps it hidden. Turning this off while Fastest is chosen switches back to Quality.",
+    ),
     SHARE_TO_RUNNING_BATCH(
         "shareToRunningBatch", false, "Add shared videos to a running batch",
         "If a conversion is already running (or paused) when you share a video to WebMChan, it goes " +
@@ -150,6 +155,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             "Videos and cards",
             AppToggle.AUTO_CLEAR_FINISHED, AppToggle.CONFIRM_DESTRUCTIVE, AppToggle.SHARE_TO_RUNNING_BATCH,
         )
+        group("Encoding", AppToggle.FASTEST_MODE)
     }
 }
 

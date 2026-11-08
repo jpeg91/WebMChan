@@ -111,13 +111,14 @@ private val FIELDS = listOf(
     ),
     FieldSpec(
         "bestMinFillPct", "Best quality: accepted from (% of limit)",
-        "Default 99. Allowed 80 to 100. A result at or above this (and not over the limit) is accepted " +
+        "Default 98. Allowed 80 to 100. A result at or above this (and not over the limit) is accepted " +
             "at once. Below it, Best quality encodes again with a higher bitrate.", false,
     ),
     FieldSpec(
         "bestAimPct", "Best quality: target (% of limit)",
-        "Default 99.5. Allowed from the accepted value above up to 100. What every Best quality attempt " +
-            "aims for, the first one included.", false,
+        "Default 98.5. Allowed from the accepted value above up to 100. What every Best quality attempt " +
+            "aims for, the first one included. It sits a little low on purpose: the encoder tends to come out " +
+            "slightly over what it is aimed at, and an attempt over the limit is wasted.", false,
     ),
     FieldSpec(
         "bestCpuUsed", "Best quality: encoder effort (cpu-used)",

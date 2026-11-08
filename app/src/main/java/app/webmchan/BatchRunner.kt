@@ -276,6 +276,19 @@ object BatchRunner {
     var currentParts by mutableIntStateOf(0)
         private set
     var logLines by mutableStateOf<List<String>>(emptyList())
+
+    /** The plain-words messages for the bubble above the log, for the video being converted (see [UserNote]). */
+    var notes by mutableStateOf<List<UserNote>>(emptyList())
+        private set
+    private val notesLock = Any()
+
+    private fun addNote(text: String, attention: Boolean) {
+        synchronized(notesLock) { notes = (notes + UserNote(text, attention)).takeLast(200) }
+    }
+
+    private fun clearNotes() {
+        synchronized(notesLock) { notes = emptyList() }
+    }
         private set
 
     /**
@@ -827,6 +840,7 @@ object BatchRunner {
         summary = null
         notice = null
         logBuffer.clear { logLines = it }
+        clearNotes()
         persist()
         persistHistory()
         writer.execute { ConversionLogStore.save(appCtx, emptyList()) }
@@ -1408,6 +1422,7 @@ object BatchRunner {
         persist()
 
         logBuffer.clear { logLines = it }
+        clearNotes()
         // Anything changed in About > Advanced goes at the top of the log, so a copied log says
         // which settings produced it.
         settings.tuning.changesFromDefault().takeIf { it.isNotEmpty() }?.let { changes ->
@@ -1687,6 +1702,7 @@ object BatchRunner {
                 fun pos() = "${if (item.isAudio) "Track" else "Video"} $current of $runTotal"
                 // From here to the end of this video, everything logged is kept for the Log page.
                 logBuffer.beginCapture()
+                clearNotes()
 
                 // Videos longer than the target's limit are split into consecutive parts rather
                 // than cut off, each converted and saved on its own. The video is divided evenly
@@ -1789,6 +1805,7 @@ object BatchRunner {
                         }
 
                         val onLogLine: (String) -> Unit = { line -> logBuffer.add(line) { logLines = it } }
+                        val onNoteLine: (String, Boolean) -> Unit = { text, attention -> addNote(text, attention) }
                         val onProgressUpdate: (Float, String) -> Unit = { p, s ->
                             progress = p
                             status = "${pos()}$partLabel: $s"
@@ -1806,7 +1823,7 @@ object BatchRunner {
                                 clipDurationSec = clipDur ?: src.durationSec, part = part, numParts = numParts,
                                 title = audioSpec.title.ifBlank { OutputName.baseFor(item.name, null) },
                                 artist = audioSpec.artist,
-                                onLog = onLogLine, onProgress = onProgressUpdate,
+                                onLog = onLogLine, onNote = onNoteLine, onProgress = onProgressUpdate,
                             )
                         } else {
                             Converter.convert(
@@ -1816,6 +1833,7 @@ object BatchRunner {
                                 thumbSec = item.thumbSec,
                                 sourceId = item.uri.toString(),
                                 onLog = onLogLine,
+                                onNote = onNoteLine,
                                 onProgress = onProgressUpdate,
                             )
                         }

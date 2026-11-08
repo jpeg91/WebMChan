@@ -1691,7 +1691,10 @@ fun App(
     }
     var fastEncode by remember { mutableStateOf(prefs.getBoolean("${pre}fast_encode", false)) }
     var useVp9 by remember { mutableStateOf(prefs.getBoolean("${pre}use_vp9", false)) }
+    // Fastest is only offered while Settings > Offer Fastest mode is on; with it off it is never in use.
+    val fastestOffered = AppSettings.get(AppToggle.FASTEST_MODE)
     var fastest by remember { mutableStateOf(prefs.getBoolean("${pre}fastest", false)) }
+    LaunchedEffect(fastestOffered) { if (!fastestOffered) fastest = false }
     // Best quality, one of the three exclusive encoding choices (with Quality/Speed and Fastest).
     var bestQuality by remember { mutableStateOf(prefs.getBoolean("${pre}best_quality", false)) }
     // Index into FPS_PRESETS; FPS_PRESETS.size means "Custom".
@@ -1974,7 +1977,7 @@ fun App(
         limitKb * 1024L, maxDuration, !effectiveRemoveAudio, minW, minH,
         fastEncode = fastEncode,
         useVp9 = useVp9,
-        fastest = fastest,
+        fastest = fastest && fastestOffered,
         bestQuality = bestQuality,
         targetFps = targetFps,
         tuning = TuningStore.current,
@@ -2421,7 +2424,7 @@ fun App(
                     enabled = true,
                     title = "Best quality",
                     subtitle = "The highest quality that fits, however long it takes. Much slower than Quality: it " +
-                        "encodes again and again until the file is within about 1% of the size limit. " +
+                        "encodes again and again until the file is within about 2% of the size limit. " +
                         "VP9 (under Codec) gives better quality still, but is slower again.",
                 ) {
                     bestQuality = true; fastEncode = false; fastest = false
@@ -2440,12 +2443,14 @@ fun App(
                     title = "Speed",
                     subtitle = "Faster than Quality mode, only slightly softer detail.",
                 ) { bestQuality = false; fastEncode = true; fastest = false }
-                TargetRow(
-                    selected = !bestQuality && fastest,
-                    enabled = true,
-                    title = "Fastest",
-                    subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
-                ) { bestQuality = false; fastest = true }
+                if (fastestOffered) {
+                    TargetRow(
+                        selected = !bestQuality && fastest,
+                        enabled = true,
+                        title = "Fastest",
+                        subtitle = "Fastest, softest detail. Lower effort transcoding and smaller frames. Only recommended for low detail videos. ",
+                    ) { bestQuality = false; fastEncode = false; fastest = true }
+                }
             }
 
             CollapsibleSection(
@@ -2628,6 +2633,7 @@ fun App(
             if (runTotal > 1) summary?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
         }
 
+        if (!otherBusy) LogBubble(BatchRunner.notes)
         val lines = if (otherBusy) emptyList() else logLines
         if (lines.isNotEmpty()) {
             // 6 lines tall (64 when expanded): the line height below times the lines, plus the padding.

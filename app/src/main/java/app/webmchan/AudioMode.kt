@@ -613,9 +613,12 @@ object AudioConverter {
         title: String,
         artist: String,
         onLog: (String) -> Unit,
+        /** Plain-words messages for the bubble above the log (see [UserNote]); true = wants a second look. */
+        onNote: (text: String, attention: Boolean) -> Unit = { _, _ -> },
         onProgress: (fraction: Float, status: String) -> Unit,
     ): ConvertResult = withContext(Dispatchers.IO) {
-        FFmpegKitConfig.enableLogCallback { log -> onLog(log.message) }
+        Converter.resetLogFilters()
+        FFmpegKitConfig.enableLogCallback(Converter.logSink(onLog))
         val out = File(ctx.cacheDir, "out.webm")
         val best = File(ctx.cacheDir, BEST_FILE)
         try {
@@ -630,7 +633,7 @@ object AudioConverter {
             if (images.any { it.animated }) {
                 return@withContext convertGif(
                     ctx, input, src, settings, spec, images, startSec, duration, part, numParts, title, artist,
-                    out, best, onLog, onProgress,
+                    out, best, onLog, onNote, onProgress,
                 )
             }
             val (w, h) = AudioFit.frameSize(images, settings.minWidth, settings.minHeight)
@@ -653,6 +656,11 @@ object AudioConverter {
             )
             // The encoder comes out about 10% under the bitrate it is asked for, so the first try asks for a little more.
             kbps = min(capKbps, (kbps * AudioFit.FIRST_TRY_BOOST).toInt())
+            onNote(
+                "First try: audio at $kbps kbps." +
+                    (if (capKbps < AudioFit.MAX_KBPS) " The original's sound is ${src.audioSourceKbps} kbps, so I won't go above $capKbps." else ""),
+                false,
+            )
             if (kbps < AudioFit.WARN_KBPS) onLog("   note: below ${AudioFit.WARN_KBPS} kbps the sound loses quality; more parts would give it more room")
 
             val segSec = duration / images.size
@@ -679,6 +687,7 @@ object AudioConverter {
                 AudioArt.drawTitleCard(f, text, h, room)
                 overlays.add(Overlay(f, "W-w-$margin:H-h-$margin", if (cardSec == AudioFit.CARD_WHOLE) "" else ":enable='lt(t,$cardSec)'"))
                 onLog("   title card: \"$text\" ${if (cardSec == AudioFit.CARD_WHOLE) "for the whole track" else "for the first $cardSec s"}")
+                onNote(if (cardSec == AudioFit.CARD_WHOLE) "Adding your title card for the whole track." else "Adding your title card for the first $cardSec s.", false)
             }
             val gop = max(2, fps * AudioFit.KEYFRAME_SEC)
             val cutFades = ArrayList<String>()
@@ -776,12 +785,14 @@ object AudioConverter {
                     val next = min(capKbps.toDouble(), kbps * (settings.limitBytes * 0.975 / size)).toInt()
                     if (next <= kbps + 2) break
                     onLog("   room to spare: trying ${next} kbps")
+                    onNote("Attempt $attempt: ${NoteText.mb(size)}, which is ${NoteText.pct(size * 100.0 / settings.limitBytes)} of the limit, so there's room to spare. Trying $next kbps audio.", false)
                     kbps = next
                 } else {
                     out.delete()
                     if (bestSize > 0L) break // we already hold a fit; a higher try that overshoots isn't needed
                     val next = (kbps * (settings.limitBytes * 0.965 / size)).toInt()
                     onLog("   over the limit: trying ${next} kbps")
+                    onNote("Attempt $attempt: ${NoteText.mb(size)}, which is ${NoteText.pct(size * 100.0 / settings.limitBytes)} of the limit and too big. Trying $next kbps audio.", true)
                     if (next < AudioFit.MIN_KBPS) {
                         return@withContext ConvertResult.Fail(
                             "This part doesn't fit the size limit at a listenable quality. Split the track into more parts."
@@ -793,6 +804,7 @@ object AudioConverter {
             if (bestSize <= 0L) {
                 return@withContext ConvertResult.Fail("Couldn't make the file fit the size limit. Split the track into more parts.")
             }
+            onNote("Done: ${NoteText.mb(bestSize)}, ${NoteText.pct(bestSize * 100.0 / settings.limitBytes)} of the limit.", false)
             ConvertResult.Ok(
                 file = best,
                 bytes = bestSize,
@@ -842,6 +854,7 @@ object AudioConverter {
         out: File,
         best: File,
         onLog: (String) -> Unit,
+        onNote: (String, Boolean) -> Unit,
         onProgress: (fraction: Float, status: String) -> Unit,
     ): ConvertResult {
         val t = settings.tuning
@@ -864,10 +877,12 @@ object AudioConverter {
             if (im.animated) onLog("   image ${n + 1}: GIF ${im.w}×${im.h}, %.1f fps, one loop %.2f s, repeated for its whole share".format(Locale.US, im.fps, im.loopSec))
         }
         onLog("   transparent GIF pixels are shown over ${if (white) "white" else "black"}")
+        onNote("Transparent parts of the GIF are shown over ${if (white) "white" else "black"}.", false)
         onLog(
             "   size limit ${settings.limitBytes} bytes; first try: GIF video at $videoKbps kbps (about " +
                 "${(GifFit.videoShare(videoKbps, duration, settings.limitBytes) * 100).toInt()}% of the limit), audio at $audioKbps kbps"
         )
+        onNote("First try: GIF video at $videoKbps kbps and audio at $audioKbps kbps.", false)
         if (audioKbps < AudioFit.WARN_KBPS) onLog("   note: below ${AudioFit.WARN_KBPS} kbps the sound loses quality; more parts would give it more room")
         if (GifFit.bitsPerPixel(videoKbps, w, h, fps) < GifFit.ROUGH_BPP) onLog("   note: the GIF gets very little video bitrate and will look rough; more parts would give it more room")
 
@@ -883,6 +898,7 @@ object AudioConverter {
             AudioArt.drawTitleCard(f, text, h, (w * 0.8f).toInt())
             overlays.add(Overlay(f, "W-w-$margin:H-h-$margin", if (cardSec == AudioFit.CARD_WHOLE) "" else ":enable='lt(t,$cardSec)'"))
             onLog("   title card: \"$text\" ${if (cardSec == AudioFit.CARD_WHOLE) "for the whole track" else "for the first $cardSec s"}")
+            onNote(if (cardSec == AudioFit.CARD_WHOLE) "Adding your title card for the whole track." else "Adding your title card for the first $cardSec s.", false)
         }
         val gop = max(2, fps * GifFit.KEYFRAME_SEC)
         val cutFades = ArrayList<String>()
@@ -989,6 +1005,7 @@ object AudioConverter {
                 if (size >= settings.limitBytes * 0.93 || attempt >= GifFit.MAX_TRIES) break
                 val next = GifFit.raise(videoKbps, audioKbps, size, settings.limitBytes, duration, videoCap, capKbps) ?: break
                 onLog("   room to spare: trying ${next.videoKbps} kbps video, ${next.audioKbps} kbps audio")
+                onNote("Attempt $attempt: ${NoteText.mb(size)}, which is ${NoteText.pct(size * 100.0 / settings.limitBytes)} of the limit, so there's room to spare. Trying ${next.videoKbps} kbps video and ${next.audioKbps} kbps audio.", false)
                 videoKbps = next.videoKbps
                 audioKbps = next.audioKbps
             } else {
@@ -998,6 +1015,13 @@ object AudioConverter {
                     ?: return ConvertResult.Fail("This part doesn't fit the size limit with a GIF in it at a listenable quality. Split the track into more parts.")
                 onLog("   over the limit: trying ${next.videoKbps} kbps video, ${next.audioKbps} kbps audio" +
                     (if (next.videoKbps == GifFit.MIN_VIDEO_KBPS && next.audioKbps < audioKbps) " (the video is at its lowest, so the sound is lowered too)" else ""))
+                val soundLowered = next.videoKbps == GifFit.MIN_VIDEO_KBPS && next.audioKbps < audioKbps
+                onNote(
+                    "Attempt $attempt: ${NoteText.mb(size)}, which is ${NoteText.pct(size * 100.0 / settings.limitBytes)} of the limit and too big. " +
+                        (if (soundLowered) "The video is already at its lowest, so the sound is lowered too: " else "Trying ") +
+                        "${next.videoKbps} kbps video and ${next.audioKbps} kbps audio.",
+                    true,
+                )
                 videoKbps = next.videoKbps
                 audioKbps = next.audioKbps
             }
@@ -1005,6 +1029,7 @@ object AudioConverter {
         if (bestSize <= 0L) {
             return ConvertResult.Fail("Couldn't make the file fit the size limit. Split the track into more parts.")
         }
+        onNote("Done: ${NoteText.mb(bestSize)}, ${NoteText.pct(bestSize * 100.0 / settings.limitBytes)} of the limit.", false)
         return ConvertResult.Ok(
             file = best,
             bytes = bestSize,

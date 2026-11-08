@@ -99,12 +99,12 @@ data class Tuning(
      * accepted. Below it the clip is encoded again with a higher bitrate, unless the encoder
      * has shown it can't use more bits.
      */
-    val bestMinFillPct: Double = 99.0,
+    val bestMinFillPct: Double = 98.0,
     /**
      * Best quality mode only: every attempt aims for this % of the limit (the first one too). It sits
      * between [bestMinFillPct] and 100, so a result that lands on target is accepted at once.
      */
-    val bestAimPct: Double = 99.5,
+    val bestAimPct: Double = 98.5,
     /**
      * Best quality mode only: libvpx's effort setting (-cpu-used). 0 is the slowest and best, and
      * each step up is quicker with a little less detail per bit. Quality mode uses 2.
