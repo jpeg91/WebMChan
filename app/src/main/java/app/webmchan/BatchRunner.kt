@@ -531,7 +531,8 @@ object BatchRunner {
                 if (item.status == ItemStatus.FAILED && item.probeFailed) continue
                 if (item.isAudio) continue // an Audio Mode card shows its own picture, not a video frame
                 if (item.hasThumb && Thumbnails.exists(ctx, id)) continue
-                setThumb(ctx, id, item.uri, null, info.durationSec, queue, item.thumbSec)
+                // A trimmed card's default picture is the first frame of what's kept.
+                setThumb(ctx, id, item.uri, null, info.durationSec, queue, item.thumbSec ?: item.edit?.clips?.firstOrNull()?.startSec)
             }
 
             // Finished files might have been deleted or moved outside the app (or the SD card
@@ -980,7 +981,8 @@ object BatchRunner {
         if (!item.inPen || item.thumbSec == sec) return
         val info = item.info ?: return
         scope.launch {
-            val ok = Thumbnails.create(appCtx, id, item.uri, null, info.durationSec, atSec = sec)
+            // Clearing the pick goes back to the default picture: the first frame of what the edit keeps.
+            val ok = Thumbnails.create(appCtx, id, item.uri, null, info.durationSec, atSec = sec ?: item.edit?.clips?.firstOrNull()?.startSec)
             val at = queue.indexOfFirst { it.id == id }
             if (at < 0) {
                 // The card was removed in the meantime.
@@ -996,8 +998,30 @@ object BatchRunner {
     fun setEdit(id: Long, edit: EditSpec?) {
         val at = queue.indexOfFirst { it.id == id }
         if (at < 0 || !queue[at].inPen) return
-        if (queue[at].edit == edit) return
-        queue[at] = queue[at].copy(edit = edit)
+        val item = queue[at]
+        if (item.edit == edit) return
+        // The card's own preview picture is the first frame of the video, which a trim changes. (A picked
+        // thumbnail frame keeps the picture as it is; so does an audio card, which shows its own picture.)
+        val ctx = appContext
+        val info = item.info
+        val newStart = edit?.clips?.firstOrNull()?.startSec ?: 0.0
+        val oldStart = item.edit?.clips?.firstOrNull()?.startSec ?: 0.0
+        if (ctx != null && info != null && !item.isAudio && item.thumbSec == null && newStart != oldStart) {
+            // As in setThumbPick, the picture is remade first and the edit recorded once it is there, so the
+            // card never shows the old picture under the new edit.
+            scope.launch {
+                val ok = Thumbnails.create(ctx, id, item.uri, null, info.durationSec, atSec = newStart)
+                val now = queue.indexOfFirst { it.id == id }
+                if (now < 0) {
+                    Thumbnails.delete(ctx, id)
+                    return@launch
+                }
+                queue[now] = queue[now].copy(edit = edit, hasThumb = ok || queue[now].hasThumb)
+                persist()
+            }
+            return
+        }
+        queue[at] = item.copy(edit = edit)
         persist()
     }
 

@@ -5,6 +5,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -142,7 +143,8 @@ private fun ThumbnailPickerContent(item: QueueItem, src: SourceInfo, onClose: ()
     // ---- The page ----
     val frameW = src.width
     val frameH = src.height
-    val videoHeight = (LocalConfiguration.current.screenHeightDp * 0.38f).dp
+    // The picture is as big as the width allows, up to half the screen's height (a tall video gets narrower).
+    val maxVideoHeight = (LocalConfiguration.current.screenHeightDp * 0.5f).dp
     val crop = item.edit?.crop
     Column(
         Modifier
@@ -183,7 +185,9 @@ private fun ThumbnailPickerContent(item: QueueItem, src: SourceInfo, onClose: ()
 
         // The picture, in a box exactly the shape of the video. If the video is cropped in the editor the
         // crop frame is shown over it (not draggable here), since the thumbnail is cropped the same.
-        Box(Modifier.fillMaxWidth().height(videoHeight + CROP_PAD * 2), contentAlignment = Alignment.Center) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val fitHeight = minOf((maxWidth - CROP_PAD * 2) * (frameH.toFloat() / frameW), maxVideoHeight)
+        Box(Modifier.fillMaxWidth().height(fitHeight + CROP_PAD * 2), contentAlignment = Alignment.Center) {
             Box(Modifier.padding(CROP_PAD).aspectRatio(frameW.toFloat() / frameH).background(Color.Black)) {
                 PreviewSurface(player, Modifier.fillMaxSize())
                 if (previewFailed) {
@@ -205,6 +209,7 @@ private fun ThumbnailPickerContent(item: QueueItem, src: SourceInfo, onClose: ()
                     modifier = Modifier.fillMaxSize(),
                 )
             }
+        }
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {

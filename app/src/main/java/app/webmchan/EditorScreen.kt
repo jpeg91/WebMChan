@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -218,7 +219,8 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
     val estimate = remember(spec, live) { live?.let { Converter.estimate(effective, it, item.extraParts) } }
 
     // ---- The page ----
-    val videoHeight = (LocalConfiguration.current.screenHeightDp * 0.38f).dp
+    // The picture is as big as the width allows, up to half the screen's height (a tall video gets narrower).
+    val maxVideoHeight = (LocalConfiguration.current.screenHeightDp * 0.5f).dp
     Column(
         Modifier
             .fillMaxSize()
@@ -255,7 +257,9 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
         // The picture, in a box exactly the shape of the video. The crop frame is drawn over a larger
         // area (the picture plus CROP_PAD all round), so a frame edge sitting right on the picture's
         // border can still be grabbed from outside it.
-        Box(Modifier.fillMaxWidth().height(videoHeight + CROP_PAD * 2), contentAlignment = Alignment.Center) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val fitHeight = minOf((maxWidth - CROP_PAD * 2) * (frameH.toFloat() / frameW), maxVideoHeight)
+        Box(Modifier.fillMaxWidth().height(fitHeight + CROP_PAD * 2), contentAlignment = Alignment.Center) {
             Box(Modifier.padding(CROP_PAD).aspectRatio(frameW.toFloat() / frameH).background(Color.Black)) {
                 PreviewSurface(player, Modifier.fillMaxSize())
                 if (previewFailed) {
@@ -285,6 +289,7 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
                     modifier = Modifier.fillMaxSize(),
                 )
             }
+        }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

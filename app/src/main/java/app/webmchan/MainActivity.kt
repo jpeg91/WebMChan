@@ -320,7 +320,9 @@ private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
     // The pick is a key too: choosing another frame rewrites the same file, and the card has to reload it.
     // An Audio Mode card that isn't converted yet shows its own picture (the first one), not a video frame.
     val picture = if (item.status != ItemStatus.DONE) item.audio?.images?.firstOrNull()?.path else null
-    val bitmap by produceState<ImageBitmap?>(null, item.id, item.hasThumb, item.thumbSec, picture) {
+    // The start of the first kept clip is a key too: a trim remakes the same file from a new first frame.
+    val trimStart = item.edit?.clips?.firstOrNull()?.startSec
+    val bitmap by produceState<ImageBitmap?>(null, item.id, item.hasThumb, item.thumbSec, picture, trimStart) {
         value = if (item.audio != null && item.status != ItemStatus.DONE) {
             picture?.let { path -> withContext(Dispatchers.IO) { BitmapFactory.decodeFile(path)?.asImageBitmap() } }
         } else if (item.hasThumb) {
