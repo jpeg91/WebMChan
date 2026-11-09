@@ -397,33 +397,35 @@ Each video is converted in two passes (analysis then encode), aiming for about 9
 
 Choose **Best quality** under Encoding and the app keeps going after the first file that fits. It converts again with a corrected bitrate, up to 7 times, until the file lands between 98% and 100% of the size limit, and keeps the fullest one. It also uses slower encoder settings for more detail per bit. This mode, when used on HD sources, can take a very long time and runs the phone hot, so expect android to throttle your CPU. A notice says so the first time you pick it.
 
-Recommend default is **Quality** mode which is finely tuned for image quality without being too demanding on the CPU, and in a fair length of encoding time. 
+Recommend default is **Quality** mode which is finely tuned for image quality without being too demanding on the CPU, and in a fair length of encoding time. This targets the highest possible quality at 99% of the file size limit. If it overshoots, it adjusts itself based on the amount of overshoot and tries again (up for 4 times, but in practice almost always hits the target first time, if not the second).
 
-**Speed** mode goes for a faster encode time, which produces an output appearing only slightly softer than Quality mode.
+**Speed** mode goes for a faster encode time, whilst producing an output that appears only slightly softer than Quality mode.
 
 A toggle exists in the settings menu for Fastest mode. This aims to get the job done as fast as possible. I don't recommend using this mode at all, but it's there. 
 
 ### Batch mode
 
-Select one video or several, and convert them all in one go. New videos can be added to a holding pen while you adjust the settings, then sent to the queue together. Each video keeps the settings it was sent with. During a batch, you can pause immediately or after the current video finishes, resume later, skip a video (or just one part of a split video) or cancel the batch. Anything that fails or is skipped goes back to the holding pen with a note saying why. The buttons under the converting card share the full width, however many there are.
+Select one video or several, and convert them all in one go. New videos can be added to a holding pen while you adjust the settings, then sent to the queue together. Each video keeps the settings it was sent with. During a batch, you can pause immediately or after the current video finishes, resume later, skip a video (or just one part of a split video) or cancel the batch. Anything that fails or is skipped goes back to the holding pen with a note saying why.
 
 ### Editing before you convert
 
-The **///** button on a holding pen card opens that card's pages. **Edit** cuts a video into up to 8 clips (reorder them with Earlier and Later) and crops the picture, without touching the original. Everything on the card, from the length to the split and the bitrate estimate, follows the edit. **Thumbnail** lets you scrub to the frame you want as the post's thumbnail, and it's added in front of the video as the first frame. You can also rename the output before converting.
+The **///** button on a holding pen card opens that card's pages. **Edit** can be used to trim a video, cut a video into up to 8 clips (reorder them with Earlier and Later buttons), and crop the picture (removing black bars is a great space saver, which is made up for with better output picture quality), all without touching the original. The changes are applied during conversion. Everything on the card, from the length to the split and the bitrate estimate, follows the edit. 
+
+**Thumbnail** lets you scrub to the frame you want 4chan to display as the post's thumbnail, and it's added in front of the video as the first frame. You can also rename the output before converting.
 
 ### Audio Mode
 
-**Menu > Audio Mode** (in purple) makes a `.webm` from a song and a picture, for the boards that allow sound. It has its own holding pen, queue, converting and finished lists, and only one mode runs at a time. The sound can come from any audio file, or from the soundtrack of a video, and sharing audio to WebMChan opens it.
+**Menu > Audio Mode** (in purple) makes a `.webm` from an audio source (audio or video files accepted!) and an image, for the boards that allow sound. It has its own holding pen, queue, converting and finished lists, and targets the highest audio bitrate possible within the file size constraints. Only one mode (video or audio) can run conversions at a time. The sound can come from any audio file, or from the soundtrack of a video, and sharing audio to WebMChan opens it in Audio Mode.
 
-A card is one audio file and one picture. The picture is the file's cover art by default, or pick your own, add several (they're spaced equally across the length), pick a frame from a video, or use an animated GIF. The sound quality is automatic: the highest that fits the limit, dropping as needed like video does. Long tracks are split the same way as video, with tiny fades at the cuts. There's a trim page with playback, an optional title card in the bottom-right corner, and the title and artist go into the file's metadata. Output files are named `artist - title` when the file has both.
+A card is one audio file and one image. The image is the file's cover art by default (if included in the metadata), or you can pick your own, add several (they're spaced equally across the length), pick a frame from a video, or use animated GIFs. The sound quality is automatic: the highest that fits the limit, dropping as needed like video does. Long tracks are split to the time limit, and can be edited the same way as video, with tiny inaudible fades at the cuts to cover for any audio popping. There's a trim page with playback, an optional title card in the bottom-right corner, and the title and artist go into the file's metadata. Output files are named `artist - title` when the file has both.
 
 ### Simple options
 
-Choose Best quality, Quality or Speed (Fastest is there too once you switch it on in Settings), VP8 (recommended) or VP9, whether to keep the audio and how good it should sound, and a frame-rate cap of 10, 15, 24, 30, 60 fps or a custom value. 10 fps suits slide shows and 15 fps suits low frame rate animation. The default is 30 fps; the cap never raises a source video’s frame rate.
+Choose Best quality, Quality or Speed (Fastest is there too once you switch it on in Settings), VP8 (recommended) or VP9, whether to keep the audio and how good it should sound, and a frame-rate cap of 10, 15, 24, 30, 60 fps or a custom value. The default is 30 fps; the cap never raises a source video’s frame rate.
 
 ### Your choice of save location
 
-Videos are saved to `Download/WebMChan/` by default, or to a folder you choose (**Menu > Settings**), such as one on an SD card. Share them straight from the app.
+Videos are saved to internal storage atg `Download/WebMChan/` by default, or to a folder you choose (**Menu > Settings**), such as one on an SD card. Share them straight from the app.
 
 ### Thumbnails and previews
 
