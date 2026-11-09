@@ -425,7 +425,7 @@ Choose Best quality, Quality or Speed (Fastest is there too once you switch it o
 
 ### Your choice of save location
 
-Videos are saved to internal storage atg `Download/WebMChan/` by default, or to a folder you choose (**Menu > Settings**), such as one on an SD card. Share them straight from the app.
+Videos are saved to internal storage at `Download/WebMChan/` by default, or to a folder you choose (**Menu > Settings**), such as one on an SD card. Share them straight from the app.
 
 ### Thumbnails and previews
 
@@ -445,23 +445,19 @@ You can leave the app, use other apps, lock the screen and completely forget abo
 
 ### Progress and log
 
-See what's happening while it converts: the video being converted has a light running round its border and a big red percentage, and the next one in the queue is tagged NEXT. Above the log, a speech bubble tells you in plain words what the app is doing (like "This will probably take about 6 min"). It shows the latest message, and tapping it opens the earlier ones for the current video. Messages that want a second look are amber. The time guess is vague on purpose: one at the start and a better one when the encode begins, and none for Fastest. Copy the log if you need to report a problem. **Menu > Logs** keeps the full log of every conversion from the last 12 hours, even after the app is closed. The interface uses a black, white and red P5-inspired theme (with Audio Mode in purple).
+See what's happening while it converts: above the log, a speech bubble tells you in plain words what the app is doing (like "This will probably take about 6 min"). It shows the latest message, and tapping it opens the earlier ones for the current video. Messages that want your attention are amber. Copy the log if you need to report a problem. **Menu > Logs** keeps the full log of every conversion from the last 12 hours. The interface uses a black, white and red Persona 5 inspired theme (with Audio Mode in purple).
 
 ### Advanced settings (for testing)
 
-**Menu > About > Advanced settings** lets you change the numbers that steer how a video is fitted into a size limit (targets, attempts, Best quality and so on) without rebuilding the app. The defaults are the recommended values, **Reset to defaults** puts them back, and anything you've changed is listed at the top of the log. A **thread cap** at the top limits how many CPU threads the decoder and encoder may use. Try it if Android still stops the app under a heavy load even with unrestricted battery use allowed.
+**Menu > About > Advanced settings** lets you change the numbers that steer how a video is fitted into a size limit (targets, attempts, Best quality and so on). The defaults are the recommended values, **Reset to defaults** puts them back, and anything you've changed is listed at the top of the log. A **thread cap** at the top limits how many CPU threads the decoder and encoder may use. Try that if Android still stops the app under a heavy load even with unrestricted battery use allowed.
 
 ### Settings
 
-**Menu > Settings** is a page of switches: animations off, notification options (progress, status bar icon, lock screen, finished, every failure), keep the screen on while converting, clear Finished cards on a new run, confirm before destructive actions, add shared videos straight to a running batch, and Offer Fastest mode (off by default). The save location and the Audio Mode placeholder picture are there too.
+**Menu > Settings** is a page of switches: animations off, notification options (progress, status bar icon, lock screen, finished, every failure), keep the screen on while converting, clear Finished cards on a new run, confirm before destructive actions, add shared videos straight to a running batch, and Offer Fastest mode. The save location and the Audio Mode placeholder picture are there too.
 
 ### Cache
 
 The **Cache** page (linked from the top of Advanced settings) shows what the app stores, with sizes. **Safe wipe** clears the working files and anything no card uses. **Full cache wipe** also clears every kept analysis and thumbnail, but keeps your cards, lists and any shared copies in use. **Reset app** removes everything. Each one asks first and says how much it frees.
-
-### If something goes wrong
-
-If the app crashes, the next launch shows the crash report as plain text. **Menu > About** has a **This device** readout (Android version, architectures and whether the video engine starts) with a copy button, handy for bug reports.
 
 <details>
   <summary><b>Screenshot **(OUTDATED)**</b></summary>
