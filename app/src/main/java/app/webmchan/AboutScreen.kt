@@ -1,4 +1,3 @@
-// #aboutscreen
 package app.webmchan
 
 import android.content.Context
@@ -37,7 +36,7 @@ private const val REPO_URL = "https://github.com/jpeg91/WebMChan"
 
 /** A simple About page: what the app is, how it works, what it's built with, and where to find the source. */
 @Composable
-fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
+fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}, onReadme: () -> Unit = {}) {
     val ctx = LocalContext.current
     val version = remember {
         try {
@@ -75,27 +74,29 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         )
 
         Text(
-            "WebMChan, a powerful but simple to use 4chan WebM converter for Android with smart targeting and plenty of features.\n\n" +
+                "WebMChan, a powerful but simple to use 4chan WebM converter for Android with smart targeting and plenty of features.\n\n" +
                 "Pick a video (or a whole batch), choose a board, get .webm files that fit. You can also share videos to WebMChan from other apps.\n\n" +
                 "Select from a list of boards and their requirement presets, or set your own: a custom size limit and resolution, with no length limit. The picture is always scaled, never stretched.\n\n" +
                 "Converted videos target the highest possible quality within the board's constraints. Trim, cut, rearrange and crop them first if you like, and pick the thumbnail frame.\n\n" +
-                "Audio Mode (in the Menu) does the same for sound: an audio file plus a picture, several pictures or an animated GIF becomes a webm for the boards that allow audio.\n\n" +
+                "Audio Mode (in the Menu) does the same for sound: an audio file plus a picture, several pictures or animated GIFs becomes a webm for boards that allow audio.\n\n" +
                 "Everything runs locally. The app has no network permission, nothing is uploaded.",
             style = MaterialTheme.typography.bodyMedium
         )
 
         Heading("How it works")
         Text(
-            "1. Choose one or more videos, or share them in from another app. They wait in the Holding Pen while you get the settings ready.\n" +
+            "1. Choose one or more videos, or share them in from another app. They wait in the Holding Pen while you select settings.\n" +
                 "2. Pick the board you're posting to. Its rules (file size, length, minimum resolution and audio) are applied for you. A card's /// button opens the editor and the thumbnail picker.\n" +
-                "3. Send them to the queue and tap Convert. Long videos will be split. The app works out the best quality that fits under the size limit and encodes each video in two passes. Best quality mode keeps trying until it lands within a percent or two of the limit.\n" +
+                "3. Send them to the queue by tapping Convert. Long videos will be split. The app works out the best quality that fits under the size limit and encodes each video in two passes.\n" +
                 "4. If a result still comes out over the limit, it's retried automatically a little smaller.\n" +
                 "5. Finished videos are saved to your chosen folder (Download/WebMChan by default) and can be shared straight from the app. History keeps a card for every conversion.",
             style = MaterialTheme.typography.bodyMedium
         )
-        Text(
-            "The README on GitHub explains each step in more detail.",
-            style = MaterialTheme.typography.bodySmall
+        P5Button(
+            "Read the full README →",
+            onClick = onReadme,
+            kind = P5Kind.Secondary,
+            modifier = Modifier.fillMaxWidth(),
         )
 
         Heading("Built with")
