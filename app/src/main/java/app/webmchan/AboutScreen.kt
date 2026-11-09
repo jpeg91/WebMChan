@@ -1,3 +1,4 @@
+// #aboutscreen
 package app.webmchan
 
 import android.content.Context
@@ -74,21 +75,22 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
         )
 
         Text(
-            "WebMChan, the no fuss 4chan WebM converter for Android.\n\n" +
-                "Pick a video (or a whole batch), choose a board, get .webm files that fit.\n\n" +
+            "WebMChan, a powerful but simple to use 4chan WebM converter for Android with smart targeting and plenty of features.\n\n" +
+                "Pick a video (or a whole batch), choose a board, get .webm files that fit. You can also share videos to WebMChan from other apps.\n\n" +
                 "Select from a list of boards and their requirement presets, or set your own: a custom size limit and resolution, with no length limit. The picture is always scaled, never stretched.\n\n" +
-                "Converted videos target the highest possible quality within the board's constraints.\n\n" +
+                "Converted videos target the highest possible quality within the board's constraints. Trim, cut, rearrange and crop them first if you like, and pick the thumbnail frame.\n\n" +
+                "Audio Mode (in the Menu) does the same for sound: an audio file plus a picture, several pictures or an animated GIF becomes a webm for the boards that allow audio.\n\n" +
                 "Everything runs locally. The app has no network permission, nothing is uploaded.",
             style = MaterialTheme.typography.bodyMedium
         )
 
         Heading("How it works")
         Text(
-            "1. Choose one or more videos.\n" +
-                "2. Pick the board you're posting to. Its rules (file size, length, minimum resolution and audio) are applied for you.\n" +
-                "3. Tap Convert. Long videos will be split. The app works out the best quality that fits under the size limit and encodes each video in two passes, aiming for about 99% of the limit.\n" +
+            "1. Choose one or more videos, or share them in from another app. They wait in the Holding Pen while you get the settings ready.\n" +
+                "2. Pick the board you're posting to. Its rules (file size, length, minimum resolution and audio) are applied for you. A card's /// button opens the editor and the thumbnail picker.\n" +
+                "3. Send them to the queue and tap Convert. Long videos will be split. The app works out the best quality that fits under the size limit and encodes each video in two passes. Best quality mode keeps trying until it lands within a percent or two of the limit.\n" +
                 "4. If a result still comes out over the limit, it's retried automatically a little smaller.\n" +
-                "5. Finished videos are saved to your chosen folder (Download/WebMChan by default) and can be shared straight from the app.",
+                "5. Finished videos are saved to your chosen folder (Download/WebMChan by default) and can be shared straight from the app. History keeps a card for every conversion.",
             style = MaterialTheme.typography.bodyMedium
         )
         Text(
@@ -122,6 +124,16 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
             "Build the app's interface.",
             "https://developer.android.com/jetpack/compose"
         )
+        LinkItem(
+            "AndroidX Media3 (ExoPlayer)",
+            "Plays the previews in the editor, the thumbnail picker and the audio trim page.",
+            "https://developer.android.com/media/media3"
+        )
+        LinkItem(
+            "Kotlin and coroutines",
+            "The language the app is written in, and what keeps conversion running off the screen.",
+            "https://kotlinlang.org"
+        )
         Text(
             "Thank you to everyone behind these projects.",
             style = MaterialTheme.typography.bodySmall
@@ -139,20 +151,23 @@ fun AboutScreen(onBack: () -> Unit, onAdvanced: () -> Unit = {}) {
             "$REPO_URL/releases/latest"
         )
 
-        Text(
-            "Created by jpeg91\nWith great thanks to:\nEveryone who's tested or reported issues\nMy darling wife, Lauren\n\nMade in England",
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        // England flag (St George's Cross), written as escapes so it survives any file encoding:
-        // black flag + tag letters "gbeng" + cancel tag.
-        Text(
-            "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
-            fontSize = 32.sp,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        // The thanks and dedications, in a card like the rest of the page.
+        P5Card(Modifier.fillMaxWidth()) {
+            Text(
+                "Created by jpeg91\nWith great thanks to:\nEveryone who's tested or reported issues\nMy darling wife, Lauren\n\nMade in England",
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            // England flag (St George's Cross), written as escapes so it survives any file encoding:
+            // black flag + tag letters "gbeng" + cancel tag.
+            Text(
+                "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+                fontSize = 32.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
 
         DeviceReadout(ctx)
         Spacer(Modifier.height(16.dp))
