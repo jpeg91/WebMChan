@@ -102,15 +102,6 @@ See what's happening while it converts: above the log, a speech bubble tells you
 
 The **Cache** page (linked from the top of Advanced settings) shows what the app stores, with sizes. **Safe wipe** clears the working files and anything no card uses. **Full cache wipe** also clears every kept analysis and thumbnail, but keeps your cards, lists and any shared copies in use. **Reset app** removes everything. Each one asks first and says how much it frees.
 
-<details>
-  <summary><b>Screenshot **(OUTDATED)**</b></summary>
-
-<img alt="29962" src="https://github.com/user-attachments/assets/3aa4d794-3456-41cc-a0b1-151bdba11cbb" />
-
-<img alt="29963" src="https://github.com/user-attachments/assets/e5d84473-9d55-4733-adaf-0ca250913601" />
-
-
-</details>
 
 <details>
   <summary><b>How it works</b></summary>
