@@ -155,6 +155,7 @@ class MainActivity : ComponentActivity() {
                 var showAbout by remember { mutableStateOf(false) }
                 var showAdvanced by remember { mutableStateOf(false) }
                 var showCache by remember { mutableStateOf(false) }
+                var showReadme by remember { mutableStateOf(false) }
                 // Keeps the screen on while a run is going (and the app is open), if the Settings page says so.
                 val keepOn = AppSettings.get(AppToggle.KEEP_SCREEN_ON) && BatchRunner.busy && !BatchRunner.paused
                 androidx.compose.runtime.DisposableEffect(keepOn) {
@@ -206,8 +207,15 @@ class MainActivity : ComponentActivity() {
                     }
                     if (showAbout) {
                         P5Background {
-                            AboutScreen(onBack = { showAbout = false }, onAdvanced = { showAdvanced = true })
+                            AboutScreen(
+                                onBack = { showAbout = false },
+                                onAdvanced = { showAdvanced = true },
+                                onReadme = { showReadme = true },
+                            )
                         }
+                    }
+                    if (showReadme) {
+                        P5Background { ReadmeScreen(onBack = { showReadme = false }) }
                     }
                     if (showAdvanced) {
                         P5Background { AdvancedScreen(onBack = { showAdvanced = false }, onCache = { showCache = true }) }
