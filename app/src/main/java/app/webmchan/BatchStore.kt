@@ -1,3 +1,4 @@
+// #batchstore
 package app.webmchan
 
 import android.content.Context
@@ -65,7 +66,41 @@ object BatchStore {
         return out
     }
 
-    private fun toJson(i: QueueItem): JSONObject = JSONObject().apply {
+    /** null if the card isn't an Audio Mode card. */
+    private fun readAudio(o: JSONObject?): AudioSpec? {
+        if (o == null) return null
+        val images = ArrayList<AudioImage>()
+        val arr = o.optJSONArray("images")
+        if (arr != null) {
+            for (n in 0 until arr.length()) {
+                val a = arr.optJSONArray(n) ?: continue
+                images.add(AudioImage(a.optString(0, ""), a.optInt(1, 0), a.optInt(2, 0), a.optInt(3, 0) == 1, a.optDouble(4, 0.0), a.optDouble(5, 0.0)))
+            }
+        }
+        return AudioSpec(images, o.optBoolean("cover", false), o.optString("title", ""), o.optString("artist", ""), o.optString("tc", ""))
+    }
+
+    /** null if there is no edit, or it can't be read (the card then simply has none). */
+    private fun readEdit(o: JSONObject?): EditSpec? {
+        if (o == null) return null
+        return try {
+            val arr = o.getJSONArray("clips")
+            val clips = ArrayList<EditClip>()
+            for (n in 0 until arr.length()) {
+                val c = arr.getJSONArray(n)
+                val a = c.getDouble(0)
+                val b = c.getDouble(1)
+                if (b > a) clips.add(EditClip(a, b))
+            }
+            if (clips.isEmpty()) return null
+            val crop = o.optJSONArray("crop")?.let { CropRect(it.getInt(0), it.getInt(1), it.getInt(2), it.getInt(3)) }
+            EditSpec(clips, crop)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    internal fun toJson(i: QueueItem): JSONObject = JSONObject().apply {
         put("id", i.id)
         put("uri", i.uri.toString())
         put("name", i.name)
@@ -76,6 +111,29 @@ object BatchStore {
         put("extraParts", i.extraParts)
         put("hasThumb", i.hasThumb)
         put("inPen", i.inPen)
+        i.customName?.let { put("customName", it) }
+        i.thumbSec?.let { put("thumbSec", it) }
+        i.edit?.let { e ->
+            put(
+                "edit",
+                JSONObject().apply {
+                    put("clips", JSONArray().apply { e.clips.forEach { c -> put(JSONArray().put(c.startSec).put(c.endSec)) } })
+                    e.crop?.let { c -> put("crop", JSONArray().put(c.x).put(c.y).put(c.w).put(c.h)) }
+                }
+            )
+        }
+        i.audio?.let { a ->
+            put(
+                "audio",
+                JSONObject().apply {
+                    put("images", JSONArray().apply { a.images.forEach { im -> put(JSONArray().put(im.path).put(im.w).put(im.h).put(if (im.animated) 1 else 0).put(im.fps).put(im.loopSec)) } })
+                    put("cover", a.coverFromTags)
+                    put("title", a.title)
+                    put("artist", a.artist)
+                    put("tc", a.cardText)
+                }
+            )
+        }
         i.detail?.let { put("detail", it) }
         i.savedUri?.let { put("savedUri", it.toString()) }
         // The Advanced tuning is global, so it isn't saved here.
@@ -95,6 +153,8 @@ object BatchStore {
                     put("fps", it.targetFps)
                     put("custom", it.isCustom)
                     put("ak", it.audioKbps)
+                    put("am", it.audioMode)
+                    put("tcs", it.titleCardSec)
                     put("cw", it.customWidth)
                     put("ch", it.customHeight)
                     put("label", it.targetLabel)
@@ -117,12 +177,17 @@ object BatchStore {
                     put("vc", it.videoCodec)
                     put("vk", it.videoKbps)
                     put("ac", it.audioCodec)
+                    put("pv", it.probeVersion)
+                    put("ct", it.colorTransfer)
+                    put("cm", it.colorMatrix)
+                    put("cr", it.colorRange)
+                    put("ak", it.audioSourceKbps)
                 }
             )
         }
     }
 
-    private fun fromJson(o: JSONObject): QueueItem? = try {
+    internal fun fromJson(o: JSONObject): QueueItem? = try {
         QueueItem(
             id = o.getLong("id"),
             uri = Uri.parse(o.getString("uri")),
@@ -138,6 +203,12 @@ object BatchStore {
                     videoCodec = it.optString("vc", ""),
                     videoKbps = it.optInt("vk", 0),
                     audioCodec = it.optString("ac", ""),
+                    // Absent in files saved before the probe read rotation (version 1).
+                    probeVersion = it.optInt("pv", 1),
+                    colorTransfer = it.optString("ct", ""),
+                    colorMatrix = it.optString("cm", ""),
+                    colorRange = it.optString("cr", ""),
+                    audioSourceKbps = it.optInt("ak", 0),
                 )
             },
             probeFailed = o.optBoolean("probeFailed", false),
@@ -156,6 +227,14 @@ object BatchStore {
             hasThumb = o.optBoolean("hasThumb", false),
             // Absent in files saved by older versions: not in the Holding Pen.
             inPen = o.optBoolean("inPen", false),
+            // Absent when the card has no typed name (and in files saved by older versions).
+            customName = if (o.has("customName")) o.getString("customName") else null,
+            // Absent when no thumbnail frame was picked (and in files saved by older versions).
+            thumbSec = if (o.has("thumbSec")) o.optDouble("thumbSec", -1.0).takeIf { it >= 0.0 } else null,
+            // Absent when the card has no edit (and in files saved by older versions).
+            edit = readEdit(o.optJSONObject("edit")),
+            // Absent on a video card (and in files saved before Audio Mode).
+            audio = readAudio(o.optJSONObject("audio")),
             // Absent when no run was active (and in files saved by older versions).
             settings = o.optJSONObject("settings")?.let {
                 runCatching {
@@ -174,6 +253,9 @@ object BatchStore {
                         isCustom = it.optBoolean("custom", false),
                         // Absent in files saved by older versions: the old fixed 64 kbps.
                         audioKbps = it.optInt("ak", Converter.DEFAULT_AUDIO_KBPS),
+                        // Absent in files saved before Audio Mode: a video card.
+                        audioMode = it.optBoolean("am", false),
+                        titleCardSec = it.optInt("tcs", 0),
                         // Absent in files saved by older versions: no custom resolution.
                         customWidth = it.optInt("cw", 0),
                         customHeight = it.optInt("ch", 0),

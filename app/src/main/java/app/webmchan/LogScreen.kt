@@ -38,9 +38,17 @@ import androidx.compose.ui.unit.sp
 import java.text.DateFormat
 import java.util.Date
 
-/** The Menu page: where the Logs and About pages are reached from. */
+/** The Menu page: where the History, Settings, Logs and About pages are reached from. */
 @Composable
-fun MenuScreen(onBack: () -> Unit, onLog: () -> Unit, onAbout: () -> Unit) {
+fun MenuScreen(
+    onBack: () -> Unit,
+    onHistory: () -> Unit,
+    onSettings: () -> Unit,
+    onLog: () -> Unit,
+    onAbout: () -> Unit,
+    /** Switches to the other mode: Audio Mode from the video screen, Video Mode from Audio Mode. */
+    onSwitchMode: () -> Unit = {},
+) {
     // The system back gesture/button closes this page instead of leaving the app.
     BackHandler(onBack = onBack)
 
@@ -53,6 +61,14 @@ fun MenuScreen(onBack: () -> Unit, onLog: () -> Unit, onAbout: () -> Unit) {
     ) {
         P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
         P5Title("Menu")
+        // The other mode, always first. Audio Mode's button wears the Prince purple whichever screen this is.
+        if (AccentMode.audio) {
+            P5Button("Video Mode", onClick = onSwitchMode, modifier = Modifier.fillMaxWidth(), accent = P5.redFor(false) to P5.redDeepFor(false))
+        } else {
+            P5Button("Audio Mode", onClick = onSwitchMode, modifier = Modifier.fillMaxWidth(), accent = P5.redFor(true) to P5.redDeepFor(true))
+        }
+        P5Button("History", onClick = onHistory, modifier = Modifier.fillMaxWidth())
+        P5Button("Settings", onClick = onSettings, modifier = Modifier.fillMaxWidth())
         P5Button("Logs", onClick = onLog, modifier = Modifier.fillMaxWidth())
         P5Button("About", onClick = onAbout, kind = P5Kind.Secondary, modifier = Modifier.fillMaxWidth())
     }

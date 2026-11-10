@@ -18,17 +18,23 @@ import kotlin.math.roundToInt
 
 /**
  * Small JPEG preview frames for the queue and Finished cards, stored in the app's private files
- * folder as thumbs/<item id>.jpg. A card knows it has one from [QueueItem.hasThumb]; the file
+ * folder as thumbs2/<item id>.jpg. A card knows it has one from [QueueItem.hasThumb]; the file
  * name comes from the item's id, so nothing else needs saving.
  *
  * Android's own frame grabber is tried first (fast, no copying). If it can't read the video,
  * ffmpeg is used instead, which reads anything the rest of the app can.
  */
 object Thumbnails {
-    private const val DIR = "thumbs"
+    // "thumbs2": thumbnails now come from the video's first frame. The older "thumbs" folder held
+    // pictures taken from a few seconds in; using a new folder makes every card remake its own.
+    private const val DIR = "thumbs2"
+    private const val LEGACY_DIR = "thumbs"
 
     /** The longest edge of a stored thumbnail, in pixels. */
     private const val MAX_EDGE = 360
+
+    /** The folder the thumbnails are kept in (for the Cache page). */
+    fun dir(ctx: Context): File = File(ctx.filesDir, DIR)
 
     fun file(ctx: Context, id: Long): File = File(File(ctx.filesDir, DIR), "$id.jpg")
 
@@ -40,6 +46,7 @@ object Thumbnails {
 
     /** Deletes thumbnails whose card no longer exists (left over from an app kill, say). */
     fun pruneExcept(ctx: Context, keep: Set<Long>) {
+        File(ctx.filesDir, LEGACY_DIR).takeIf { it.exists() }?.deleteRecursively()
         File(ctx.filesDir, DIR).listFiles()?.forEach {
             val id = it.nameWithoutExtension.toLongOrNull()
             if (id == null || id !in keep) it.delete()
@@ -49,15 +56,23 @@ object Thumbnails {
     /**
      * Makes the thumbnail for [id] from either [file] (a plain file, e.g. a conversion that has
      * just finished) or [uri] (a picked video, or a saved output). Returns whether it worked.
-     * The frame comes from about 10% of the way in (at most 5 s), as the very first frame is
-     * often black.
+     * The frame is the video's first frame (time 0), unless [atSec] says which moment to use (the
+     * frame the user picked in ThumbnailPickerScreen, which becomes the first frame of the converted
+     * file), taken exactly as it is.
      */
-    suspend fun create(ctx: Context, id: Long, uri: Uri?, file: File?, durationSec: Double): Boolean =
+    suspend fun create(
+        ctx: Context,
+        id: Long,
+        uri: Uri?,
+        file: File?,
+        durationSec: Double,
+        atSec: Double? = null,
+    ): Boolean =
         withContext(Dispatchers.IO) {
             if (uri == null && file == null) return@withContext false
             val dest = file(ctx, id)
             dest.parentFile?.mkdirs()
-            val timeSec = (durationSec * 0.1).coerceIn(0.0, 5.0)
+            val timeSec = atSec?.coerceAtLeast(0.0) ?: 0.0
             try {
                 fromRetriever(ctx, uri, file, timeSec, dest) || fromFfmpeg(ctx, uri, file, timeSec, dest)
             } catch (_: Throwable) {
@@ -73,7 +88,8 @@ object Thumbnails {
             if (file != null) r.setDataSource(file.absolutePath) else r.setDataSource(ctx, uri!!)
             val us = (timeSec * 1_000_000).toLong()
             // getFrameAtTime applies the video's rotation, so portrait clips come out upright.
-            val frame = r.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            // OPTION_CLOSEST decodes to that very frame rather than the nearest keyframe.
+            val frame = r.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST)
                 ?: r.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 ?: return false
             val scale = min(1.0, MAX_EDGE.toDouble() / max(frame.width, frame.height))

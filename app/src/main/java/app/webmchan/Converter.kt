@@ -11,6 +11,7 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
+import com.arthenica.ffmpegkit.StreamInformation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -49,7 +50,27 @@ data class SourceInfo(
     val videoKbps: Int = 0,
     /** The ffprobe codec name of the first audio stream, e.g. "aac"; empty when none or not known. */
     val audioCodec: String = "",
-)
+    /**
+     * Which version of the probe read this (see [PROBE_VERSION]). A saved card with an older one
+     * is probed again when the app starts.
+     */
+    val probeVersion: Int = PROBE_VERSION,
+    /** The video stream's ffprobe colour properties ("smpte2084", "bt709", "pc" ...); empty when not given. */
+    val colorTransfer: String = "",
+    val colorMatrix: String = "",
+    val colorRange: String = "",
+    /** Audio Mode: the audio stream's own bitrate in kbps (0 when not known), which the output's is capped relative to. */
+    val audioSourceKbps: Int = 0,
+) {
+    companion object {
+        /**
+         * 2: [width] and [height] are the picture as played, so a phone video stored sideways and
+         * flagged "rotate 90" reads as portrait. Version 1 gave the stored size, which is the wrong
+         * way round for those and made their size and aspect ratio come out wrong.
+         */
+        const val PROBE_VERSION = 3
+    }
+}
 
 data class Settings(
     val limitBytes: Long,
@@ -97,6 +118,14 @@ data class Settings(
      * lower). At [Converter.MONO_AUDIO_MAX_KBPS] and below the audio is mono.
      */
     val audioKbps: Int = Converter.DEFAULT_AUDIO_KBPS,
+    /**
+     * True for an Audio Mode card (an audio file with a picture, see [AudioConverter]). Then [targetFps]
+     * is the picture's frame rate, the audio bitrate is worked out by the app ([audioKbps] is unused)
+     * and [keepAudio] is always true.
+     */
+    val audioMode: Boolean = false,
+    /** Audio Mode: the title card in the bottom-right corner. 0 = off, [AudioFit.CARD_WHOLE] = the whole track, else the seconds it stays on screen. */
+    val titleCardSec: Int = 0,
 ) {
     /** True when the Custom target has a resolution of its own (so the automatic pick is bypassed). */
     val hasCustomSize: Boolean get() = customWidth > 0 || customHeight > 0
@@ -205,6 +234,8 @@ sealed class ConvertResult {
         val audioIncluded: Boolean,
         /** How many encodes it took to fit (1 = first try). */
         val attempts: Int = 1,
+        /** Audio Mode only: the audio bitrate the file ended up with (kbps); 0 otherwise. */
+        val audioKbps: Int = 0,
     ) : ConvertResult()
 
     data class Fail(val message: String) : ConvertResult()
@@ -222,14 +253,13 @@ sealed class StageResult {
 object Converter {
 
     /** Added to the end of every converted file's name, just before ".webm". */
-    const val OUTPUT_NAME_TAG = "WebMChan_for_Android"
+    const val OUTPUT_NAME_TAG = OutputName.TAG
 
     /**
      * "Part1" ... "Part9", or zero-padded to the width of the part count ("Part01" ... "Part12")
      * so the files sort in order.
      */
-    fun partName(part: Int, numParts: Int): String =
-        "Part" + part.toString().padStart(numParts.toString().length, '0')
+    fun partName(part: Int, numParts: Int): String = OutputName.partName(part, numParts)
 
     /** A [Settings.maxDurationSec] of this means no length limit. The Custom option uses it; board targets carry their own limit. */
     const val NO_LENGTH_LIMIT = 0
@@ -548,11 +578,20 @@ object Converter {
         var vCodec = ""
         var vKbps = 0
         var aCodec = ""
+        var cTransfer = ""
+        var cMatrix = ""
+        var cRange = ""
         for (s in info.streams) {
             when (s.type) {
                 "video" -> if (w == 0) {
+                    cTransfer = s.allProperties?.optString("color_transfer", "") ?: ""
+                    cMatrix = s.allProperties?.optString("color_space", "") ?: ""
+                    cRange = s.allProperties?.optString("color_range", "") ?: ""
                     w = s.width?.toInt() ?: 0
                     h = s.height?.toInt() ?: 0
+                    // A phone video is often stored sideways with a "rotate" flag; ffmpeg (and every
+                    // player) turns it upright, so the size that matters is the one after that turn.
+                    if (rotationOf(s) % 180 == 90) { val t = w; w = h; h = t }
                     val parsed = parseRate(s.averageFrameRate)
                     fpsReadable = parsed != null
                     fps = parsed ?: 30.0
@@ -574,7 +613,60 @@ object Converter {
             videoCodec = vCodec,
             videoKbps = vKbps,
             audioCodec = aCodec,
+            colorTransfer = cTransfer,
+            colorMatrix = cMatrix,
+            colorRange = cRange,
         )
+    }
+
+    /**
+     * Whether this FFmpeg build can tone-map HDR to ordinary video (needs zscale, from libzimg). Found out once,
+     * by running a tiny test, because a filter the build lacks would fail the whole conversion.
+     */
+    @Volatile
+    private var toneMapKnown: Boolean? = null
+
+    private fun canToneMap(): Boolean {
+        toneMapKnown?.let { return it }
+        val ok = try {
+            val s = FFmpegKit.executeWithArguments(
+                arrayOf("-hide_banner", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-vf", HDR_TO_SDR, "-f", "null", "-")
+            )
+            ReturnCode.isSuccess(s.returnCode)
+        } catch (_: Throwable) {
+            false
+        }
+        toneMapKnown = ok
+        return ok
+    }
+
+    /** HDR (PQ or HLG, BT.2020) turned into ordinary BT.709 video, so it doesn't come out dark and washed out. */
+    private const val HDR_TO_SDR =
+        "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0," +
+            "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+
+    /**
+     * How far the video stream must be turned clockwise to play upright: 0, 90, 180 or 270. Newer
+     * files carry it as a display matrix ("side_data_list", where the angle is anticlockwise, so it
+     * comes out negative for a clockwise turn); older ones as a "rotate" tag. 0 when there is none.
+     */
+    private fun rotationOf(s: StreamInformation): Int = try {
+        val props = s.allProperties
+        var degrees = 0.0
+        props?.optJSONObject("tags")?.optString("rotate", "")?.toDoubleOrNull()?.let { degrees = it }
+        val sideData = props?.optJSONArray("side_data_list")
+        if (sideData != null) {
+            for (n in 0 until sideData.length()) {
+                val o = sideData.optJSONObject(n) ?: continue
+                if (o.has("rotation")) {
+                    // ffprobe's sign is the reverse of the tag's.
+                    degrees = -o.optDouble("rotation", 0.0)
+                }
+            }
+        }
+        (((Math.round(degrees).toInt() % 360) + 360) % 360)
+    } catch (_: Exception) {
+        0
     }
 
     /** ffprobe's format list (e.g. "mov,mp4,m4a,3gp,3g2,mj2") as one readable name. */
@@ -755,7 +847,7 @@ object Converter {
     fun clearWorkFiles(ctx: Context) {
         ctx.cacheDir.listFiles()?.filter {
             it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name == BEST_FILE_NAME ||
-                it.name == "audioprobe.webm" || it.name.startsWith("ffpass")
+                it.name == "audioprobe.webm" || it.name == "audio-best.webm" || it.name.startsWith("ffpass")
         }?.forEach { it.delete() }
     }
 
@@ -771,15 +863,29 @@ object Converter {
          *  the caller for a split part, so each part gets an exact slice regardless of the limit. */
         clipDurationSec: Double? = null,
         /**
+         * The edit made on the card (cuts and crop), or null for none. When set, [src] must be the
+         * EDITED video's info (see [EditSpec.effectiveInfo]) and [startSec] and [clipDurationSec] are
+         * times in the edited video; the pieces of [input] they stand for come from [EditSpec.slicesFor].
+         */
+        edit: EditSpec? = null,
+        /**
+         * The thumbnail frame picked on the card: a time in the SOURCE video ([input]), or null for none.
+         * That frame is put in front of this clip as its new first frame, which is the one a site makes
+         * its thumbnail from (see [joinGraph]). Every part of a split video gets it.
+         */
+        thumbSec: Double? = null,
+        /**
          * Which video this is (its address), so the pass-1 analysis can be kept and reused by any later
          * conversion of the same video (see [Pass1Files]). Blank = the analysis is thrown away when this
          * conversion ends.
          */
         sourceId: String = "",
         onLog: (line: String) -> Unit,
+        /** Plain-words messages for the bubble above the log (see [UserNote]); true = wants a second look. */
+        onNote: (text: String, attention: Boolean) -> Unit = { _, _ -> },
         onProgress: (fraction: Float, status: String) -> Unit, // fraction < 0 = indeterminate
     ): ConvertResult = withContext(Dispatchers.IO) {
-        vpxTimestampNoteShown.set(false)
+        resetLogFilters()
         // The analysis files this conversion last used (see [Pass1Files]).
         var usedPass1: Pass1Files? = null
         FFmpegKitConfig.enableLogCallback(logSink(onLog))
@@ -791,11 +897,28 @@ object Converter {
             val trimmed = clipDurationSec == null && src.durationSec > effMax
             val audioOn = settings.keepAudio && src.hasAudio
 
+            // The pieces of the source to encode. Without an edit that is one piece: this clip.
+            val slices: List<EditSlice> =
+                if (edit != null) edit.slicesFor(startSec, duration) else listOf(EditSlice(startSec, duration))
+            if (slices.isEmpty()) {
+                return@withContext ConvertResult.Fail("The edit leaves nothing to convert for this part.")
+            }
+            // More than one piece is joined by a filter graph (see [joinGraph]); one piece is encoded
+            // exactly as a video without an edit is.
+            val multi = slices.size > 1
+            // A picked thumbnail frame is added by the same filter graph that joins pieces, so a clip with
+            // one is built that way even when it is a single piece.
+            val useGraph = multi || thumbSec != null
+            val cropFilter = edit?.crop?.let { "crop=${it.w}:${it.h}:${it.x}:${it.y}" }
+
             // The frame rate cap. The fps filter is only added when the source is faster than it
             // (with half a frame of leeway, so 29.97 and 59.94 sources aren't touched by a 30 or
             // 60 cap). A slower source is never sped up.
             val fpsCap = clampFps(settings.targetFps)
             val reduceFps = src.fps > fpsCap + 0.5
+            // How long the picked thumbnail frame is shown: one frame of the finished video, so the clip
+            // is only that much longer (well inside the length grace).
+            val thumbFrameSec = 1.0 / (if (reduceFps) fpsCap.toDouble() else src.fps).coerceIn(1.0, 120.0)
 
             val out = File(ctx.cacheDir, "out.webm")
             val sourceKey = "${sourceId.ifBlank { "tmp:" + input.name }}|${src.fileBytes}"
@@ -853,6 +976,14 @@ object Converter {
             // The audio bitrate chosen in the Sound settings. See [audioKbpsFor] for how far it may drop.
             val normalAudioKbps = settings.audioKbps
 
+            // For the bubble: how the last attempt turned out, held until the next attempt's bitrate is known so
+            // that one message says both; the time guessed for pass 2 and when it began, for the one correction.
+            var pendingVerdict: String? = null
+            var pendingAttention = false
+            var estimatedPass2Sec = 0.0
+            var revisionDone = false
+            var pass2StartMs = 0L
+
             // Carried from one attempt to the next, for the audio analysis (see below).
             var lastSize = 0L
             var lastVideoKbps = 0
@@ -865,7 +996,7 @@ object Converter {
             val audioRates = HashMap<Int, Int>()
             fun audioRateFor(kbps: Int): Int =
                 if (kbps >= DEFAULT_AUDIO_KBPS) 0
-                else audioRates.getOrPut(kbps) { findAudioRate(input, startSec, kbps, onLog) }
+                else audioRates.getOrPut(kbps) { findAudioRate(input, slices.first().startSec, kbps, onLog, onNote) }
 
             // What Vorbis really produces is off the nominal figure at every setting (about 22 kbps for
             // a 16 kbps setting, about 30 for 32, about 56 for 64), and at the first attempt that error
@@ -877,7 +1008,7 @@ object Converter {
                 val measureHz = audioRateFor(normalAudioKbps)
                 if (measureHz == AUDIO_RATE_CANCELLED) return@withContext ConvertResult.Cancelled
                 if (measureHz >= 0) {
-                    audioBytes = measureAudioBytes(input, startSec, duration, normalAudioKbps, measureHz, File(ctx.cacheDir, "audioprobe.webm"))
+                    audioBytes = measureSlicesAudioBytes(input, slices, normalAudioKbps, measureHz, File(ctx.cacheDir, "audioprobe.webm"))
                     if (audioBytes == MEASURE_CANCELLED) return@withContext ConvertResult.Cancelled
                     if (audioBytes > 0) {
                         onLog(
@@ -888,6 +1019,7 @@ object Converter {
                     } else {
                         audioBytes = 0L
                         onLog("   couldn't measure the audio; planning with its nominal bitrate")
+                        onNote("Couldn't measure the audio, so I'm planning with its nominal size.", false)
                     }
                 }
             }
@@ -940,6 +1072,11 @@ object Converter {
                     val next = planBestVideoKbps(tries, wantedVideoBytes, duration)
                     if (next == null) {
                         onLog("   no untried video bitrate is left between the attempts so far")
+                        onNote(
+                            "There's no bitrate left to try between the attempts so far." +
+                                (if (bestSize > 0L) " Keeping the best result: ${NoteText.pct(bestSize * 100.0 / settings.limitBytes)} of the limit." else ""),
+                            true,
+                        )
                         if (bestSize > 0L) return@withContext finishBest(attempt - 1)
                         return@withContext ConvertResult.Fail(
                             "Couldn't get under the size limit after ${attempt - 1} attempts. " +
@@ -951,9 +1088,15 @@ object Converter {
                     vKbps = next
                 }
 
+                pendingVerdict?.let { v ->
+                    onNote("$v Trying again with $vKbps kbps video.", pendingAttention)
+                    pendingVerdict = null
+                }
+
                 if (vKbps < t.minVideoKbps) {
                     if (best && bestSize > 0L) {
                         onLog("   the next bitrate would be below the lowest video bitrate; keeping the best result so far")
+                        onNote("Going any lower would drop below the minimum video bitrate, so I'm keeping the best result so far.", true)
                         return@withContext finishBest(attempt - 1)
                     }
                     return@withContext ConvertResult.Fail(
@@ -962,6 +1105,7 @@ object Converter {
                 }
                 if (audioOn && audioKbps < normalAudioKbps) {
                     onLog("   audio bitrate reduced to ${audioKbps} kbps to fit the limit")
+                    onNote("Lowering the audio to $audioKbps kbps to make it fit.", true)
                 }
                 // Checked before pass 1, so a bitrate the audio encoder won't take doesn't cost a pass.
                 val audioHz = if (audioOn) audioRateFor(audioKbps) else 0
@@ -988,8 +1132,17 @@ object Converter {
                 lastHeight = height
                 lastKbps = vKbps
 
-                val filters = buildList {
-                    if (reduceFps) add("fps=$fpsCap")
+                // What happens to the picture: crop, frame rate cap, size. The picked thumbnail frame gets the
+                // same, except the frame rate (it is one still frame), so it ends up the same size.
+                // Colour: HDR sources are tone-mapped to ordinary video when this build can; a full-range source is
+                // turned into the usual limited range (the output is tagged as limited range, see below).
+                val isHdr = src.colorTransfer == "smpte2084" || src.colorTransfer == "arib-std-b67"
+                val toneMap = isHdr && canToneMap()
+                val fullRange = !isHdr && src.colorRange == "pc"
+                fun pictureFilters(withFps: Boolean): String = buildList {
+                    // The crop comes first, so every later step (frame rate, size) works on the cropped picture.
+                    if (cropFilter != null) add(cropFilter)
+                    if (reduceFps && withFps) add("fps=$fpsCap")
                     if (settings.hasCustomSize) {
                         add(customScaleFilter(settings.customWidth, settings.customHeight))
                     } else if (hasMin) {
@@ -1002,27 +1155,96 @@ object Converter {
                     } else if (height < src.height || src.height > 1080) {
                         add("scale=-2:$height")
                     }
+                    // Last, so the work is done on the picture at its final (smaller) size.
+                    if (toneMap) add(HDR_TO_SDR) else if (fullRange) add("scale=in_range=full:out_range=limited")
                 }.joinToString(",").ifEmpty { "null" }
+                val filters = pictureFilters(true)
+                if (isHdr) onLog(if (toneMap) "   HDR source (${src.colorTransfer}): tone-mapped to ordinary video" else "   HDR source (${src.colorTransfer}): this build can't tone-map, so it is kept as HDR")
+                if (isHdr && attempt == 1) {
+                    onNote(
+                        if (toneMap) "This video is HDR, so I'm converting it to ordinary colours."
+                        else "This phone can't convert HDR to ordinary colours, so it stays HDR and may look odd on some screens.",
+                        !toneMap,
+                    )
+                }
 
                 // Pass 1 only analyses the picture, so what it finds doesn't depend on the bitrate being
                 // aimed for. The analysis is therefore named after the video and everything that shapes
                 // the picture it sees (filters, codec, start, length, encoder effort), and any attempt or
                 // later conversion that asks for the same picture goes straight to pass 2 on it.
+                // An edit changes which frames are seen, and (with several clips) the sound is part of the
+                // graph the analysis runs on, so both go into the key.
+                val editKey = (if (edit != null) "|edit=${edit.signature()}|audio=$audioOn" else "") +
+                    (if (thumbSec != null) "|thumb=${"%.3f".format(java.util.Locale.US, thumbSec)}|audio=$audioOn" else "")
                 val pictureKey = "$filters|vp9=${settings.useVp9}|start=${"%.3f".format(java.util.Locale.US, startSec)}" +
-                    "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}"
+                    "|len=${"%.3f".format(java.util.Locale.US, duration)}|cpu=$cpuUsed|lag=$lagFrames|extra=${bestArgs.joinToString(" ")}|rate=${if (useGraph) "%.5f".format(java.util.Locale.US, if (reduceFps) fpsCap.toDouble() else src.fps) else "src"}" + editKey
                 val pass1Key = "$sourceKey\n$pictureKey"
                 val pass1 = pass1FilesFor(ctx, pass1Key)
                 usedPass1 = pass1
                 activePass1 = pass1.name
 
-                val common = listOf("-hide_banner", "-y") +
+                // The Advanced thread cap (0 = no limit, ffmpeg's own choice). Given once before the
+                // input, where it limits the decoder, and once after it, where it limits the encoder.
+                val threadArgs = if (t.maxThreads > 0) listOf("-threads", t.maxThreads.toString()) else emptyList()
+
+                // Where the picture comes from. One piece (every video without an edit, and a trim or
+                // crop alone): read as before, with the filters applied by -vf. Several pieces: one input
+                // per piece, joined by a filter graph that also applies the filters (see [joinGraph]).
+                // Both passes use the same graph, sound included, so pass 2 sees the frames pass 1 analysed.
+                val sourceArgs: List<String> = if (!useGraph) {
                     // Input seeking: fast (keyframe-based demux seek), and still frame-accurate
                     // because we're re-encoding rather than stream-copying.
-                    (if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()) +
-                    listOf(
-                        "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, duration),
+                    seekArgs(slices[0].startSec) + threadArgs + listOf(
+                        "-i", input.absolutePath, "-t", "%.3f".format(java.util.Locale.US, slices[0].durationSec),
                         "-map", "0:v:0", "-sn", "-dn", "-map_metadata", "-1",
                         "-vf", filters,
+                    )
+                } else {
+                    slices.flatMap { sl ->
+                        seekArgs(sl.startSec) + threadArgs + listOf(
+                            "-t", "%.3f".format(java.util.Locale.US, sl.durationSec), "-i", input.absolutePath,
+                        )
+                    } + (
+                        // The picked frame is one more input: the source from there, of which only the
+                        // first frame is used (the short -t stops ffmpeg decoding on from it).
+                        if (thumbSec != null) {
+                            seekArgs(thumbSec) + threadArgs + listOf("-t", "2", "-i", input.absolutePath)
+                        } else emptyList()
+                    ) + listOf(
+                        "-t", "%.3f".format(
+                            java.util.Locale.US,
+                            slices.sumOf { it.durationSec } + (if (thumbSec != null) thumbFrameSec else 0.0),
+                        ),
+                        "-filter_complex",
+                        joinGraph(
+                            slices, filters, audioOn,
+                            if (thumbSec != null) ThumbFrame(slices.size, thumbFrameSec, pictureFilters(false)) else null,
+                        ),
+                        "-map", "[vout]", "-sn", "-dn", "-map_metadata", "-1",
+                    )
+                }
+
+                // A graph (thumbnail or joined pieces) reaches the encoder with no usable frame rate, so
+                // ffmpeg guesses one from the container: pass 1's null output and pass 2's webm end up
+                // with different timing, which can wreck libvpx's rate control. State the rate outright,
+                // the same in both passes. Not used without a graph, which keeps its own rate.
+                val graphRate = if (reduceFps) fpsCap.toDouble() else src.fps
+                val graphRateArgs: List<String> = if (useGraph && graphRate > 0.0) {
+                    listOf("-r", "%.5f".format(java.util.Locale.US, graphRate), "-fps_mode", "cfr")
+                } else emptyList()
+
+                // What the picture is, as the output says it: ordinary BT.709 unless the source is standard-definition
+                // (BT.601, which it keeps) or HDR that couldn't be tone-mapped (which it keeps, so players still read it right).
+                val soft = src.colorMatrix == "bt470bg" || src.colorMatrix == "smpte170m"
+                val (tagSpace, tagPrimaries, tagTransfer) = when {
+                    isHdr && !toneMap -> Triple(src.colorMatrix.ifBlank { "bt2020nc" }, "bt2020", src.colorTransfer)
+                    soft -> Triple("smpte170m", "smpte170m", "smpte170m")
+                    else -> Triple("bt709", "bt709", "bt709")
+                }
+
+                val common = listOf("-hide_banner", "-y") +
+                    sourceArgs +
+                    listOf(
                         "-c:v", if (settings.useVp9) "libvpx-vp9" else "libvpx", "-b:v", "${vKbps}k",
                         "-deadline", "good", "-cpu-used", cpuUsed,
                         "-lag-in-frames", lagFrames,
@@ -1031,12 +1253,12 @@ object Converter {
                         // tells a strict player to decode the YUV pixels as if they were RGB, producing
                         // wrong colours) even though the pixels themselves are normal YUV. bt709/tv is
                         // the standard tag for ordinary SDR video and matches what the encoder produces.
-                        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+                        "-colorspace", tagSpace, "-color_primaries", tagPrimaries, "-color_trc", tagTransfer,
                         "-color_range", "tv",
                     ) + (if (settings.useVp9) {
                     listOf("-row-mt", "1", "-pix_fmt", "yuv420p") +
                         (if (settings.fastest) listOf("-tile-columns", "2") else emptyList())
-                } else emptyList()) + bestArgs + listOf(
+                } else emptyList()) + bestArgs + threadArgs + graphRateArgs + listOf(
                     "-passlogfile", pass1.prefix,
                 )
 
@@ -1048,6 +1270,14 @@ object Converter {
                             frac.toFloat(),
                             "Attempt $attempt/$maxAttempts, pass 2/2: encoding (${height}p, ${vKbps} kbps)"
                         )
+                        // One correction to the time guessed at the start, a quarter of the way through (by then
+                        // the speed ffmpeg reports is close to the final one; the first seconds read far too fast).
+                        if (!revisionDone && estimatedPass2Sec > 0.0 && frac >= 0.25) {
+                            revisionDone = true
+                            val projected = (android.os.SystemClock.elapsedRealtime() - pass2StartMs) / 1000.0 / frac * 1.1
+                            val ratio = projected / estimatedPass2Sec
+                            if (ratio > 1.3 || ratio < 0.7) onNote(TimeEstimate.revisedMessage(projected, ratio > 1.0, best), false)
+                        }
                     }
                 }
 
@@ -1056,12 +1286,26 @@ object Converter {
                         (if (audioOn) " + ${audioLabel(audioKbps)} audio" else ", no audio") +
                         (if (startSec > 0.0) " (from %.1fs)".format(java.util.Locale.US, startSec) else "")
                 )
+                if (thumbSec != null) {
+                    onLog("   thumbnail: the frame at %.3fs of the source is added in front as the first frame".format(java.util.Locale.US, thumbSec))
+                    if (attempt == 1) onNote("Adding your chosen frame to the front as the first frame.", false)
+                }
+                if (edit != null) {
+                    onLog(
+                        "   edit: ${edit.describe()}; this part is " + slices.joinToString(" + ") {
+                            "%.2fs from %.2fs".format(java.util.Locale.US, it.durationSec, it.startSec)
+                        } + " of the source"
+                    )
+                }
                 onLog("   filters: $filters")
                 onLog(
                     (if (src.fpsReadable) "   frame rate: source %.2f fps, cap $fpsCap fps, ".format(java.util.Locale.US, src.fps)
                     else "   frame rate: source fps unreadable (treated as ${src.fps.toInt()} fps for planning), cap $fpsCap fps, ") +
                         if (reduceFps) "reduced to $fpsCap fps" else "kept at the source rate"
                 )
+                if (reduceFps && attempt == 1) {
+                    onNote("Reducing the frame rate from ${"%.2f".format(java.util.Locale.US, src.fps).trimEnd('0').trimEnd('.')} to $fpsCap fps.", false)
+                }
                 onLog("   codec: ${if (settings.useVp9) "VP9 (libvpx-vp9)" else "VP8 (libvpx)"}")
                 onLog("   encoder effort: $effortName (cpu-used $cpuUsed)")
                 if (best) {
@@ -1082,6 +1326,19 @@ object Converter {
                         )
                     }
                 }
+                if (attempt == 1) {
+                    val reused = pass1.isValidFor(pass1Key)
+                    // Quality and Best quality only: Fastest (and the Speed setting) have no timings behind them.
+                    if (best || (!settings.fastest && !settings.fastEncode)) {
+                        val outFps = (if (reduceFps) fpsCap.toDouble() else src.fps).let { if (it > 0.0) it else 30.0 }
+                        val aspect = if (src.height > 0) src.width.toDouble() / src.height else 16.0 / 9.0
+                        val est = TimeEstimate.estimate(settings.useVp9, best, duration * outFps, height.toDouble() * height * aspect)
+                        estimatedPass2Sec = est.pass2Sec
+                        onNote(TimeEstimate.message(est, best, reused), false)
+                    } else if (reused) {
+                        onNote("The first pass is already done from an earlier run, so I'm skipping it.", false)
+                    }
+                }
                 if (pass1.isValidFor(pass1Key)) {
                     onLog("-- pass 1/2: skipped, the analysis already made for this video at these picture settings is reused (only the bitrate changed)")
                 } else {
@@ -1092,28 +1349,37 @@ object Converter {
                     // leaves a half-written file with no "ok" mark). The "src" mark says whose it is.
                     pass1.invalidate()
                     try { pass1.src.writeText(sourceId.ifBlank { "tmp" }) } catch (_: Exception) { }
-                    val p1 = FFmpegKit.executeWithArguments(
-                        (common + listOf("-pass", "1", "-an", "-f", "null", "/dev/null")).toTypedArray()
-                    )
+                    // Joined clips: the graph has a sound output, which has to go somewhere, so it is
+                    // mapped and thrown away (the analysis itself only looks at the picture).
+                    val pass1Out = if (useGraph && audioOn) {
+                        listOf("-pass", "1", "-map", "[aout]", "-c:a", "pcm_s16le", "-f", "null", "/dev/null")
+                    } else listOf("-pass", "1", "-an", "-f", "null", "/dev/null")
+                    val pass1Started = android.os.SystemClock.elapsedRealtime()
+                    val p1 = FFmpegKit.executeWithArguments((common + pass1Out).toTypedArray())
                     if (ReturnCode.isCancel(p1.returnCode)) return@withContext ConvertResult.Cancelled
                     if (!ReturnCode.isSuccess(p1.returnCode)) {
                         // A failed attempt shouldn't throw away a good result from an earlier one.
                         if (best && bestSize > 0L) {
                             onLog("   pass 1 failed; keeping the best result so far")
+                            onNote("The first pass failed, but I'm keeping the best result from an earlier attempt.", true)
                             return@withContext finishBest(attempt)
                         }
                         return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
                     }
                     pass1.markValid(pass1Key)
+                    onLog("   pass 1 took ${elapsedText(android.os.SystemClock.elapsedRealtime() - pass1Started)}")
                 }
 
                 onLog("-- pass 2/2: encoding")
                 onProgress(0f, "Attempt $attempt/$maxAttempts, pass 2/2: encoding (${height}p, ${vKbps} kbps)")
                 pass2Stats()
                 val audioArgs = if (audioOn) {
-                    listOf("-map", "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString()) +
+                    listOf("-map", if (useGraph) "[aout]" else "0:a:0", "-c:a", "libvorbis", "-b:a", "${audioKbps}k", "-ac", audioChannels(audioKbps).toString()) +
                         (if (audioHz > 0) listOf("-ar", audioHz.toString()) else emptyList())
                 } else listOf("-an")
+                pass2StartMs = android.os.SystemClock.elapsedRealtime()
+                // A long wait is starting (pass 2 is the long part): worth saying the phone can be put down.
+                if (attempt == 1 && estimatedPass2Sec > 0.0 && (best || estimatedPass2Sec > 120.0)) onNote(NoteText.LOCK_SCREEN, false)
                 val p2 = FFmpegKit.executeWithArguments(
                     (common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)).toTypedArray()
                 )
@@ -1121,12 +1387,14 @@ object Converter {
                 if (!ReturnCode.isSuccess(p2.returnCode)) {
                     if (best && bestSize > 0L) {
                         onLog("   pass 2 failed; keeping the best result so far")
+                        onNote("The encoding pass failed, but I'm keeping the best result from an earlier attempt.", true)
                         out.delete()
                         return@withContext finishBest(attempt)
                     }
                     return@withContext ConvertResult.Fail("Encoding failed (pass 2).\n${tail(p2.allLogsAsString)}")
                 }
 
+                onLog("   pass 2 took ${elapsedText(android.os.SystemClock.elapsedRealtime() - pass2StartMs)}")
                 val size = out.length()
                 lastSize = size
                 lastVideoKbps = vKbps
@@ -1165,6 +1433,7 @@ object Converter {
                 if (size <= 0L) {
                     if (best && bestSize > 0L) {
                         onLog("   the attempt produced an empty file; keeping the best result so far")
+                        onNote("That attempt produced an empty file, so I'm keeping the best result so far.", true)
                         return@withContext finishBest(attempt)
                     }
                     return@withContext ConvertResult.Fail("Encoding produced an empty file.")
@@ -1196,7 +1465,9 @@ object Converter {
                         onLog("   over the limit, at $pctText: deleted")
                     }
 
+                    val resultText = "Attempt $attempt: ${NoteText.mb(size)}, which is ${NoteText.pct(pctOfLimit)} of the limit"
                     if (fits && pctOfLimit >= t.bestMinFillPct) {
+                        onNote("Done: ${NoteText.mb(size)}, ${NoteText.pct(pctOfLimit)} of the limit.", false)
                         onLog(
                             "== Done: %.2f%% of the limit, inside the accepted %.1f%% to 100%%".format(
                                 java.util.Locale.US, pctOfLimit, t.bestMinFillPct
@@ -1221,10 +1492,12 @@ object Converter {
                         val stalled = prev != null && askedGrowth >= 0.03 && gotGrowth < 0.25 * askedGrowth
                         if (atFloor) {
                             onLog("== Done: the encoder is at its lowest quantiser, so this clip can't use more bits. The best result is $pctText of the limit.")
+                            onNote("Done: this clip can't use any more bits, so ${NoteText.pct(bestSize * 100.0 / settings.limitBytes)} of the limit is the best it will get.", false)
                             return@withContext finishBest(attempt)
                         }
                         if (stalled) {
                             onLog("== Done: asking for more bitrate no longer makes the file bigger. The best result is %.2f%% of the limit.".format(java.util.Locale.US, bestSize * 100.0 / settings.limitBytes))
+                            onNote("Done: asking for more bitrate no longer makes the file bigger. Best result: ${NoteText.pct(bestSize * 100.0 / settings.limitBytes)} of the limit.", false)
                             return@withContext finishBest(attempt)
                         }
                     }
@@ -1232,16 +1505,20 @@ object Converter {
                     if (attempt >= maxAttempts) {
                         if (bestSize > 0L) {
                             onLog("== Done: out of attempts. The best result is %.2f%% of the limit.".format(java.util.Locale.US, bestSize * 100.0 / settings.limitBytes))
+                            onNote("Done: used all $maxAttempts attempts. Best result: ${NoteText.pct(bestSize * 100.0 / settings.limitBytes)} of the limit.", true)
                             return@withContext finishBest(attempt)
                         }
                         // Nothing fitted: falls out of the loop to the usual failure message.
                     } else {
                         onLog(if (fits) "   under the accepted range, retrying with a higher bitrate" else "   over the limit, retrying with a smaller bitrate")
+                        pendingVerdict = if (fits) "$resultText, so there's room to spare." else "$resultText and too big."
+                        pendingAttention = !fits
                     }
                     continue
                 }
 
                 if (size in 1..settings.limitBytes) {
+                    onNote("Done: ${NoteText.mb(size)}, ${NoteText.pct(size * 100.0 / settings.limitBytes)} of the limit.", false)
                     onProgress(1f, "Done")
                     cleanupLogs(ctx)
                     return@withContext ConvertResult.Ok(
@@ -1251,6 +1528,8 @@ object Converter {
                 }
                 // Too big: shrink the budget proportionally and retry.
                 onLog("   over the limit, retrying with a smaller bitrate")
+                pendingVerdict = "Attempt $attempt: ${NoteText.mb(size)}, which is ${NoteText.pct(size * 100.0 / settings.limitBytes)} of the limit and too big."
+                pendingAttention = true
                 budgetBytes *= (settings.limitBytes * (t.retryMarginPct / 100.0)) / size.toDouble()
             }
             cleanupLogs(ctx)
@@ -1325,6 +1604,26 @@ object Converter {
         }
     }
 
+    /**
+     * What the kept analysis takes, for the Cache page: ([CacheStat] of what a video still on a card
+     * owns, and of what nothing needs). Grouped and judged exactly as [pruneAnalysis] does, so the
+     * "unused" part is what a prune would delete. The analysis the running conversion uses counts as in use.
+     */
+    fun analysisUsage(ctx: Context, keepSources: Set<String>): Pair<CacheStat, CacheStat> {
+        val dir = File(ctx.filesDir, PASS1_DIR)
+        val files = dir.listFiles() ?: return CacheStat() to CacheStat()
+        val active = activePass1
+        var inUse = CacheStat()
+        var unused = CacheStat()
+        val byName = files.groupBy { it.name.substringBefore('.').removeSuffix("-0") }
+        for ((name, group) in byName) {
+            val size = group.fold(CacheStat()) { sum, f -> sum + CacheTools.statOf(f) }
+            val owner = try { File(dir, "$name.src").takeIf { it.exists() }?.readText() } catch (_: Exception) { null }
+            if (name == active || (owner != null && owner in keepSources)) inUse += size else unused += size
+        }
+        return inUse to unused
+    }
+
     // ---- Best quality ----
 
     /** The fullest result of a Best quality conversion so far is kept under this name (out.webm is the attempt in progress). */
@@ -1374,9 +1673,57 @@ object Converter {
     // timestamps with visible ones), so those lines are replaced by a single explanatory line per run.
     private val vpxTimestampNoteShown = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    private fun logSink(onLog: (String) -> Unit): (com.arthenica.ffmpegkit.Log) -> Unit = { log ->
+    /**
+     * ffmpeg's H.264 decoder prints three lines ("Late SEI", "is not implemented...", "If you want to help...")
+     * every time it meets a kind of extra data in the stream it doesn't use, and a phone-made video can set it off
+     * hundreds of times. It is harmless, but it buries the useful lines, so after the first the rest are hidden.
+     * The lines of different decoder threads arrive mixed together, so each is matched to its decoder by the
+     * address in its "[h264 @ 0x...]" tag; the two lines after a "Late SEI" are only hidden if they carry the same tag.
+     */
+    private class LateSeiFilter {
+        private val tails = HashMap<String, Int>()
+        private var noteShown = false
+        private val tagPattern = Regex("^\\[h264 @ (0x[0-9a-fA-F]+)\\]")
+
+        /** 0 = show the line; 1 = hide it; 2 = hide it and say once that these are being hidden. */
+        @Synchronized
+        fun check(msg: String): Int {
+            val tag = tagPattern.find(msg)?.groupValues?.get(1) ?: return 0
+            if (msg.contains("Late SEI")) {
+                tails[tag] = 2
+                if (noteShown) return 1
+                noteShown = true
+                return 2
+            }
+            val left = tails[tag] ?: 0
+            if (left > 0 && (msg.contains("is not implemented. Update your FFmpeg version") || msg.contains("upload a sample of this file"))) {
+                tails[tag] = left - 1
+                return 1
+            }
+            return 0
+        }
+
+        @Synchronized
+        fun reset() {
+            tails.clear()
+            noteShown = false
+        }
+    }
+
+    private val lateSeiFilter = LateSeiFilter()
+
+    /** Starts each conversion's log with the "hidden notices" notes allowed to appear again. */
+    internal fun resetLogFilters() {
+        vpxTimestampNoteShown.set(false)
+        lateSeiFilter.reset()
+    }
+
+    internal fun logSink(onLog: (String) -> Unit): (com.arthenica.ffmpegkit.Log) -> Unit = { log ->
         val msg = log.message
-        if (msg.contains("Mismatching timestamps: libvpx")) {
+        val sei = lateSeiFilter.check(msg)
+        if (sei != 0) {
+            if (sei == 2) onLog("   note: ffmpeg's repeated \"Late SEI\" notices from this video's H.264 stream are hidden from this log (harmless)")
+        } else if (msg.contains("Mismatching timestamps: libvpx")) {
             if (vpxTimestampNoteShown.compareAndSet(false, true)) {
                 onLog("   note: libvpx timestamp notices from hidden alt-ref frames are hidden from this log (harmless)")
             }
@@ -1436,7 +1783,7 @@ object Converter {
      * returns the first that works: 0 = the source's rate, otherwise the rate in Hz, or
      * [AUDIO_RATE_NONE] / [AUDIO_RATE_CANCELLED]. Only worth asking for bitrates under the default.
      */
-    private fun findAudioRate(input: File, startSec: Double, kbps: Int, onLog: (String) -> Unit): Int {
+    private fun findAudioRate(input: File, startSec: Double, kbps: Int, onLog: (String) -> Unit, onNote: (String, Boolean) -> Unit): Int {
         onLog("   checking that the audio encoder accepts ${audioLabel(kbps)}")
         for (hz in AUDIO_RATE_CANDIDATES) {
             val r = FFmpegKit.executeWithArguments(
@@ -1453,6 +1800,7 @@ object Converter {
                     if (hz == 0) "   audio: ${audioLabel(kbps)} works at the source's sample rate"
                     else "   audio: ${audioLabel(kbps)} needs a lower sample rate; using $hz Hz"
                 )
+                if (hz != 0) onNote("Audio needs a lower sample rate ($hz Hz) to fit at ${audioLabel(kbps)}.", false)
                 return hz
             }
         }
@@ -1496,9 +1844,85 @@ object Converter {
         return bytes
     }
 
+    /**
+     * The audio of every piece of an edit, measured one piece at a time and added up (each piece is a
+     * separate short encode, so the total is a touch on the high side, which is the safe side).
+     * 0 = couldn't be measured; [MEASURE_CANCELLED] = the user cancelled.
+     */
+    private fun measureSlicesAudioBytes(input: File, slices: List<EditSlice>, kbps: Int, hz: Int, probeOut: File): Long {
+        var total = 0L
+        for (sl in slices) {
+            val b = measureAudioBytes(input, sl.startSec, sl.durationSec, kbps, hz, probeOut)
+            if (b == MEASURE_CANCELLED) return MEASURE_CANCELLED
+            if (b <= 0L) return 0L
+            total += b
+        }
+        return total
+    }
+
+    /** How long the fade at each join of two clips lasts: just enough to stop the sound clicking. */
+    private const val JOIN_FADE_SEC = 0.01
+
+    /**
+     * A picked thumbnail frame for [joinGraph]: which ffmpeg input it comes from (one more than the
+     * pieces), how long it is shown ([frameSec]: one frame of the finished video), and the picture
+     * filters (crop, size) it gets so it matches the rest.
+     */
+    internal class ThumbFrame(val inputIndex: Int, val frameSec: Double, val pictureFilters: String)
+
+    /**
+     * The filter graph that joins the pieces of an edit (one ffmpeg input each, in order) into one
+     * video: each piece's time is restarted at zero, the pieces are concatenated, and then [filters]
+     * (the crop, frame-rate cap and scaling the picture would get anyway) are applied to the whole.
+     * With [withAudio] the sound is joined too, with a very short fade where two clips meet. The
+     * outputs are labelled [vout] and (with sound) [aout]. One piece is fine: nothing is joined.
+     *
+     * With a [thumb], its first frame is made the first frame of the finished video (the frame a site
+     * takes its thumbnail from). The finished picture is delayed by one frame ([ThumbFrame.frameSec],
+     * the first frame repeated) and the thumbnail frame is laid over that extra frame alone; the sound
+     * is delayed by the same, so nothing drifts out of step. (Joining the frame on with concat instead
+     * lost it whenever the frame rate cap was lower than the source's.)
+     */
+    internal fun joinGraph(slices: List<EditSlice>, filters: String, withAudio: Boolean, thumb: ThumbFrame? = null): String {
+        val n = slices.size
+        val sb = StringBuilder()
+        for (k in 0 until n) {
+            sb.append("[$k:v:0]setpts=PTS-STARTPTS[v$k];")
+            if (withAudio) {
+                val d = slices[k].durationSec
+                sb.append("[$k:a:0]asetpts=PTS-STARTPTS")
+                if (d > JOIN_FADE_SEC * 10) {
+                    if (k > 0) sb.append(",afade=t=in:st=0:d=$JOIN_FADE_SEC")
+                    if (k < n - 1) sb.append(",afade=t=out:st=%.3f:d=$JOIN_FADE_SEC".format(java.util.Locale.US, d - JOIN_FADE_SEC))
+                }
+                sb.append("[a$k];")
+            }
+        }
+        for (k in 0 until n) sb.append("[v$k]").append(if (withAudio) "[a$k]" else "")
+        sb.append("concat=n=$n:v=1:a=${if (withAudio) 1 else 0}[cv]")
+        if (withAudio) sb.append(if (thumb != null) "[ca]" else "[aout]")
+        if (thumb == null) {
+            sb.append(";[cv]").append(filters).append("[vout]")
+            return sb.toString()
+        }
+        val d = "%.4f".format(java.util.Locale.US, thumb.frameSec)
+        sb.append(";[cv]").append(filters).append("[fv]")
+        sb.append(";[${thumb.inputIndex}:v:0]trim=end_frame=1,setpts=PTS-STARTPTS,").append(thumb.pictureFilters).append("[tv]")
+        sb.append(";[fv]tpad=start_duration=$d:start_mode=clone[pv]")
+        sb.append(";[pv][tv]overlay=x=0:y=0:eof_action=repeat:enable='lt(t,$d)'[vout]")
+        if (withAudio) sb.append(";[ca]adelay=delays=%.1f:all=1[aout]".format(java.util.Locale.US, thumb.frameSec * 1000.0))
+        return sb.toString()
+    }
+
     /** Input seeking: fast (keyframe-based demux seek), and frame-accurate because we re-encode. */
     private fun seekArgs(startSec: Double): List<String> =
         if (startSec > 0.0) listOf("-ss", "%.3f".format(java.util.Locale.US, startSec)) else emptyList()
+
+    /** How long a pass took, for the log: "42 s" or "4 min 12 s". */
+    private fun elapsedText(ms: Long): String {
+        val total = (ms / 1000).coerceAtLeast(0)
+        return if (total < 60) "$total s" else "${total / 60} min ${total % 60} s"
+    }
 
     private fun tail(s: String?): String = s?.takeLast(400)?.trim().orEmpty()
 

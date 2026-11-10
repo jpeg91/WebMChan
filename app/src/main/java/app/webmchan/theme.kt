@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,22 +83,48 @@ import androidx.compose.ui.unit.sp
  * styled building blocks). None of the app's behaviour lives here.
  */
 
-/** The palette. Red is for fills and big accents; [RedBright] is the red that is safe for small text. */
+/**
+ * Which accent the app is drawn in. The Audio Mode screen turns [audio] on ("princetheme": the same
+ * look with the red swapped for purple). It is Compose state, so everything that reads [P5.Red],
+ * [P5.RedBright] or [P5.RedDeep] redraws when it changes.
+ */
+object AccentMode {
+    var audio by mutableStateOf(false)
+}
+
+/** Princetheme: p5theme with the red replaced by #755FBE (and a lighter and a darker purple to go with it). */
+object Prince {
+    val Red = Color(0xFF755FBE)
+    val RedBright = Color(0xFFA897EC)
+    val RedDeep = Color(0xFF3A2E6B)
+}
+
+/**
+ * The palette. Red is for fills and big accents; [RedBright] is the red that is safe for small text.
+ * In Audio Mode ([AccentMode.audio]) the three reds read as the purples of [Prince]. [redFor] and its
+ * two relatives give a colour for a given mode, for places that can't read the screen's mode (a
+ * notification for a run that isn't the screen on show).
+ */
 object P5 {
     val Black = Color(0xFF080808)
     val Ink = Color(0xFF151515)
     val Panel = Color(0xFF232323)
     val Line = Color(0xFF4A4A4A)
-    val Red = Color(0xFFE60012)
-    val RedBright = Color(0xFFFF4553)
-    val RedDeep = Color(0xFF7A000B)
+    private val RedVideo = Color(0xFFE60012)
+    private val RedBrightVideo = Color(0xFFFF4553)
+    private val RedDeepVideo = Color(0xFF7A000B)
+    val Red: Color get() = if (AccentMode.audio) Prince.Red else RedVideo
+    val RedBright: Color get() = if (AccentMode.audio) Prince.RedBright else RedBrightVideo
+    val RedDeep: Color get() = if (AccentMode.audio) Prince.RedDeep else RedDeepVideo
+    fun redFor(audio: Boolean): Color = if (audio) Prince.Red else RedVideo
+    fun redDeepFor(audio: Boolean): Color = if (audio) Prince.RedDeep else RedDeepVideo
     val White = Color(0xFFFFFFFF)
     val Grey = Color(0xFFC4C4C4)
     val GreyDim = Color(0xFF727272)
     val Amber = Color(0xFFFFC21A)
 }
 
-private val P5ColorScheme = darkColorScheme(
+private fun p5ColorScheme() = darkColorScheme(
     primary = P5.Red,
     onPrimary = P5.White,
     primaryContainer = P5.RedDeep,
@@ -148,7 +175,9 @@ private val P5Typography = Typography(
 
 @Composable
 fun P5Theme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = P5ColorScheme, typography = P5Typography, content = content)
+    // Rebuilt when the accent changes (Audio Mode is purple).
+    val scheme = remember(AccentMode.audio) { p5ColorScheme() }
+    MaterialTheme(colorScheme = scheme, typography = P5Typography, content = content)
 }
 
 /** A parallelogram: the top edge is pushed right by [slant], the bottom edge left. */
@@ -173,11 +202,11 @@ internal fun slantPath(w: Float, h: Float, s: Float, dx: Float = 0f, dy: Float =
  * Also makes plain text white by default.
  */
 @Composable
-fun P5Background(content: @Composable () -> Unit) {
+fun P5Background(base: Color = P5.Black, content: @Composable () -> Unit) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(P5.Black)
+            .background(base)
             .drawP5Backdrop(),
     ) {
         // Keeps the content clear of the status bar, the navigation bar and any camera cut-out
@@ -253,10 +282,12 @@ fun P5Button(
     compact: Boolean = false,
     /** Smaller still than [compact]: a short one-line label, for a row of several small buttons. */
     dense: Boolean = false,
+    /** A fixed colour pair (main, deep) in place of the screen's accent: the Menu's button for the other mode. */
+    accent: Pair<Color, Color>? = null,
 ) {
     val shape = remember { SlantShape(if (dense) 5.dp else if (compact) 6.dp else 9.dp) }
     val fill = when (kind) {
-        P5Kind.Primary -> if (enabled) P5.Red else P5.Panel
+        P5Kind.Primary -> if (enabled) (accent?.first ?: P5.Red) else P5.Panel
         P5Kind.Secondary -> P5.Black
         P5Kind.Ghost -> Color.Transparent
     }
@@ -275,7 +306,7 @@ fun P5Button(
                         val s = px(if (compact) 6f else 9f).coerceAtMost(w / 3f)
                         drawPath(
                             slantPath(w, h, s, px(if (compact) 3f else 4f), px(if (compact) 3f else 4f)),
-                            if (kind == P5Kind.Primary) P5.RedDeep else P5.Red.copy(alpha = 0.8f),
+                            if (kind == P5Kind.Primary) (accent?.second ?: P5.RedDeep) else P5.Red.copy(alpha = 0.8f),
                         )
                     }
                 } else Modifier
@@ -290,11 +321,15 @@ fun P5Button(
             ),
         contentAlignment = Alignment.Center,
     ) {
+        // A dense button shares its row's width with its neighbours, so its text shrinks a step at a time
+        // until it fits (never below 6.5sp) rather than being cut off.
+        var denseSize by remember(label) { mutableStateOf(10f) }
         Text(
             label.uppercase(),
             color = textColor,
+            onTextLayout = { if (dense && it.hasVisualOverflow && denseSize > 6.5f) denseSize -= 0.5f },
             style = if (dense) {
-                MaterialTheme.typography.labelLarge.copy(fontSize = 10.sp, lineHeight = 12.sp, letterSpacing = 0.2.sp)
+                MaterialTheme.typography.labelLarge.copy(fontSize = denseSize.sp, lineHeight = (denseSize * 1.2f).sp, letterSpacing = 0.2.sp)
             } else if (compact) {
                 MaterialTheme.typography.labelLarge.copy(fontSize = 11.sp, lineHeight = 13.sp, letterSpacing = 0.2.sp)
             } else MaterialTheme.typography.labelLarge,
@@ -354,6 +389,8 @@ fun P5Tag(text: String, color: Color, modifier: Modifier = Modifier, filled: Boo
             text.uppercase(),
             color = if (filled) (if (color == P5.Red || color == P5.Black) P5.White else P5.Black) else color,
             style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp),
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
@@ -571,15 +608,67 @@ private fun DrawScope.drawRunningBorder(phase: Float, look: RunLook, amber: Floa
 }
 
 /**
+ * The pixel-art hourglass shown in place of the percentage while there is no percentage yet (the
+ * analysis pass, preparing the video). A tiny Windows 95 style cursor: white glass outline, red
+ * sand. Shared by the card ([P5Percent]) and the notification ([NotificationArt.percent]), so both
+ * draw exactly the same picture. Pixels are (column, row) in a [SIZE] x [SIZE] grid.
+ */
+object P5Hourglass {
+    const val SIZE = 11
+    /** Frames in one loop: the sand runs down, and the next loop starts upside down (it looks the same). */
+    const val FRAMES = 16
+
+    private val glass = listOf(
+        "WWWWWWWWWWW",
+        ".W.......W.",
+        "..W.....W..",
+        "...W...W...",
+        "....W.W....",
+        "....W.W....",
+        "....W.W....",
+        "...W...W...",
+        "..W.....W..",
+        ".W.......W.",
+        "WWWWWWWWWWW",
+    )
+
+    /** The glass outline. */
+    val outline: List<Pair<Int, Int>> = glass.flatMapIndexed { row, line ->
+        line.mapIndexedNotNull { col, ch -> if (ch == 'W') col to row else null }
+    }
+
+    /**
+     * The sand for [frame]: the top row of the upper bulb empties into the bottom row of the lower
+     * one three times over, with a grain falling through the neck while it runs.
+     */
+    fun sand(frame: Int): List<Pair<Int, Int>> {
+        val k = frame.mod(FRAMES)
+        val stage = minOf(k / 5, 3)
+        val out = ArrayList<Pair<Int, Int>>()
+        fun row(r: Int, from: Int, to: Int) { for (c in from..to) out.add(c to r) }
+        if (stage < 1) row(1, 2, 8)
+        if (stage < 2) row(2, 3, 7)
+        if (stage < 3) row(3, 4, 6)
+        if (stage >= 1) row(9, 2, 8)
+        if (stage >= 2) row(8, 3, 7)
+        if (stage >= 3) row(7, 4, 6)
+        if (k < 15) out.add(5 to 4 + k % 3)
+        return out
+    }
+}
+
+/**
  * A big readout in the style of the 💯 emoji: heavy red italic digits, tilted, with a white
- * outline, a hard black shadow and two slanted underlines. [value] null shows dashes, dimmed (for
- * the stages that have no percentage).
+ * outline, a hard black shadow and two slanted underlines. With no [value] (a stage that has no
+ * percentage) the digits are replaced by an animated pixel hourglass ([P5Hourglass]) in the same
+ * place and style; [frozen] holds it still (while paused). The hourglass is stepped by a plain
+ * timer, not Compose's animation system, so it runs even with the phone's animations turned off.
  */
 @Composable
-fun P5Percent(value: Int?, modifier: Modifier = Modifier) {
-    val digits = value?.coerceIn(0, 100)?.toString() ?: "--"
-    val fill = if (value != null) P5.Red else P5.RedDeep
-    val outline = if (value != null) P5.White else P5.GreyDim
+fun P5Percent(value: Int?, modifier: Modifier = Modifier, frozen: Boolean = false) {
+    val digits = value?.coerceIn(0, 100)?.toString()
+    val fill = P5.Red
+    val outline = P5.White
     val big = TextStyle(
         fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic,
         fontSize = 38.sp, lineHeight = 40.sp, letterSpacing = (-1).sp,
@@ -588,13 +677,36 @@ fun P5Percent(value: Int?, modifier: Modifier = Modifier) {
     @Composable
     fun Glyphs(style: TextStyle, color: Color, stroked: Boolean) {
         val st = if (stroked) style.copy(drawStyle = Stroke(width = 9f, join = StrokeJoin.Round)) else style
-        Text(digits, style = st, color = color)
+        Text(digits ?: "", style = st, color = color)
+    }
+    var frame by remember { mutableIntStateOf(0) }
+    if (digits == null) {
+        androidx.compose.runtime.LaunchedEffect(frozen) {
+            while (!frozen) {
+                kotlinx.coroutines.delay(125)
+                frame = (frame + 1) % P5Hourglass.FRAMES
+            }
+        }
     }
     Column(
         modifier.graphicsLayer { rotationZ = -6f },
         horizontalAlignment = Alignment.End,
     ) {
-        Row(verticalAlignment = Alignment.Bottom) {
+        if (digits == null) {
+            Canvas(Modifier.size(38.5.dp)) {
+                val cell = size.width / P5Hourglass.SIZE
+                val shadow = 3.dp.toPx()
+                val sand = P5Hourglass.sand(frame)
+                fun px(c: Int, r: Int, color: Color, dx: Float = 0f) {
+                    drawRect(color, Offset(c * cell + dx, r * cell + dx), Size(cell, cell))
+                }
+                // Hard shadow, then the white glass, then the red sand on top.
+                for ((c, r) in P5Hourglass.outline) px(c, r, Color.Black, shadow)
+                for ((c, r) in sand) px(c, r, Color.Black, shadow)
+                for ((c, r) in P5Hourglass.outline) px(c, r, outline)
+                for ((c, r) in sand) px(c, r, fill)
+            }
+        } else Row(verticalAlignment = Alignment.Bottom) {
             Box {
                 // Hard shadow, white outline, then the red fill on top.
                 Box(Modifier.offset(3.dp, 3.dp)) { Glyphs(big, Color.Black, stroked = true) }
@@ -617,6 +729,25 @@ fun P5Percent(value: Int?, modifier: Modifier = Modifier) {
             drawPath(slantPath(size.width * 0.7f, bar, slant, dx = size.width * 0.3f + 3.dp.toPx(), dy = y2 + 3.dp.toPx()), Color.Black)
             drawPath(slantPath(size.width * 0.7f, bar, slant, dx = size.width * 0.3f, dy = y2), fill)
         }
+    }
+}
+
+/**
+ * The "1/3" above the percentage of a split video: [P5Percent]'s look (heavy red italic, white
+ * outline, hard black shadow, the same tilt) at a smaller size, without the underlines.
+ */
+@Composable
+fun P5PartCount(current: Int, total: Int, modifier: Modifier = Modifier) {
+    val label = "$current/$total"
+    val style = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic,
+        fontSize = 24.sp, lineHeight = 26.sp, letterSpacing = 0.sp,
+    )
+    val stroked = style.copy(drawStyle = Stroke(width = 7f, join = StrokeJoin.Round))
+    Box(modifier.graphicsLayer { rotationZ = -6f }) {
+        Box(Modifier.offset(2.dp, 2.dp)) { Text(label, style = stroked, color = Color.Black) }
+        Text(label, style = stroked, color = P5.White)
+        Text(label, style = style, color = P5.Red)
     }
 }
 

@@ -37,6 +37,15 @@ private data class FieldSpec(
 
 private val FIELDS = listOf(
     FieldSpec(
+        "maxThreads", "Thread cap (0 = no limit)",
+        "Default 0 (no limit). Allowed 0 to 64. The most CPU threads the decoder and the encoder may " +
+            "each use, in both passes. With no limit, ffmpeg uses every core of the phone. Fewer " +
+            "threads means less heat and less memory in use at once, but a slower conversion. Use " +
+            "this if you've allowed unrestricted battery use for WebMChan but Android still stops " +
+            "the app under a heavy load (Best quality on a long or large video, for example). Try 4, " +
+            "then 2 if it still happens. A number above your phone's core count changes nothing.", true,
+    ),
+    FieldSpec(
         "firstTargetPct", "First attempt target (% of limit)",
         "Default 99. Allowed 80 to 110. How full the first encode aims to make the file. " +
             "The rest is margin against overshooting. Above 100 the file is expected to go over " +
@@ -102,13 +111,14 @@ private val FIELDS = listOf(
     ),
     FieldSpec(
         "bestMinFillPct", "Best quality: accepted from (% of limit)",
-        "Default 99. Allowed 80 to 100. A result at or above this (and not over the limit) is accepted " +
+        "Default 98. Allowed 80 to 100. A result at or above this (and not over the limit) is accepted " +
             "at once. Below it, Best quality encodes again with a higher bitrate.", false,
     ),
     FieldSpec(
         "bestAimPct", "Best quality: target (% of limit)",
-        "Default 99.5. Allowed from the accepted value above up to 100. What every Best quality attempt " +
-            "aims for, the first one included.", false,
+        "Default 98.5. Allowed from the accepted value above up to 100. What every Best quality attempt " +
+            "aims for, the first one included. It sits a little low on purpose: the encoder tends to come out " +
+            "slightly over what it is aimed at, and an attempt over the limit is wasted.", false,
     ),
     FieldSpec(
         "bestCpuUsed", "Best quality: encoder effort (cpu-used)",
@@ -164,6 +174,7 @@ private val FIELDS = listOf(
 )
 
 private fun Tuning.asText(): Map<String, String> = mapOf(
+    "maxThreads" to maxThreads.toString(),
     "firstTargetPct" to firstTargetPct.toString(),
     "retryMarginPct" to retryMarginPct.toString(),
     "maxAttempts" to maxAttempts.toString(),
@@ -206,6 +217,7 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         return v ?: def
     }
     return Tuning(
+        maxThreads = int("maxThreads", base.maxThreads),
         firstTargetPct = dbl("firstTargetPct", base.firstTargetPct),
         retryMarginPct = dbl("retryMarginPct", base.retryMarginPct),
         maxAttempts = int("maxAttempts", base.maxAttempts),
@@ -238,7 +250,7 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
  * they can be tried out without rebuilding the app. The defaults are the recommended values.
  */
 @Composable
-fun AdvancedScreen(onBack: () -> Unit) {
+fun AdvancedScreen(onBack: () -> Unit, onCache: () -> Unit = {}) {
     val ctx = LocalContext.current
     BackHandler(onBack = onBack)
 
@@ -254,6 +266,12 @@ fun AdvancedScreen(onBack: () -> Unit) {
     ) {
         P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost)
         P5Title("Advanced settings", size = 30.sp)
+        P5Button(
+            "Cache →",
+            onClick = onCache,
+            kind = P5Kind.Secondary,
+            modifier = Modifier.fillMaxWidth(),
+        )
         Text(
             "For testing. These numbers steer how videos are fitted into a size limit; the defaults " +
                 "are the recommended values. Changes apply from the next conversion, and anything " +

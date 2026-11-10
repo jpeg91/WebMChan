@@ -12,8 +12,8 @@ android {
         applicationId = "app.webmchan"
         minSdk = 29
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.8.51"
+        versionCode = 10
+        versionName = "0.9.0"
         // The maintained FFmpegKit fork only publishes arm64-v8a prebuilts.
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -45,4 +45,11 @@ dependencies {
     // Same com.arthenica.ffmpegkit package as the original. Verify the latest coordinate at
     // https://github.com/ffmpegkit-maintained/ffmpeg if Gradle can't resolve this one.
     implementation("dev.ffmpegkit-maintained:ffmpeg:7.1.7")
+
+    // The video editor's preview player: ExoPlayer only (no ui module), playing local files and
+    // content:// videos. The app has no network access; the manifest strips INTERNET if a library adds it.
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
+
+    // Plain JVM tests of the edit logic (EditSpec), run with: ./gradlew test
+    testImplementation("junit:junit:4.13.2")
 }

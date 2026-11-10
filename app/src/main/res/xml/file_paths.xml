@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lets a video player open a shared video's copy in app storage (see playVideo in MainActivity). -->
+<paths>
+    <files-path name="shared" path="shared/" />
+</paths>

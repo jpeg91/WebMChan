@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The same palette as P5 in theme.kt, for the notification layouts (they can't use Compose). -->
+<resources>
+    <color name="p5_black">#FF080808</color>
+    <color name="p5_red">#FFE60012</color>
+    <color name="p5_white">#FFFFFFFF</color>
+    <color name="p5_grey">#FFC4C4C4</color>
+</resources>
