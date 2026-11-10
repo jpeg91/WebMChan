@@ -1,5 +1,3 @@
-DRAFT:
-
 # WebMChan
 
 Powerful but simple to use 4chan WebM converter for Android with smart targeting and plenty of features.
