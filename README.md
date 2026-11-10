@@ -16,7 +16,7 @@ Output is saved to `Download/WebMChan/` by default, or to a `WebMChan` folder in
 
 Everything runs locally. The app has no network permission, nothing is uploaded.
 
-> **Status:** Preh-alpha development version. **Uninstall any previous version,** then install as you would any `.apk`. Please report bugs.
+> **Status:** Pre-alpha development version. **Uninstall any previous version,** then install as you would any `.apk`. Please report bugs.
 
 **[Download the Latest Release](https://github.com/jpeg91/WebMChan/releases/latest)**
 
