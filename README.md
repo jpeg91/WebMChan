@@ -106,7 +106,7 @@ The **Cache** page (linked from the top of Advanced settings) shows what the app
 
 **Screenshot**
 
-Coming soon!
+<img width="1080" height="6137" alt="Screenshot_20261110-002341_WebMChan" src="https://github.com/user-attachments/assets/e8ab1b82-4ca7-40e7-b40a-4c7ded00f002" />
 
 <details>
   <summary><b>How it works</b></summary>
