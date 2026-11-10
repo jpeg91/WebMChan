@@ -106,12 +106,7 @@ The **Cache** page (linked from the top of Advanced settings) shows what the app
 
 **Screenshot**
 
-
-
-<img alt="30620" src="https://github.com/user-attachments/assets/f587280e-1ec5-4d1e-ae0b-e60514149c10" />
-<img alt="30621" src="https://github.com/user-attachments/assets/6b9c65a8-d171-4159-bedc-3de1753fa594" />
-
-
+Coming soon!
 
 <details>
   <summary><b>How it works</b></summary>
