@@ -3,6 +3,7 @@ package app.webmchan
 
 import android.content.Context
 import android.net.Uri
+import app.webmchan.battle.ConversionFacts
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -80,6 +81,17 @@ object BatchStore {
         return AudioSpec(images, o.optBoolean("cover", false), o.optString("title", ""), o.optString("artist", ""), o.optString("tc", ""))
     }
 
+    /** null if the card has none (a card made before Battle-Cards recorded them, or not a finished card). */
+    private fun readFacts(o: JSONObject?): ConversionFacts? {
+        if (o == null) return null
+        return ConversionFacts(
+            groupId = o.optLong("g", 0L),
+            sourceBytes = o.optLong("sb", 0L).coerceAtLeast(0L),
+            sourceContainer = o.optString("sc", ""),
+            convMillis = o.optLong("ms", 0L).coerceAtLeast(0L),
+        )
+    }
+
     /** null if there is no edit, or it can't be read (the card then simply has none). */
     private fun readEdit(o: JSONObject?): EditSpec? {
         if (o == null) return null
@@ -131,6 +143,17 @@ object BatchStore {
                     put("title", a.title)
                     put("artist", a.artist)
                     put("tc", a.cardText)
+                }
+            )
+        }
+        i.facts?.let { f ->
+            put(
+                "facts",
+                JSONObject().apply {
+                    put("g", f.groupId)
+                    put("sb", f.sourceBytes)
+                    put("sc", f.sourceContainer)
+                    put("ms", f.convMillis)
                 }
             )
         }
@@ -235,6 +258,8 @@ object BatchStore {
             edit = readEdit(o.optJSONObject("edit")),
             // Absent on a video card (and in files saved before Audio Mode).
             audio = readAudio(o.optJSONObject("audio")),
+            // Absent on a card made before Battle-Cards recorded them (and on any unfinished card).
+            facts = readFacts(o.optJSONObject("facts")),
             // Absent when no run was active (and in files saved by older versions).
             settings = o.optJSONObject("settings")?.let {
                 runCatching {

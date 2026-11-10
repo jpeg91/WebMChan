@@ -150,6 +150,7 @@ class MainActivity : ComponentActivity() {
             P5Theme {
                 var showMenu by remember { mutableStateOf(false) }
                 var showHistory by remember { mutableStateOf(false) }
+                var showBattle by remember { mutableStateOf(false) }
                 var showSettings by remember { mutableStateOf(false) }
                 var showLog by remember { mutableStateOf(false) }
                 var showAbout by remember { mutableStateOf(false) }
@@ -197,7 +198,11 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     if (showHistory) {
-                        P5Background { HistoryScreen(onBack = { showHistory = false }) }
+                        P5Background { HistoryScreen(onBack = { showHistory = false }, onBattleCards = { showBattle = true }) }
+                    }
+                    // On top of History, which stays composed underneath; back returns to it.
+                    if (showBattle) {
+                        P5Background { app.webmchan.battle.BattlePreviewScreen(onBack = { showBattle = false }) }
                     }
                     if (showSettings) {
                         P5Background { SettingsScreen(onBack = { showSettings = false }) }

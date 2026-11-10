@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import app.webmchan.battle.ConversionFacts
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -106,6 +107,12 @@ data class QueueItem(
      * card keeps it, so "Add to pen again" brings the picture(s) back too.
      */
     val audio: AudioSpec? = null,
+    /**
+     * Finished cards only: what Battle-Cards needs to know about the conversion that the finished file
+     * doesn't show (the source's format and size, and how long it took). null on a card made before
+     * this was recorded, and on every card that isn't finished.
+     */
+    val facts: ConversionFacts? = null,
 ) {
     val isAudio: Boolean get() = audio != null
 }
@@ -1850,6 +1857,8 @@ object BatchRunner {
                             notifyProgress(ctx, "${pos()}$partLabel", item.name, s, force = false)
                         }
                         val audioSpec = item.audio
+                        // How long the conversion takes, all attempts included (kept on the Finished card).
+                        val convStartedAt = SystemClock.elapsedRealtime()
                         val res = if (audioSpec != null) {
                             AudioConverter.convert(
                                 ctx, staged!!, src, settings, audioSpec,
@@ -1872,6 +1881,7 @@ object BatchRunner {
                                 onProgress = onProgressUpdate,
                             )
                         }
+                        val convMillis = SystemClock.elapsedRealtime() - convStartedAt
 
                         when (res) {
                             is ConvertResult.Ok -> {
@@ -1957,6 +1967,18 @@ object BatchRunner {
                                         thumbSec = item.thumbSec,
                                         // An Audio Mode card stays one (and keeps its pictures, for "Add to pen again").
                                         audio = item.audio,
+                                        // For Battle-Cards: every part of a split video shares this card's id as its group.
+                                        facts = ConversionFacts(
+                                            groupId = id,
+                                            // Only the part of the source that was used (a trimmed video's whole file would overstate the squeeze).
+                                            sourceBytes = if (sourceInfo.durationSec > 0.0) {
+                                                (sourceInfo.fileBytes * (src.durationSec / sourceInfo.durationSec).coerceIn(0.0, 1.0)).toLong()
+                                            } else {
+                                                sourceInfo.fileBytes
+                                            },
+                                            sourceContainer = sourceInfo.container,
+                                            convMillis = convMillis,
+                                        ),
                                     )
                                 finished.add(doneCard)
                                 // History keeps it even after it is removed from Finished.

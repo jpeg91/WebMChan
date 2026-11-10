@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.dp
  * deleted when its last queue or Finished card goes, and its History card then says the source is lost.
  */
 @Composable
-fun HistoryScreen(onBack: () -> Unit) {
+fun HistoryScreen(onBack: () -> Unit, onBattleCards: () -> Unit) {
     BackHandler(onBack = onBack)
     // Newest first, like every list in the app.
     val cards = BatchRunner.history.asReversed()
@@ -42,6 +42,7 @@ fun HistoryScreen(onBack: () -> Unit) {
     ) {
         item { P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost) }
         item { P5Title("History") }
+        item { P5Button("Battle-Cards", onClick = onBattleCards, kind = P5Kind.Secondary) }
         item {
             Text(
                 "Every video the app has converted, newest first. A card stays here when you remove it " +
