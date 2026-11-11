@@ -125,7 +125,8 @@ private fun SpreadCard(cards: List<BattleCard>) {
 private fun CardView(card: BattleCard) {
     val color = typeColor(card.type)
     P5Card(accent = color) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CardThumb(card.id, width = 88.dp, height = 56.dp)
             Text(card.name, style = MaterialTheme.typography.titleMedium, color = P5.White, modifier = Modifier.weight(1f))
             P5Tag(card.type.label, color = color, filled = true)
         }

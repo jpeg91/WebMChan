@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -34,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.webmchan.BatchRunner
+import kotlinx.coroutines.delay
 import app.webmchan.P5
 import app.webmchan.P5Button
 import app.webmchan.P5Card
@@ -112,7 +114,8 @@ private fun PartyScreen(roster: List<BattleCard>, onBack: () -> Unit, onStart: (
                 },
                 accent = if (place >= 0) P5.Amber else color,
             ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CardThumb(card.id, width = 72.dp, height = 46.dp)
                     Text(card.name, style = MaterialTheme.typography.titleSmall, color = P5.White, modifier = Modifier.weight(1f))
                     if (place >= 0) P5Tag("#${place + 1}", color = P5.Amber, filled = true)
                     P5Tag(card.type.label, color = color)
@@ -138,228 +141,268 @@ private fun PartyScreen(roster: List<BattleCard>, onBack: () -> Unit, onStart: (
 
 // -- A run --------------------------------------------------------------------------------------
 
-private enum class Menu { MAIN, MOVES, TARGET, SWITCH, LEAVE }
+/** How long each message stays up before the next one (a tap moves on sooner). */
+private const val MESSAGE_MILLIS = 1200L
+
+private enum class Menu { MOVES, TARGET, SWITCH, LEAVE }
 
 @Composable
 private fun RunScreen(session: BattleSession, onExit: () -> Unit) {
-    // The session isn't observable, so every change bumps this and the screen redraws from the session.
-    var tick by remember { mutableIntStateOf(0) }
-    var menu by remember { mutableStateOf(Menu.MAIN) }
+    // The engine finishes a whole turn at once. The screen keeps its own picture of the fight and replays
+    // the turn's events one at a time, so bars, text and cards all move together, message by message.
+    var view by remember { mutableStateOf(BattleView.of(session.battle)) }
+    var queue by remember { mutableStateOf(session.lastEvents) }
+    var shown by remember { mutableIntStateOf(0) }
+    var message by remember { mutableStateOf("") }
+    var menu by remember { mutableStateOf(Menu.MOVES) }
     var pendingSlot by remember { mutableIntStateOf(-1) }
-    val version = tick
+    // Bumped whenever the session itself changes (phase, who must swap), so the screen redraws.
+    var tick by remember { mutableIntStateOf(0) }
+    @Suppress("UNUSED_VARIABLE") val redraw = tick
 
-    fun changed() { tick++ }
-    fun backToMain() { menu = Menu.MAIN; pendingSlot = -1 }
+    val busy = shown < queue.size
+
+    fun advance() {
+        if (shown >= queue.size) return
+        val e = queue[shown]
+        view = view.apply(e)
+        message = e.text()
+        shown++
+    }
+
+    /** Starts replaying [events], from the picture [from]. */
+    fun replay(from: BattleView, events: List<BattleEvent>) {
+        view = from
+        queue = events
+        shown = 0
+        menu = Menu.MOVES
+        pendingSlot = -1
+        tick++
+        advance()
+    }
+
+    /** Runs a session change that plays out as events (a turn or a swap). */
+    fun act(change: () -> Boolean) {
+        val before = view
+        if (change()) replay(before, session.lastEvents)
+    }
+
+    // Opening messages ("X was sent out!").
+    LaunchedEffect(Unit) { advance() }
+    // Each message stays up a moment, then the next one comes. A tap on the message box skips the wait.
+    LaunchedEffect(queue, shown) {
+        if (shown in 1 until queue.size) {
+            delay(MESSAGE_MILLIS)
+            advance()
+        }
+    }
 
     BackHandler {
         when {
             session.phase != RunPhase.FIGHTING -> onExit()
-            menu == Menu.MAIN -> menu = Menu.LEAVE
-            else -> backToMain()
+            menu == Menu.MOVES -> menu = Menu.LEAVE
+            else -> menu = Menu.MOVES
         }
     }
 
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "Fight ${session.fightIndex + 1} of ${session.fightCount}",
-                style = MaterialTheme.typography.titleMedium,
-                color = P5.White,
-                modifier = Modifier.weight(1f),
-            )
-            P5Tag("Won ${session.wins}", color = P5.Amber)
-        }
+    val foe = view.active(Side.OPPONENT)
+    val me = view.active(Side.PLAYER)
+    val moves = session.battle.active(Side.PLAYER).card.moves
 
-        val foe = session.battle.active(Side.OPPONENT)
-        val me = session.battle.active(Side.PLAYER)
-        FighterPanel(foe, "Opponent", version)
-        FighterPanel(me, "Yours", version)
-        EventLog(session.lastEvents, version)
+    Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Top: the opponent.
+        FighterPanel(foe, "Opponent · fight ${session.fightIndex + 1} of ${session.fightCount} · won ${session.wins}")
 
-        when (session.phase) {
-            RunPhase.FIGHTING -> if (session.mustSwitch) {
-                Text("Send out who?", style = MaterialTheme.typography.titleSmall, color = P5.Amber)
-                PartyList(session, version) { index ->
-                    if (session.replace(index)) { backToMain(); changed() }
-                }
-            } else when (menu) {
-                Menu.MAIN -> {
-                    P5Button("Fight", onClick = { menu = Menu.MOVES })
-                    P5Button(
-                        "Switch card",
-                        onClick = { menu = Menu.SWITCH },
-                        enabled = session.battle.legalSwitches(Side.PLAYER).isNotEmpty(),
-                        kind = P5Kind.Secondary,
-                    )
-                    P5Button("Give up", onClick = { menu = Menu.LEAVE }, kind = P5Kind.Ghost)
-                }
-                Menu.MOVES -> {
-                    for ((slot, move) in me.card.moves.withIndex()) {
-                        val targets = session.battle.targetsFor(Side.PLAYER, move.kind)
-                        val usable = !move.kind.needsTarget || targets.isNotEmpty()
-                        P5Button(
-                            move.name,
-                            onClick = {
-                                if (move.kind.needsTarget) {
-                                    pendingSlot = slot
-                                    menu = Menu.TARGET
-                                } else {
-                                    session.play(BattleAction.UseMove(slot))
-                                    backToMain()
-                                    changed()
-                                }
-                            },
-                            enabled = usable,
-                            kind = P5Kind.Secondary,
-                        )
-                        Text(
-                            move.summary() + if (!usable) " (nobody to use it on)" else "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = P5.Grey,
-                        )
-                    }
-                    P5Button("← Back", onClick = { backToMain() }, kind = P5Kind.Ghost)
-                }
-                Menu.TARGET -> {
-                    val move = me.card.moves.getOrNull(pendingSlot)
-                    Text(
-                        if (move?.kind == MoveKind.REVIVE) "Bring back who?" else "Heal who?",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = P5.Amber,
-                    )
-                    val targets = if (move == null) emptyList() else session.battle.targetsFor(Side.PLAYER, move.kind)
-                    PartyList(session, version, only = targets.toSet(), allowActive = true) { index ->
-                        session.play(BattleAction.UseMove(pendingSlot, index))
-                        backToMain()
-                        changed()
-                    }
-                    P5Button("← Back", onClick = { menu = Menu.MOVES }, kind = P5Kind.Ghost)
-                }
-                Menu.SWITCH -> {
-                    Text("Switch to who? (it costs your turn)", style = MaterialTheme.typography.titleSmall, color = P5.Amber)
-                    PartyList(session, version) { index ->
-                        session.play(BattleAction.Switch(index))
-                        backToMain()
-                        changed()
-                    }
-                    P5Button("← Back", onClick = { backToMain() }, kind = P5Kind.Ghost)
-                }
-                Menu.LEAVE -> {
-                    Text(
-                        "Give up this run? Your progress is lost (saving runs comes in a later update).",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = P5.White,
-                    )
-                    P5Button("Give up", onClick = onExit)
-                    P5Button("Keep fighting", onClick = { backToMain() }, kind = P5Kind.Secondary)
-                }
-            }
-            RunPhase.FIGHT_WON -> {
-                ResultPanel(
+        // Middle: the messages, or whatever the player has to choose from.
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            val choosing = !busy && session.phase == RunPhase.FIGHTING
+            when {
+                busy -> MessageBox(message, hint = "tap to continue", onTap = { advance() })
+                session.phase == RunPhase.FIGHT_WON -> ResultPanel(
                     "You won!",
                     "Next up: ${session.opponents[session.fightIndex + 1].name} " +
                         "(power ${session.opponents[session.fightIndex + 1].stats.power}). Your party is fully healed.",
                 )
-                P5Button("Next fight", onClick = { session.next(); backToMain(); changed() })
-            }
-            RunPhase.FIGHT_DRAWN -> {
-                ResultPanel("A draw.", "Nobody won. The same opponent comes again.")
-                P5Button("Fight again", onClick = { session.next(); backToMain(); changed() })
-            }
-            RunPhase.RUN_LOST -> {
-                ResultPanel(
+                session.phase == RunPhase.FIGHT_DRAWN -> ResultPanel("A draw.", "Nobody won. The same opponent comes again.")
+                session.phase == RunPhase.RUN_LOST -> ResultPanel(
                     "Run over",
                     "${session.opponent.name} beat your whole party. You won ${session.wins} of ${session.fightCount} fights.",
                 )
-                P5Button("Done", onClick = onExit)
-            }
-            RunPhase.RUN_COMPLETE -> {
-                ResultPanel("Run complete!", "You beat all ${session.fightCount} opponents in your History.")
-                P5Button("Done", onClick = onExit)
+                session.phase == RunPhase.RUN_COMPLETE -> ResultPanel("Run complete!", "You beat all ${session.fightCount} opponents in your History.")
+                choosing && session.mustSwitch -> Choices("Send out who?") {
+                    PartyList(view, session.battle.legalSwitches(Side.PLAYER).toSet()) { index ->
+                        act { session.replace(index) }
+                    }
+                }
+                choosing && menu == Menu.SWITCH -> Choices("Switch to who? (it costs your turn)") {
+                    PartyList(view, session.battle.legalSwitches(Side.PLAYER).toSet()) { index ->
+                        act { session.play(BattleAction.Switch(index)) }
+                    }
+                    P5Button("← Back", onClick = { menu = Menu.MOVES }, kind = P5Kind.Ghost)
+                }
+                choosing && menu == Menu.TARGET -> {
+                    val move = moves.getOrNull(pendingSlot)
+                    val targets = if (move == null) emptySet() else session.battle.targetsFor(Side.PLAYER, move.kind).toSet()
+                    Choices(if (move?.kind == MoveKind.REVIVE) "Bring back who?" else "Heal who?") {
+                        PartyList(view, targets) { index -> act { session.play(BattleAction.UseMove(pendingSlot, index)) } }
+                        P5Button("← Back", onClick = { menu = Menu.MOVES }, kind = P5Kind.Ghost)
+                    }
+                }
+                choosing && menu == Menu.LEAVE -> Choices("Give up this run? Your progress is lost (saving runs comes in a later update).") {
+                    P5Button("Give up", onClick = onExit)
+                    P5Button("Keep fighting", onClick = { menu = Menu.MOVES }, kind = P5Kind.Secondary)
+                }
+                else -> MessageBox(message, hint = "", onTap = {})
             }
         }
+
+        // Bottom: you, then the controls.
+        FighterPanel(me, "Yours")
+        val canMove = !busy && session.phase == RunPhase.FIGHTING && !session.mustSwitch && menu == Menu.MOVES
+        when {
+            session.phase == RunPhase.FIGHT_WON && !busy -> P5Button("Next fight", onClick = { session.next(); replay(BattleView.of(session.battle), session.lastEvents) }, modifier = Modifier.fillMaxWidth())
+            session.phase == RunPhase.FIGHT_DRAWN && !busy -> P5Button("Fight again", onClick = { session.next(); replay(BattleView.of(session.battle), session.lastEvents) }, modifier = Modifier.fillMaxWidth())
+            (session.phase == RunPhase.RUN_LOST || session.phase == RunPhase.RUN_COMPLETE) && !busy -> P5Button("Done", onClick = onExit, modifier = Modifier.fillMaxWidth())
+            else -> MoveGrid(
+                moves = moves,
+                enabled = canMove,
+                usable = { m -> !m.kind.needsTarget || session.battle.targetsFor(Side.PLAYER, m.kind).isNotEmpty() },
+                onMove = { slot ->
+                    val m = moves[slot]
+                    if (m.kind.needsTarget) {
+                        pendingSlot = slot
+                        menu = Menu.TARGET
+                    } else {
+                        act { session.play(BattleAction.UseMove(slot)) }
+                    }
+                },
+                canSwitch = session.battle.legalSwitches(Side.PLAYER).isNotEmpty(),
+                onSwitch = { menu = Menu.SWITCH },
+                onLeave = { menu = Menu.LEAVE },
+            )
+        }
+    }
+}
+
+/** The four moves in a 2x2 grid, then Switch and Give up underneath. */
+@Composable
+private fun MoveGrid(
+    moves: List<Move>,
+    enabled: Boolean,
+    usable: (Move) -> Boolean,
+    onMove: (Int) -> Unit,
+    canSwitch: Boolean,
+    onSwitch: () -> Unit,
+    onLeave: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (rowStart in moves.indices step 2) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (slot in rowStart until minOf(rowStart + 2, moves.size)) {
+                    val move = moves[slot]
+                    val ok = enabled && usable(move)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        P5Button(move.name, onClick = { onMove(slot) }, modifier = Modifier.fillMaxWidth(), enabled = ok, kind = P5Kind.Secondary, compact = true)
+                        Text(
+                            move.summary() + if (enabled && !usable(move)) " (nobody to use it on)" else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = P5.GreyDim,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            P5Button("Switch card", onClick = onSwitch, modifier = Modifier.weight(1f), enabled = enabled && canSwitch, kind = P5Kind.Secondary, compact = true)
+            P5Button("Give up", onClick = onLeave, modifier = Modifier.weight(1f), enabled = enabled, kind = P5Kind.Ghost, compact = true)
+        }
+    }
+}
+
+/** The current message, one at a time. Tapping it moves on to the next. */
+@Composable
+private fun MessageBox(text: String, hint: String, onTap: () -> Unit) {
+    P5Card(accent = P5.Line, modifier = Modifier.fillMaxSize().clickable(onClick = onTap), verticalArrangement = Arrangement.Center) {
+        Text(text, style = MaterialTheme.typography.titleMedium, color = P5.White)
+        if (hint.isNotEmpty()) Text(hint, style = MaterialTheme.typography.labelSmall, color = P5.GreyDim)
     }
 }
 
 @Composable
 private fun ResultPanel(title: String, body: String) {
-    P5Card(accent = P5.Amber) {
-        Text(title, style = MaterialTheme.typography.titleMedium, color = P5.White)
-        Text(body, style = MaterialTheme.typography.bodySmall, color = P5.Grey)
+    P5Card(accent = P5.Amber, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+        Text(title, style = MaterialTheme.typography.titleLarge, color = P5.White)
+        Text(body, style = MaterialTheme.typography.bodyMedium, color = P5.Grey)
     }
 }
 
-/** The text of the latest turn, one line per thing that happened. */
+/** A heading and a scrolling list of choices, filling the middle of the screen. */
 @Composable
-private fun EventLog(events: List<BattleEvent>, @Suppress("UNUSED_PARAMETER") version: Int) {
-    P5Card(accent = P5.Line) {
-        for (e in events) Text(e.text(), style = MaterialTheme.typography.bodySmall, color = P5.White)
+private fun Choices(title: String, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, style = MaterialTheme.typography.titleSmall, color = P5.Amber)
+        content()
     }
 }
 
-/** A card in the fight: name, type, HP bar, status and any raised or lowered stats. */
+/** A card in the fight: picture, name, type, HP bar and numbers, status and any raised or lowered stats. */
 @Composable
-private fun FighterPanel(f: Fighter, caption: String, @Suppress("UNUSED_PARAMETER") version: Int) {
-    val color = typeColor(f.card.type)
-    val frac = (f.hp.toFloat() / f.maxHp).coerceIn(0f, 1f)
+private fun FighterPanel(f: FighterView, caption: String) {
+    val color = typeColor(f.type)
+    val frac = if (f.maxHp <= 0) 0f else (f.hp.toFloat() / f.maxHp).coerceIn(0f, 1f)
     val bar = when {
         frac > 0.5f -> P5.Amber
         frac > 0.2f -> P5.RedBright
         else -> P5.Red
     }
     P5Card(accent = color) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Column(Modifier.weight(1f)) {
-                Text(caption, style = MaterialTheme.typography.labelSmall, color = P5.GreyDim)
-                Text(f.card.name, style = MaterialTheme.typography.titleMedium, color = P5.White)
+        Text(caption, style = MaterialTheme.typography.labelSmall, color = P5.GreyDim)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CardThumb(f.cardId, width = 64.dp, height = 40.dp)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        f.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = P5.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    P5Tag(f.type.label, color = color, filled = true)
+                }
+                Box(Modifier.fillMaxWidth().height(12.dp).background(P5.Line)) {
+                    Box(Modifier.fillMaxWidth(frac).fillMaxHeight().background(bar))
+                }
+                Text("HP ${f.hp} / ${f.maxHp}", style = MaterialTheme.typography.bodySmall, color = P5.White)
             }
-            P5Tag(f.card.type.label, color = color, filled = true)
         }
-        Box(Modifier.fillMaxWidth().height(12.dp).background(P5.Line)) {
-            Box(Modifier.fillMaxWidth(frac).fillMaxHeight().background(bar))
-        }
-        Text("HP ${f.hp} / ${f.maxHp}", style = MaterialTheme.typography.bodySmall, color = P5.White)
-        f.status?.let { Text("${it.label}: ${it.blurb}", style = MaterialTheme.typography.bodySmall, color = P5.Amber) }
         val shifted = StatId.values().filter { f.stages[it.ordinal] != 0 }
-        if (shifted.isNotEmpty()) {
-            Text(
-                shifted.joinToString("  ") { (if (f.stages[it.ordinal] > 0) "${it.label} +" else "${it.label} ") + f.stages[it.ordinal] },
-                style = MaterialTheme.typography.bodySmall,
-                color = P5.Grey,
-            )
-        }
+        val line = listOfNotNull(
+            f.status?.label,
+            shifted.takeIf { it.isNotEmpty() }?.joinToString("  ") { (if (f.stages[it.ordinal] > 0) "${it.label} +" else "${it.label} ") + f.stages[it.ordinal] },
+        ).joinToString(" · ")
+        if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.bodySmall, color = P5.Amber)
     }
 }
 
-/**
- * The player's party as buttons. By default the cards that can be swapped in; with [only] and
- * [allowActive], the cards a support move can be aimed at (the one out included).
- */
+/** The player's party as buttons; only the cards in [allowed] can be picked. */
 @Composable
-private fun PartyList(
-    session: BattleSession,
-    @Suppress("UNUSED_PARAMETER") version: Int,
-    only: Set<Int>? = null,
-    allowActive: Boolean = false,
-    onPick: (Int) -> Unit,
-) {
-    val legal = session.battle.legalSwitches(Side.PLAYER).toSet()
-    for ((index, f) in session.battle.party(Side.PLAYER).withIndex()) {
-        val isOut = index == session.battle.activeIndex(Side.PLAYER)
-        val ok = if (only != null) index in only && (allowActive || !isOut) else index in legal
+private fun PartyList(view: BattleView, allowed: Set<Int>, onPick: (Int) -> Unit) {
+    for ((index, f) in view.player.withIndex()) {
         val state = when {
             f.fainted -> "fainted"
-            isOut -> "out now"
+            index == view.playerOut -> "out now"
             else -> ""
         }
         P5Button(
-            "${f.card.name} · ${f.hp}/${f.maxHp}" + if (state.isNotEmpty()) " · $state" else "",
+            "${f.name} · ${f.hp}/${f.maxHp}" + if (state.isNotEmpty()) " · $state" else "",
             onClick = { onPick(index) },
-            enabled = ok,
+            enabled = index in allowed,
             kind = P5Kind.Secondary,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }
