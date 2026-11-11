@@ -204,7 +204,7 @@ class BattleCardTest {
         assertEquals("Sp. Attack 70 · Mainstream · 95%", say("profile_pulse"))
         assertEquals("Sp. Attack 55", say("bitrate_drain"))
         assertEquals("Inflicts Buffering · 80%", say("buffering"))
-        assertEquals("Heals 50% of HP", say("remux"))
+        assertEquals("Heals 40% of HP", say("remux"))
         assertEquals("Raises Sp. Defence of the user", say("deblock"))
         assertEquals("Lowers Sp. Defence of the target", say("banding"))
     }
