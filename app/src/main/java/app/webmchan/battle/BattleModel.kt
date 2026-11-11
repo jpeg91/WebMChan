@@ -69,6 +69,15 @@ enum class MoveKind {
     /** Gives back part of the user's HP. */
     HEAL,
 
+    /** Gives back part of the HP of every unfainted card on the user's bench (not the card using it). */
+    HEAL_BENCH,
+
+    /** Gives back part of the HP of one unfainted party member the player chooses (the user included). */
+    HEAL_ALLY,
+
+    /** Brings one fainted party member back with [Move.healPct] of its HP. */
+    REVIVE,
+
     /** Raises one of the user's stats. */
     BUFF,
 
@@ -76,6 +85,9 @@ enum class MoveKind {
     DEBUFF;
 
     val isDamage: Boolean get() = this == BASIC || this == SPECIAL
+
+    /** True for moves that need the player to name a party member (see [BattleAction.UseMove.target]). */
+    val needsTarget: Boolean get() = this == HEAL_ALLY || this == REVIVE
 }
 
 /** The four status effects. A card carries at most one, and it clears when the fight ends. */
@@ -111,7 +123,7 @@ data class Move(
     /** Percent chance to hit. */
     val accuracy: Int = 100,
     val status: StatusEffect? = null,
-    /** HEAL: percent of the user's maximum HP given back. */
+    /** HEAL, HEAL_BENCH, HEAL_ALLY, REVIVE: percent of the user's maximum HP given back. */
     val healPct: Int = 0,
     val stat: StatId? = null,
     /** BUFF: positive. DEBUFF: negative. */
@@ -127,6 +139,9 @@ fun Move.summary(): String {
         MoveKind.SPECIAL -> "Sp. Attack $power$type$acc"
         MoveKind.STATUS -> "Inflicts ${status?.label ?: "a status"}$acc"
         MoveKind.HEAL -> "Heals $healPct% of HP"
+        MoveKind.HEAL_BENCH -> "Heals the bench by $healPct% of HP"
+        MoveKind.HEAL_ALLY -> "Heals a chosen card by $healPct% of HP"
+        MoveKind.REVIVE -> "Revives a fainted card at $healPct% HP$acc"
         MoveKind.BUFF -> "Raises ${stat?.label ?: "a stat"} of the user" + if (stages > 1) " by $stages" else ""
         MoveKind.DEBUFF -> "Lowers ${stat?.label ?: "a stat"} of the target$acc"
     }

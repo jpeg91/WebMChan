@@ -27,6 +27,15 @@ object BattleMoves {
     private fun heal(id: String, name: String, pct: Int) =
         Move(id, name, MoveKind.HEAL, healPct = pct)
 
+    private fun healBench(id: String, name: String, pct: Int) =
+        Move(id, name, MoveKind.HEAL_BENCH, healPct = pct)
+
+    private fun healAlly(id: String, name: String, pct: Int) =
+        Move(id, name, MoveKind.HEAL_ALLY, healPct = pct)
+
+    private fun revive(id: String, name: String, pct: Int, accuracy: Int) =
+        Move(id, name, MoveKind.REVIVE, healPct = pct, accuracy = accuracy)
+
     private fun buff(id: String, name: String, stat: StatId, stages: Int = 1) =
         Move(id, name, MoveKind.BUFF, stat = stat, stages = stages)
 
@@ -77,6 +86,10 @@ object BattleMoves {
         // Heal.
         heal("remux", "Re-mux", 40),
         heal("cache_flush", "Cache Flush", 30),
+        // Party support: the whole bench, one chosen card, and (rarely useful) a revive.
+        healBench("group_backup", "Group Backup", 25),
+        healAlly("patch_release", "Patch Release", 45),
+        revive("restore_point", "Restore Point", 30, 70),
         // Buffs.
         buff("bitrate_boost", "Bitrate Boost", StatId.SP_ATTACK),
         buff("two_pass_prep", "Two-Pass Prep", StatId.ATTACK),

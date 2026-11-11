@@ -34,12 +34,11 @@ import app.webmchan.P5Tag
 import app.webmchan.P5Title
 
 /**
- * The Battle-Cards roster preview (Stage 1): every conversion in History as a card, newest first,
- * with a spread chart at the top. There is no fighting yet; this page is for checking that the cards
- * look right and the stats are well spread before the battle engine is built on them.
+ * The Battle-Cards roster: every conversion in History as a card, newest first, with a spread chart
+ * at the top and a button to start a run (see [BattleHost]).
  */
 @Composable
-fun BattlePreviewScreen(onBack: () -> Unit) {
+fun BattlePreviewScreen(onBack: () -> Unit, onPlay: () -> Unit) {
     BackHandler(onBack = onBack)
     // Rebuilt whenever History changes (the list is observable state).
     val cards by remember { derivedStateOf { BattleFromHistory.roster(BatchRunner.history.toList()) } }
@@ -51,11 +50,12 @@ fun BattlePreviewScreen(onBack: () -> Unit) {
     ) {
         item { P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost) }
         item { P5Title("Battle-Cards") }
+        item { P5Button("Start a run", onClick = onPlay, enabled = cards.size >= 2) }
         item {
             Text(
                 "Every conversion in History as a card. The stats come from the converted file, and a " +
-                    "split video is one card. Fighting comes in a later update; for now this page is for " +
-                    "checking the cards.",
+                    "split video is one card. Pick up to six for your party, then fight the rest of your " +
+                    "History, weakest first.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -77,7 +77,7 @@ fun BattlePreviewScreen(onBack: () -> Unit) {
 }
 
 /** One colour per type, so a card's type reads at a glance. */
-private fun typeColor(type: CardType): Color = when (type) {
+internal fun typeColor(type: CardType): Color = when (type) {
     CardType.MAINSTREAM -> P5.RedBright
     CardType.MATROSKA -> P5.Amber
     CardType.LEGACY -> P5.Grey

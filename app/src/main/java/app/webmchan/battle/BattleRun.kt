@@ -3,6 +3,9 @@ package app.webmchan.battle
 
 /** The rules of a run (a gauntlet through the roster) that don't depend on any screen. */
 object BattleRun {
+    /** The most cards a player can take into a run. */
+    const val PARTY_MAX = 6
+
     /**
      * The opponents of a run, easiest first: every roster card that isn't in the party, sorted by
      * power rating. Cards of equal power are ordered by a hash of their id, so the order is fixed for

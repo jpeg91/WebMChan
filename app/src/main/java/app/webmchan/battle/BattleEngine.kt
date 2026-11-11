@@ -13,8 +13,11 @@ enum class Side {
 
 /** What a side does on a turn: use one of the active card's four moves, or swap in another card. */
 sealed class BattleAction {
-    /** [slot] is 0..3, the position in the active card's moves. */
-    data class UseMove(val slot: Int) : BattleAction()
+    /**
+     * [slot] is 0..3, the position in the active card's moves. [target] is a party position, needed only
+     * for moves that [MoveKind.needsTarget] (-1 otherwise).
+     */
+    data class UseMove(val slot: Int, val target: Int = -1) : BattleAction()
 
     /** [partyIndex] is the position in the side's party of an unfainted card that isn't already out. */
     data class Switch(val partyIndex: Int) : BattleAction()
@@ -40,6 +43,9 @@ sealed class BattleEvent {
     data class Healed(val side: Side, val name: String, val amount: Int, val hpAfter: Int, val maxHp: Int) : BattleEvent()
 
     /** [change] is how many stages it really moved (0 when it was already at its limit). */
+    /** A card brought back from fainted. */
+    data class Revived(val side: Side, val name: String, val hpAfter: Int, val maxHp: Int) : BattleEvent()
+
     data class StatMoved(val side: Side, val name: String, val stat: StatId, val change: Int) : BattleEvent()
     data class Afflicted(val side: Side, val name: String, val status: StatusEffect) : BattleEvent()
     data class StatusEnded(val side: Side, val name: String, val status: StatusEffect) : BattleEvent()
@@ -58,6 +64,7 @@ fun BattleEvent.text(): String = when (this) {
         (if (critical) " A critical hit!" else "") +
         (if (effectiveness > 1.0) " It's super effective!" else if (effectiveness < 1.0) " It's not very effective..." else "")
     is BattleEvent.Healed -> "$name recovered $amount HP."
+    is BattleEvent.Revived -> "$name is back in the fight!"
     is BattleEvent.StatMoved -> when {
         change == 0 -> "$name's ${stat.label} won't go any further."
         change > 0 -> "$name's ${stat.label} rose" + if (change > 1) " sharply!" else "!"
@@ -173,6 +180,13 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
     fun legalSwitches(side: Side): List<Int> =
         party(side).indices.filter { it != activeIndex(side) && !party(side)[it].fainted }
 
+    /** The party positions a move of [kind] could be aimed at: unfainted cards to heal, fainted ones to revive. */
+    fun targetsFor(side: Side, kind: MoveKind): List<Int> = when (kind) {
+        MoveKind.HEAL_ALLY -> party(side).indices.filter { !party(side)[it].fainted }
+        MoveKind.REVIVE -> party(side).indices.filter { party(side)[it].fainted }
+        else -> emptyList()
+    }
+
     /** True when [side]'s active card has fainted and the fight is not over: it must swap before play goes on. */
     fun needsSwitch(side: Side): Boolean = outcome == null && active(side).fainted
 
@@ -194,7 +208,7 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
             val action = actions[side] as? BattleAction.UseMove ?: continue
             if (outcome != null) break
             if (active(side).fainted) continue
-            act(side, action.slot)
+            act(side, action.slot, action.target)
         }
 
         if (outcome == null) endOfTurn()
@@ -215,7 +229,11 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
 
     private fun validate(side: Side, action: BattleAction) {
         when (action) {
-            is BattleAction.UseMove -> require(action.slot in active(side).card.moves.indices) { "No such move" }
+            is BattleAction.UseMove -> {
+                require(action.slot in active(side).card.moves.indices) { "No such move" }
+                val kind = active(side).card.moves[action.slot].kind
+                if (kind.needsTarget) require(action.target in targetsFor(side, kind)) { "That card can't be the target" }
+            }
             is BattleAction.Switch -> require(action.partyIndex in legalSwitches(side)) { "That card can't be sent out" }
         }
     }
@@ -270,7 +288,7 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
     /** A roll of 0..99 against [percent]; true on a hit. */
     private fun roll(percent: Int): Boolean = rng.nextInt(100) < percent
 
-    private fun act(side: Side, slot: Int) {
+    private fun act(side: Side, slot: Int, targetIndex: Int) {
         val user = active(side)
         val target = active(side.other)
         val move = user.card.moves[slot]
@@ -295,6 +313,9 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
             MoveKind.BASIC, MoveKind.SPECIAL -> strike(side, user, target, move)
             MoveKind.STATUS -> if (hits(side, user, move)) inflict(side.other, target, move.status)
             MoveKind.HEAL -> heal(side, user, move)
+            MoveKind.HEAL_BENCH -> healBench(side, move)
+            MoveKind.HEAL_ALLY -> healAlly(side, move, targetIndex)
+            MoveKind.REVIVE -> if (hits(side, user, move)) revive(side, move, targetIndex)
             MoveKind.BUFF -> shift(side, user, move.stat, move.stages)
             MoveKind.DEBUFF -> if (hits(side, user, move)) shift(side.other, target, move.stat, move.stages)
         }
@@ -352,6 +373,44 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
         val amount = max(1, user.maxHp * move.healPct / 100).coerceAtMost(user.maxHp - user.hp)
         user.hp += amount
         log.add(BattleEvent.Healed(side, user.card.name, amount, user.hp, user.maxHp))
+    }
+
+    private fun restore(side: Side, who: Fighter, move: Move) {
+        if (who.fainted || who.hp >= who.maxHp) return
+        val amount = max(1, who.maxHp * move.healPct / 100).coerceAtMost(who.maxHp - who.hp)
+        who.hp += amount
+        log.add(BattleEvent.Healed(side, who.card.name, amount, who.hp, who.maxHp))
+    }
+
+    private fun healBench(side: Side, move: Move) {
+        val bench = party(side).indices.filter { it != activeIndex(side) && !party(side)[it].fainted && party(side)[it].hp < party(side)[it].maxHp }
+        if (bench.isEmpty()) {
+            log.add(BattleEvent.Failed(side, active(side).card.name, "Nobody on the bench needs it."))
+            return
+        }
+        for (i in bench) restore(side, party(side)[i], move)
+    }
+
+    private fun healAlly(side: Side, move: Move, index: Int) {
+        val who = party(side).getOrNull(index)
+        if (who == null || who.fainted || who.hp >= who.maxHp) {
+            log.add(BattleEvent.Failed(side, active(side).card.name, "It had no effect."))
+            return
+        }
+        restore(side, who, move)
+    }
+
+    private fun revive(side: Side, move: Move, index: Int) {
+        val who = party(side).getOrNull(index)
+        if (who == null || !who.fainted) {
+            log.add(BattleEvent.Failed(side, active(side).card.name, "It had no effect."))
+            return
+        }
+        who.hp = max(1, who.maxHp * move.healPct / 100)
+        who.status = null
+        who.statusTurns = 0
+        who.stages.fill(0)
+        log.add(BattleEvent.Revived(side, who.card.name, who.hp, who.maxHp))
     }
 
     private fun shift(side: Side, who: Fighter, stat: StatId?, stages: Int) {
