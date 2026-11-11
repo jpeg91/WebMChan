@@ -33,9 +33,9 @@ enum class CardType(val label: String) {
  * pairing of two different types favours exactly one of them and nothing is immune.
  */
 object TypeChart {
-    const val SUPER_EFFECTIVE = 2.0
+    const val SUPER_EFFECTIVE = 1.25
     const val NEUTRAL = 1.0
-    const val RESISTED = 0.5
+    const val RESISTED = 0.8
 
     /** True if a [attacker] move is super effective against [defender]. */
     fun beats(attacker: CardType, defender: CardType): Boolean {
@@ -47,7 +47,7 @@ object TypeChart {
         return step == 1 || step == 2
     }
 
-    /** The damage multiplier for an [attacker] move hitting a [defender]: 2, 1 or 0.5. */
+    /** The damage multiplier for an [attacker] move hitting a [defender]: [SUPER_EFFECTIVE], 1 or [RESISTED]. */
     fun multiplier(attacker: CardType, defender: CardType): Double = when {
         attacker == CardType.NONE || defender == CardType.NONE || attacker == defender -> NEUTRAL
         beats(attacker, defender) -> SUPER_EFFECTIVE

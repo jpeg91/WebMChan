@@ -75,7 +75,7 @@ object BattleMoves {
         status("artifact_spray", "Artifact Spray", StatusEffect.ARTIFACTING, 85),
         status("thermal_throttle", "Thermal Throttle", StatusEffect.THERMAL_THROTTLE, 90),
         // Heal.
-        heal("remux", "Re-mux", 50),
+        heal("remux", "Re-mux", 40),
         heal("cache_flush", "Cache Flush", 30),
         // Buffs.
         buff("bitrate_boost", "Bitrate Boost", StatId.SP_ATTACK),
