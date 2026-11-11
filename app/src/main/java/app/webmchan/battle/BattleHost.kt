@@ -50,7 +50,10 @@ import app.webmchan.P5Title
  */
 @Composable
 fun BattleHost(onBack: () -> Unit) {
-    val roster by remember { derivedStateOf { BattleFromHistory.roster(BatchRunner.history.toList()) } }
+    // Rebuilt whenever History changes (the list is observable state). Test cards are for trying the game without a History.
+    val real by remember { derivedStateOf { BattleFromHistory.roster(BatchRunner.history.toList()) } }
+    val testCards = remember { BattleTestCards.cards() }
+    val roster = remember(real) { real + testCards }
     var picking by remember { mutableStateOf(false) }
     var session by remember { mutableStateOf<BattleSession?>(null) }
 
@@ -67,7 +70,7 @@ fun BattleHost(onBack: () -> Unit) {
                 picking = false
             },
         )
-        else -> BattlePreviewScreen(onBack = onBack, onPlay = { picking = true })
+        else -> BattlePreviewScreen(roster, onBack = onBack, onPlay = { picking = true })
     }
 }
 

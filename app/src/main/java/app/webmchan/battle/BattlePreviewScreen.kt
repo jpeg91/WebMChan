@@ -38,10 +38,8 @@ import app.webmchan.P5Title
  * at the top and a button to start a run (see [BattleHost]).
  */
 @Composable
-fun BattlePreviewScreen(onBack: () -> Unit, onPlay: () -> Unit) {
+fun BattlePreviewScreen(cards: List<BattleCard>, onBack: () -> Unit, onPlay: () -> Unit) {
     BackHandler(onBack = onBack)
-    // Rebuilt whenever History changes (the list is observable state).
-    val cards by remember { derivedStateOf { BattleFromHistory.roster(BatchRunner.history.toList()) } }
 
     LazyColumn(
         Modifier.fillMaxSize(),
