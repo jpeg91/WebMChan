@@ -163,7 +163,7 @@ class BattleCardTest {
             when (m.kind) {
                 MoveKind.BASIC, MoveKind.SPECIAL -> assertTrue(m.power > 0)
                 MoveKind.STATUS -> assertTrue(m.status != null)
-                MoveKind.HEAL -> assertTrue(m.healPct in 1..100)
+                MoveKind.HEAL, MoveKind.HEAL_BENCH, MoveKind.HEAL_ALLY, MoveKind.REVIVE -> assertTrue(m.healPct in 1..100)
                 MoveKind.BUFF -> assertTrue(m.stat != null && m.stages > 0)
                 MoveKind.DEBUFF -> assertTrue(m.stat != null && m.stages < 0)
             }

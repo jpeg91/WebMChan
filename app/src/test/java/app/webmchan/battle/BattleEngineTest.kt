@@ -100,7 +100,7 @@ class BattleEngineTest {
             when (m.kind) {
                 MoveKind.BASIC, MoveKind.SPECIAL -> assertTrue(m.id, m.power > 0)
                 MoveKind.STATUS -> assertNotNull(m.id, m.status)
-                MoveKind.HEAL -> assertTrue(m.id, m.healPct in 1..100)
+                MoveKind.HEAL, MoveKind.HEAL_BENCH, MoveKind.HEAL_ALLY, MoveKind.REVIVE -> assertTrue(m.id, m.healPct in 1..100)
                 MoveKind.BUFF -> assertTrue(m.id, m.stat != null && m.stages > 0)
                 MoveKind.DEBUFF -> assertTrue(m.id, m.stat != null && m.stages < 0)
             }
@@ -464,5 +464,91 @@ class BattleEngineTest {
         val second = Battle(listOf(a), listOf(card(3)), 2L)
         assertEquals(second.active(Side.PLAYER).maxHp, second.active(Side.PLAYER).hp)
         assertNotNull(first.outcome)
+    }
+
+    // -- Party support ------------------------------------------------------------------------
+
+    /** A party whose lead has [lead] moves, with a hurt bench member and a fainted one, facing a harmless foe. */
+    private fun hurtParty(vararg lead: String): Battle {
+        val a = card(1, moves = lead.map { move(it) } + List(4 - lead.size) { wait })
+        val b = Battle(party(a, card(3, s = stats(hp = 8)), card(4, s = stats(hp = 8))), party(card(2, s = stats(spe = 1), moves = listOf(plain, plain, plain, plain))), 21L)
+        return b
+    }
+
+    private fun hurt(b: Battle, index: Int, fraction: Double) {
+        val f = b.party(Side.PLAYER)[index]
+        f.hp = (f.maxHp * fraction).toInt().coerceAtLeast(0)
+    }
+
+    @Test fun benchHealRestoresEveryHurtBenchCardButNotTheUser() {
+        val b = hurtParty("group_backup")
+        hurt(b, 0, 0.5); hurt(b, 1, 0.3); hurt(b, 2, 0.0)
+        val userBefore = b.party(Side.PLAYER)[0].hp
+        val benchBefore = b.party(Side.PLAYER)[1].hp
+        b.turn(use(0), use(0))
+        assertTrue(b.party(Side.PLAYER)[1].hp > benchBefore)
+        assertTrue(b.party(Side.PLAYER)[2].fainted)
+        assertTrue(b.party(Side.PLAYER)[0].hp <= userBefore) // the foe hit it; it was not healed
+    }
+
+    @Test fun benchHealFailsWithNobodyToHeal() {
+        val ev = Battle(listOf(card(1, moves = listOf(move("group_backup"), wait, wait, wait))), listOf(card(2)), 1L).turn(use(0), use(2))
+        assertTrue(ev.any { it is BattleEvent.Failed && it.side == Side.PLAYER })
+    }
+
+    @Test fun chosenHealNeedsAHurtLivingTargetAndHealsOnlyThem() {
+        val b = hurtParty("patch_release")
+        hurt(b, 1, 0.2); hurt(b, 2, 0.2)
+        assertEquals(listOf(0, 1, 2), b.targetsFor(Side.PLAYER, MoveKind.HEAL_ALLY))
+        val other = b.party(Side.PLAYER)[2].hp
+        val before = b.party(Side.PLAYER)[1].hp
+        b.turn(BattleAction.UseMove(0, 1), use(0))
+        assertTrue(b.party(Side.PLAYER)[1].hp > before)
+        assertEquals(other, b.party(Side.PLAYER)[2].hp)
+        try { b.turn(use(0), use(0)); error("needs a target") } catch (e: IllegalArgumentException) { }
+    }
+
+    @Test fun reviveBringsBackAFaintedCardAtPartHealthAndMayMiss() {
+        var revived = 0
+        var missed = 0
+        for (seed in 1L..200L) {
+            val a = card(1, moves = listOf(move("restore_point"), wait, wait, wait))
+            val b = Battle(party(a, card(3)), party(card(2, s = stats(spe = 1), moves = listOf(wait, wait, wait, wait))), seed)
+            b.party(Side.PLAYER)[1].hp = 0
+            assertEquals(listOf(1), b.targetsFor(Side.PLAYER, MoveKind.REVIVE))
+            val ev = b.turn(BattleAction.UseMove(0, 1), use(0))
+            if (ev.any { it is BattleEvent.Revived }) {
+                revived++
+                val f = b.party(Side.PLAYER)[1]
+                assertEquals(f.maxHp * 30 / 100, f.hp)
+                assertNull(f.status)
+            } else if (ev.any { it is BattleEvent.Missed }) missed++
+        }
+        assertEquals(200, revived + missed)
+        assertTrue("revived $revived", revived in 110..170)
+    }
+
+    @Test fun aRevivedCardKeepsTheFightGoing() {
+        val a = card(1, moves = listOf(move("restore_point"), wait, wait, wait), s = stats(spe = 8))
+        val b = Battle(party(a, card(3)), party(card(2, s = stats(spe = 1), moves = listOf(wait, wait, wait, wait))), 2L)
+        b.party(Side.PLAYER)[1].hp = 0
+        assertEquals(listOf(1), b.targetsFor(Side.PLAYER, MoveKind.REVIVE))
+        assertNull(b.outcome)
+    }
+
+    @Test fun aiAimsSupportMovesAtTheRightCard() {
+        val b = hurtParty("patch_release", "restore_point")
+        hurt(b, 1, 0.15); hurt(b, 2, 0.0)
+        var sawHeal = false
+        var sawRevive = false
+        for (seed in 1L..200L) {
+            val act = BattleAi(seed).chooseAction(b, Side.PLAYER) as BattleAction.UseMove
+            when (b.active(Side.PLAYER).card.moves[act.slot].kind) {
+                MoveKind.HEAL_ALLY -> { sawHeal = true; assertEquals(1, act.target) }
+                MoveKind.REVIVE -> { sawRevive = true; assertEquals(2, act.target) }
+                else -> {}
+            }
+        }
+        assertTrue(sawHeal && sawRevive)
     }
 }
