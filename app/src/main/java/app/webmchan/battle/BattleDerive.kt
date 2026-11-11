@@ -118,7 +118,7 @@ object BattleDerive {
         return BattleCard(
             id = input.id,
             memberIds = input.memberIds,
-            name = nameFor(type, stats, coreSeed, personalSeed),
+            name = displayName(input.sourceName).ifBlank { nameFor(type, stats, coreSeed, personalSeed) },
             sourceName = input.sourceName,
             type = type,
             stats = stats,
@@ -179,6 +179,37 @@ object BattleDerive {
     private val suffixLow = listOf("ling", "let", "bit", "pup", "nub")
     private val suffixMid = listOf("ox", "ard", "wing", "beast", "drone")
     private val suffixHigh = listOf("saur", "titan", "lord", "wyrm", "king")
+
+    /** Two conversions of the same file share a name; the older keeps it and later ones get "(2)", "(3)" ... */
+    fun numberRepeats(cards: List<BattleCard>): List<BattleCard> {
+        val seen = HashMap<String, Int>()
+        val renamed = HashMap<Long, String>()
+        for (c in cards.sortedBy { it.id }) {
+            val n = (seen[c.name] ?: 0) + 1
+            seen[c.name] = n
+            if (n > 1) renamed[c.id] = "${c.name} ($n)"
+        }
+        return cards.map { c -> renamed[c.id]?.let { c.copy(name = it) } ?: c }
+    }
+
+    private const val MAX_NAME = 36
+    private val tagSuffix = Regex("-WebMChan_for_Android$")
+    private val markerSuffix = Regex("-[AM][BFSQ]?$")
+    private val partSuffix = Regex("-Part\\d+$")
+
+    /**
+     * The name a card shows: the converted file's name without its extension and without what the app
+     * added ("-Part02", "-MQ", "-WebMChan_for_Android"), so "clip-Part02-MQ-WebMChan_for_Android.webm"
+     * is "clip". Long names are cut. Empty if nothing is left.
+     */
+    fun displayName(fileName: String): String {
+        var n = fileName.trim().substringBeforeLast('.', fileName.trim())
+        n = tagSuffix.replace(n, "")
+        n = markerSuffix.replace(n, "")
+        n = partSuffix.replace(n, "")
+        n = n.trim()
+        return if (n.length > MAX_NAME) n.take(MAX_NAME - 1).trimEnd() + "…" else n
+    }
 
     /**
      * An invented creature name: a prefix for the type and a suffix for how strong the card is. It

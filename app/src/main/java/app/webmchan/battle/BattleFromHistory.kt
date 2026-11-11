@@ -24,9 +24,8 @@ object BattleFromHistory {
             val key = if (group != null) "g$group" else "c${card.id}"
             groups.getOrPut(key) { ArrayList() }.add(card)
         }
-        return groups.values
-            .map { BattleDerive.derive(inputFor(it.sortedBy { c -> c.id })) }
-            .sortedByDescending { it.id }
+        val cards = groups.values.map { BattleDerive.derive(inputFor(it.sortedBy { c -> c.id })) }
+        return BattleDerive.numberRepeats(cards).sortedByDescending { it.id }
     }
 
     /** The input for one video: [members] are its History cards, in part order. */
