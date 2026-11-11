@@ -202,7 +202,7 @@ class MainActivity : ComponentActivity() {
                     }
                     // On top of History, which stays composed underneath; back returns to it.
                     if (showBattle) {
-                        P5Background { app.webmchan.battle.BattlePreviewScreen(onBack = { showBattle = false }) }
+                        P5Background { app.webmchan.battle.BattleHost(onBack = { showBattle = false }) }
                     }
                     if (showSettings) {
                         P5Background { SettingsScreen(onBack = { showSettings = false }) }
