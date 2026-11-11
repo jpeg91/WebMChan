@@ -52,7 +52,9 @@ Select one video or several, and convert them all in one go. New videos can be a
 
 ### Editing before you convert
 
-The **///** button on a holding pen card opens that card's pages. **Edit** can be used to trim a video, cut a video into up to 8 clips (reorder them with Earlier and Later buttons), and crop the picture (removing black bars is a great space saver, which is made up for with better output picture quality), all without touching the original. The changes are applied during conversion. Everything on the card, from the length to the split and the bitrate estimate, follows the edit. 
+The **///** button on a holding pen card opens that card's pages. 
+
+**Edit** can be used to trim a video, cut a video into up to 8 clips (reorder them with Earlier and Later buttons), and crop the picture (removing black bars is a great space saver, which is made up for with better output picture quality), all without touching the original. The changes are applied during conversion. Everything on the card, from the length to the split and the bitrate estimate, follows the edit. 
 
 **Thumbnail** lets you scrub to the frame you want 4chan to display as the post's thumbnail, and it's added in front of the video as the first frame. You can also rename the output before converting.
 
