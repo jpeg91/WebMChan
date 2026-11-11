@@ -311,12 +311,40 @@ class BattleCardTest {
         assertNotEquals(a.type, b.type)
     }
 
-    @Test fun namesAreOriginalWordsMadeOfAPrefixAndASuffix() {
+    @Test fun spareNamesAreOriginalWordsMadeOfAPrefixAndASuffix() {
         for (id in 1L..300L) {
-            val card = BattleDerive.derive(input(id = id, container = listOf("MP4", "AVI", "GIF", "MP3", "Matroska/WebM")[(id % 5).toInt()]))
-            assertTrue(card.name.length in 4..14)
-            assertTrue(card.name[0].isUpperCase())
+            val type = CardType.values().filter { it != CardType.NONE }[(id % 5).toInt()]
+            val name = BattleDerive.nameFor(type, BattleStats(4, 4, 4, 4, 4, 4), BattleHash.of("c$id"), BattleHash.of("p$id"))
+            assertTrue(name.length in 4..14)
+            assertTrue(name[0].isUpperCase())
         }
+    }
+
+    @Test fun cardsAreNamedAfterTheFileWithoutWhatTheAppAdded() {
+        assertEquals("clip", BattleDerive.displayName("clip-MQ-WebMChan_for_Android.webm"))
+        assertEquals("clip", BattleDerive.displayName("clip-Part02-MQ-WebMChan_for_Android.webm"))
+        assertEquals("clip", BattleDerive.displayName("clip-Part12-MF-WebMChan_for_Android.webm"))
+        assertEquals("my-cool-clip", BattleDerive.displayName("my-cool-clip-AB-WebMChan_for_Android.webm"))
+        assertEquals("song", BattleDerive.displayName("song-A-WebMChan_for_Android.webm"))
+        assertEquals("plain name", BattleDerive.displayName("plain name.webm"))
+        assertEquals("no extension", BattleDerive.displayName("no extension"))
+        assertEquals("", BattleDerive.displayName(".webm"))
+        assertTrue(BattleDerive.displayName("x".repeat(80) + ".webm").length <= 36)
+    }
+
+    @Test fun aCardWithNoUsableFileNameFallsBackToAnInventedOne() {
+        val card = BattleDerive.derive(input().copy(sourceName = ".webm"))
+        assertTrue(card.name.length in 4..14)
+    }
+
+    @Test fun repeatConversionsOfOneFileGetNumbers() {
+        val a = BattleDerive.derive(input(id = 1L))
+        val b = BattleDerive.derive(input(id = 2L).copy(sourceName = a.sourceName))
+        val c = BattleDerive.derive(input(id = 3L).copy(sourceName = a.sourceName))
+        val named = BattleDerive.numberRepeats(listOf(c, a, b)).associateBy { it.id }
+        assertEquals(a.name, named.getValue(1L).name)
+        assertEquals("${a.name} (2)", named.getValue(2L).name)
+        assertEquals("${a.name} (3)", named.getValue(3L).name)
     }
 
     @Test fun powerRatingSortsStrongerCardsLater() {
