@@ -2,6 +2,9 @@
 package app.webmchan.battle
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -37,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -116,7 +120,7 @@ fun BattleHost(onBack: () -> Unit) {
                 // A card already in the party fights as its saved snapshot.
                 val cards = ids.mapNotNull { joined.partyCard(it)?.card }
                 val seed = BattleHash.mix(System.currentTimeMillis(), ids.fold(0L) { acc, id -> BattleHash.mix(acc, id) })
-                val s = BattleSession(cards, BattleRun.opponentsFor(roster, ids.toSet()), seed, boss = BattleBoss.card)
+                val s = BattleSession(cards, BattleRun.opponentsFor(roster, ids.toSet()), seed, boss = BattleBoss.card, leadPicking = true)
                 save = joined
                 wire(s, ids)
                 session = s
@@ -134,7 +138,7 @@ fun BattleHost(onBack: () -> Unit) {
                     if (run != null) {
                         val cards = run.partyIds.mapNotNull { save.partyCard(it)?.card }
                         if (cards.isNotEmpty()) {
-                            val s = BattleSession(cards, run.opponents, run.seed, run.boss, run.point.fightIndex, run.point.wins, run.point.attempt, run.levels)
+                            val s = BattleSession(cards, run.opponents, run.seed, run.boss, run.point.fightIndex, run.point.wins, run.point.attempt, run.levels, leadPicking = true)
                             wire(s, run.partyIds)
                             session = s
                         }
@@ -446,12 +450,18 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit, onGiveUp: () -
                 session.phase == RunPhase.FIGHT_DRAWN -> ResultPanel("A draw.", "Nobody won. The same opponent comes again.")
                 session.phase == RunPhase.RUN_LOST -> ResultPanel(
                     "Run over",
-                    "${session.opponent.name} beat your whole party. You won ${session.wins} of ${session.fightCount} fights.",
+                    "${session.opponent.name} beat your whole party. You won ${session.wins} of ${session.fightCount} fights.\n\n" + partyLevels(session),
                 )
                 session.phase == RunPhase.RUN_COMPLETE -> ResultPanel(
                     "Run complete!",
-                    if (session.hasBossFight) "You beat every opponent, and the ${BattleBoss.card.name} too." else "You beat all ${session.fightCount} opponents.",
+                    (if (session.hasBossFight) "You beat every opponent, and the ${BattleBoss.card.name} too." else "You beat all ${session.fightCount} opponents.") + "\n\n" + partyLevels(session),
                 )
+                session.phase == RunPhase.PICKING_LEAD && !busy -> Choices(
+                    if (session.isBossFight) "Who leads against the final opponent? (Lv ${session.foeLevel})"
+                    else "Who leads against ${session.opponent.name}? (Lv ${session.foeLevel}, power ${session.opponent.stats.power})",
+                ) {
+                    PartyList(view, view.player.indices.toSet()) { index -> act { session.chooseLead(index) } }
+                }
                 choosing && session.mustSwitch -> Choices("Send out who?") {
                     PartyList(view, session.battle.legalSwitches(Side.PLAYER).toSet()) { index ->
                         act { session.replace(index) }
@@ -481,14 +491,23 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit, onGiveUp: () -
         }
 
         // Bottom: you, then the controls.
-        Box(Modifier.fighterFx(Side.PLAYER) { meCentre = it }) { FighterPanel(me, "Yours") }
+        if (session.phase == RunPhase.PICKING_LEAD) {
+            P5Card(accent = P5.Line) {
+                Text("Pick the card to send out first. The rest wait on the bench.", style = MaterialTheme.typography.bodyMedium, color = P5.Grey)
+            }
+        } else {
+            val pips = view.player.joinToString("") { if (it.fainted) "○" else "●" }
+            Box(Modifier.fighterFx(Side.PLAYER) { meCentre = it }) { FighterPanel(me, "Yours  $pips") }
+        }
         val canMove = !busy && session.phase == RunPhase.FIGHTING && !session.mustSwitch && menu == Menu.MOVES
         when {
+            session.phase == RunPhase.PICKING_LEAD -> P5Button("Leave (the run is saved)", onClick = onExit, modifier = Modifier.fillMaxWidth(), kind = P5Kind.Ghost, compact = true)
             session.phase == RunPhase.FIGHT_WON && !busy -> P5Button("Next fight", onClick = { session.next(); replay(BattleView.of(session.battle), session.lastEvents) }, modifier = Modifier.fillMaxWidth())
             session.phase == RunPhase.FIGHT_DRAWN && !busy -> P5Button("Fight again", onClick = { session.next(); replay(BattleView.of(session.battle), session.lastEvents) }, modifier = Modifier.fillMaxWidth())
             (session.phase == RunPhase.RUN_LOST || session.phase == RunPhase.RUN_COMPLETE) && !busy -> P5Button("Done", onClick = onExit, modifier = Modifier.fillMaxWidth())
             else -> MoveGrid(
                 moves = moves,
+                foe = foe,
                 enabled = canMove,
                 usable = { m -> !m.kind.needsTarget || session.battle.targetsFor(Side.PLAYER, m.kind).isNotEmpty() },
                 onMove = { slot ->
@@ -529,6 +548,7 @@ private class ActiveFx(val def: FxDef, val kind: FxKind, val userSide: Side, val
 @Composable
 private fun MoveGrid(
     moves: List<Move>,
+    foe: FighterView,
     enabled: Boolean,
     usable: (Move) -> Boolean,
     onMove: (Int) -> Unit,
@@ -551,6 +571,10 @@ private fun MoveGrid(
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        // How it will do against whoever is in front of you now.
+                        val mult = if (move.kind.isDamage && move.type != CardType.NONE) TypeChart.multiplier(move.type, foe.type) else 1.0
+                        if (mult > 1.0) Text("Super effective ▲", style = MaterialTheme.typography.labelSmall, color = P5.Amber)
+                        else if (mult < 1.0) Text("Resisted ▼", style = MaterialTheme.typography.labelSmall, color = P5.RedBright)
                     }
                 }
             }
@@ -593,6 +617,8 @@ private fun Choices(title: String, content: @Composable () -> Unit) {
 private fun FighterPanel(f: FighterView, caption: String, thumbOnRight: Boolean = false) {
     val color = typeColor(f.type)
     val frac = if (f.maxHp <= 0) 0f else (f.hp.toFloat() / f.maxHp).coerceIn(0f, 1f)
+    // The bar slides to its new length; with "Animations off" it jumps.
+    val shownFrac by animateFloatAsState(frac, if (AppSettings.get(AppToggle.ANIMATIONS_OFF)) snap() else tween(450), label = "hp")
     val bar = when {
         frac > 0.5f -> P5.Amber
         frac > 0.2f -> P5.RedBright
@@ -616,36 +642,69 @@ private fun FighterPanel(f: FighterView, caption: String, thumbOnRight: Boolean 
                     P5Tag(f.type.label, color = color, filled = true)
                 }
                 Box(Modifier.fillMaxWidth().height(12.dp).background(P5.Line)) {
-                    Box(Modifier.fillMaxWidth(frac).fillMaxHeight().background(bar))
+                    Box(Modifier.fillMaxWidth(shownFrac).fillMaxHeight().background(bar))
                 }
                 Text("HP ${f.hp} / ${f.maxHp}", style = MaterialTheme.typography.bodySmall, color = P5.White)
             }
             if (thumbOnRight) CardThumb(f.cardId, width = 64.dp, height = 40.dp)
         }
         val shifted = StatId.values().filter { f.stages[it.ordinal] != 0 }
-        val line = listOfNotNull(
-            f.status?.label,
-            shifted.takeIf { it.isNotEmpty() }?.joinToString("  ") { (if (f.stages[it.ordinal] > 0) "${it.label} +" else "${it.label} ") + f.stages[it.ordinal] },
-        ).joinToString(" · ")
-        if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.bodySmall, color = P5.Amber)
+        if (f.status != null || shifted.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                f.status?.let { P5Tag(it.label, color = P5.RedBright, filled = true) }
+                for (stat in shifted) {
+                    val n = f.stages[stat.ordinal]
+                    P5Tag("${statShort(stat)} ${if (n > 0) "+" else ""}$n", color = if (n > 0) P5.Amber else P5.RedBright, filled = false)
+                }
+            }
+        }
     }
 }
 
-/** The player's party as buttons; only the cards in [allowed] can be picked. */
+/** The player's party as rows (picture, name, level, HP); only the cards in [allowed] can be picked. */
 @Composable
 private fun PartyList(view: BattleView, allowed: Set<Int>, onPick: (Int) -> Unit) {
     for ((index, f) in view.player.withIndex()) {
+        val ok = index in allowed
+        val frac = if (f.maxHp <= 0) 0f else (f.hp.toFloat() / f.maxHp).coerceIn(0f, 1f)
         val state = when {
             f.fainted -> "fainted"
-            index == view.playerOut -> "out now"
+            index == view.playerOut && view.player.size > 1 -> "out now"
             else -> ""
         }
-        P5Button(
-            "${f.name} · Lv ${f.level} · ${f.hp}/${f.maxHp}" + if (state.isNotEmpty()) " · $state" else "",
-            onClick = { onPick(index) },
-            enabled = index in allowed,
-            kind = P5Kind.Secondary,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        P5Card(
+            accent = typeColor(f.type),
+            modifier = Modifier.fillMaxWidth().alpha(if (ok) 1f else 0.5f).clickable(enabled = ok) { onPick(index) },
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CardThumb(f.cardId, width = 48.dp, height = 30.dp)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(f.name, style = MaterialTheme.typography.titleSmall, color = P5.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Text("Lv ${f.level}", style = MaterialTheme.typography.labelMedium, color = P5.Grey)
+                    }
+                    Box(Modifier.fillMaxWidth().height(6.dp).background(P5.Line)) {
+                        Box(Modifier.fillMaxWidth(frac).fillMaxHeight().background(if (frac > 0.5f) P5.Amber else if (frac > 0.2f) P5.RedBright else P5.Red))
+                    }
+                    Text(
+                        "${f.type.label} · HP ${f.hp} / ${f.maxHp}" + if (state.isNotEmpty()) " · $state" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = P5.GreyDim,
+                    )
+                }
+            }
+        }
     }
 }
+
+private fun statShort(stat: StatId): String = when (stat) {
+    StatId.ATTACK -> "Atk"
+    StatId.SP_ATTACK -> "SpA"
+    StatId.DEFENCE -> "Def"
+    StatId.SP_DEFENCE -> "SpD"
+    StatId.SPEED -> "Spe"
+}
+
+/** The party's levels, one card per line, for the end of a run. */
+private fun partyLevels(session: BattleSession): String =
+    session.party.indices.joinToString("\n") { "${session.party[it].name} · Lv ${session.levels[it]}" }

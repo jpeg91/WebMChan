@@ -156,6 +156,8 @@ class Battle(
     /** Each card's level, in the same order as the cards; the default level for any not given. */
     playerLevels: List<Int> = emptyList(),
     opponentLevels: List<Int> = emptyList(),
+    /** Which of the player's cards starts out in front. */
+    playerLead: Int = 0,
 ) {
     init {
         require(playerCards.isNotEmpty() && opponentCards.isNotEmpty()) { "Both sides need a card" }
@@ -164,9 +166,9 @@ class Battle(
     private val rng = BattleRng(seed)
     private val playerParty = playerCards.mapIndexed { i, c -> Fighter(c, playerLevels.getOrNull(i) ?: BattleTuning.LEVEL) }
     private val opponentParty = opponentCards.mapIndexed { i, c -> Fighter(c, opponentLevels.getOrNull(i) ?: BattleTuning.LEVEL) }
-    private var playerOut = 0
+    private var playerOut = playerLead.coerceIn(0, playerCards.lastIndex)
     private var opponentOut = 0
-    private val playerSeen = linkedSetOf(0)
+    private val playerSeen = linkedSetOf(playerOut)
     private val opponentSeen = linkedSetOf(0)
     private val log = ArrayList<BattleEvent>()
 

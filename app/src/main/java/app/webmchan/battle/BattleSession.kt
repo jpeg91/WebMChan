@@ -3,6 +3,9 @@ package app.webmchan.battle
 
 /** Where a run (a gauntlet of fights) stands. */
 enum class RunPhase {
+    /** A new fight is about to start and the player picks which card to send out first. */
+    PICKING_LEAD,
+
     /** A fight is in progress. */
     FIGHTING,
 
@@ -45,6 +48,8 @@ class BattleSession(
     startAttempt: Int = 0,
     /** The party's levels when a saved run is picked up (see [resumeLevels]); everyone starts fresh if null or the wrong length. */
     startLevels: List<Int>? = null,
+    /** True to let the player choose who leads each fight (with a party of one there is nothing to choose). */
+    private val leadPicking: Boolean = false,
 ) {
     init {
         require(party.isNotEmpty()) { "A run needs a party" }
@@ -80,6 +85,9 @@ class BattleSession(
 
     private var attempt = startAttempt
 
+    /** Which party card starts the current fight in front. */
+    private var lead = 0
+
     /** The party's levels now, in party order. They only change when a fight is won. */
     var levels: List<Int> = startLevels?.takeIf { it.size == party.size } ?: List(party.size) { BattleLevels.START_LEVEL }
         private set
@@ -105,7 +113,7 @@ class BattleSession(
 
     /** Where a saved run would start again from: null once the run is over. A fight that has ended counts as done. */
     fun resumePoint(): RunPoint? = when (phase) {
-        RunPhase.FIGHTING -> RunPoint(fightIndex, wins, attempt)
+        RunPhase.FIGHTING, RunPhase.PICKING_LEAD -> RunPoint(fightIndex, wins, attempt)
         RunPhase.FIGHT_WON -> RunPoint(fightIndex + 1, wins, 0)
         RunPhase.FIGHT_DRAWN -> RunPoint(fightIndex, wins, attempt + 1)
         RunPhase.RUN_LOST, RunPhase.RUN_COMPLETE -> null
@@ -123,13 +131,28 @@ class BattleSession(
     private fun fightSeed(): Long = BattleHash.mix(BattleHash.mix(runSeed, fightIndex.toLong()), attempt.toLong())
 
     private fun newBattle(): Battle {
-        return Battle(party, listOf(allFights[fightIndex]), fightSeed(), levels, listOf(foeLevel))
+        return Battle(party, listOf(allFights[fightIndex]), fightSeed(), levels, listOf(foeLevel), lead)
     }
 
     private fun newAi(): BattleAi = BattleAi(fightSeed())
 
+    private fun openingEvents() = listOf(BattleEvent.Sent(Side.OPPONENT, opponent.name), BattleEvent.Sent(Side.PLAYER, battle.active(Side.PLAYER).card.name))
+
+    private val picksLead: Boolean get() = leadPicking && party.size > 1
+
     init {
-        lastEvents = listOf(BattleEvent.Sent(Side.OPPONENT, opponent.name), BattleEvent.Sent(Side.PLAYER, battle.active(Side.PLAYER).card.name))
+        if (picksLead) phase = RunPhase.PICKING_LEAD else lastEvents = openingEvents()
+    }
+
+    /** At the start of a fight the player sends out the card at [partyIndex]. Returns false if it isn't the time for that. */
+    fun chooseLead(partyIndex: Int): Boolean {
+        if (phase != RunPhase.PICKING_LEAD || partyIndex !in party.indices) return false
+        lead = partyIndex
+        battle = newBattle()
+        ai = newAi()
+        phase = RunPhase.FIGHTING
+        lastEvents = openingEvents()
+        return true
     }
 
     /** Tells the listener the run's starting point; call once after setting [onSavePoint]. */
@@ -161,10 +184,16 @@ class BattleSession(
             else -> return false
         }
         levelUps = emptyList()
+        lead = 0
         battle = newBattle()
         ai = newAi()
-        phase = RunPhase.FIGHTING
-        lastEvents = listOf(BattleEvent.Sent(Side.OPPONENT, opponent.name), BattleEvent.Sent(Side.PLAYER, battle.active(Side.PLAYER).card.name))
+        if (picksLead) {
+            phase = RunPhase.PICKING_LEAD
+            lastEvents = emptyList()
+        } else {
+            phase = RunPhase.FIGHTING
+            lastEvents = openingEvents()
+        }
         onSavePoint?.invoke(this)
         return true
     }
