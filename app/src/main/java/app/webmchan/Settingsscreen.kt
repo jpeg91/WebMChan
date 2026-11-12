@@ -90,6 +90,11 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
         "Adds Fastest to the encoding choices on the main screen: the quickest conversion, with softer detail " +
             "and smaller frames. Off keeps it hidden. Turning this off while Fastest is chosen switches back to Quality.",
     ),
+    BATTLE_TEST_CARDS(
+        "battleTestCards", true, "Battle-Cards test fighters",
+        "Adds 40 made-up fighters to the Battle-Cards roster so the mode can be tried without a History. " +
+            "A party that already includes some keeps them until you change it.",
+    ),
     SHARE_TO_RUNNING_BATCH(
         "shareToRunningBatch", false, "Add shared videos to a running batch",
         "If a conversion is already running (or paused) when you share a video to WebMChan, it goes " +
