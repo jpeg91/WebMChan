@@ -88,4 +88,35 @@ class BattleLevelsTest {
         println("LEVELS gauntlet: random parties beat %.1f of 54".format(avg))
         assertTrue("average $avg", avg in 8.0..50.0)
     }
+
+    // -- Choosing who leads ---------------------------------------------------------------------
+
+    @Test fun theChosenCardStartsEachFight() {
+        val party = listOf(card(1, 8), card(2, 8), card(3, 8))
+        val s = BattleSession(party, listOf(card(10, 1), card(11, 1)), 5L, leadPicking = true)
+        assertEquals(RunPhase.PICKING_LEAD, s.phase)
+        assertEquals(RunPoint(0, 0, 0), s.resumePoint()) // a save made now starts this fight again
+        assertTrue(s.lastEvents.isEmpty())
+        assertTrue(!s.play(BattleAction.UseMove(0))) // no moves before a card is out
+        assertTrue(!s.chooseLead(7))
+        assertTrue(s.chooseLead(2))
+        assertEquals(RunPhase.FIGHTING, s.phase)
+        assertEquals("Card 3", s.battle.active(Side.PLAYER).card.name)
+        assertEquals(setOf(2), s.battle.appeared(Side.PLAYER))
+        assertTrue(!s.chooseLead(0)) // only once per fight
+        val ai = BattleAi(1)
+        while (s.phase == RunPhase.FIGHTING) s.play(ai.chooseAction(s.battle, Side.PLAYER))
+        assertEquals(RunPhase.FIGHT_WON, s.phase)
+        assertTrue(s.levels[2] > BattleLevels.START_LEVEL)
+        assertEquals(BattleLevels.START_LEVEL, s.levels[0])
+        s.next()
+        assertEquals(RunPhase.PICKING_LEAD, s.phase) // asked again for the next fight
+        assertTrue(s.chooseLead(0))
+        assertEquals("Card 1", s.battle.active(Side.PLAYER).card.name)
+    }
+
+    @Test fun aPartyOfOneAndTheDefaultNeverAsk() {
+        assertEquals(RunPhase.FIGHTING, BattleSession(listOf(card(1, 4)), listOf(card(10, 4)), 1L, leadPicking = true).phase)
+        assertEquals(RunPhase.FIGHTING, BattleSession(listOf(card(1, 4), card(2, 4)), listOf(card(10, 4)), 1L).phase)
+    }
 }
