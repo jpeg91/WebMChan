@@ -165,4 +165,26 @@ class BattleBalanceTest {
         // A random party should get somewhere, but should not usually sweep the whole history.
         assertTrue("average $avg", avg > 5.0)
     }
+
+    @Test fun theBossIsHardButBeatable() {
+        val cards = roster(120)
+        val rnd = Random(11)
+        fun winRate(parties: List<List<BattleCard>>): Double {
+            var won = 0
+            for ((i, party) in parties.withIndex()) {
+                val b = Battle(party, listOf(BattleBoss.card), 500L + i)
+                BattleAi(i + 3L).playOut(b)
+                if (b.outcome == Outcome.PLAYER_WON) won++
+            }
+            return won / parties.size.toDouble()
+        }
+        val random = winRate((0 until 150).map { cards.shuffled(rnd).take(6) })
+        val best = winRate((0 until 150).map {
+            val jitter = cards.associate { c -> c.id to rnd.nextInt(3) }
+            cards.sortedByDescending { c -> c.stats.power + jitter.getValue(c.id) }.take(6)
+        })
+        println("BALANCE boss: random party of 6 wins %.0f%%, a party of the strongest 6 wins %.0f%%".format(random * 100, best * 100))
+        assertTrue("random $random", random in 0.02..0.60)
+        assertTrue("strong $best", best in 0.30..0.97)
+    }
 }
