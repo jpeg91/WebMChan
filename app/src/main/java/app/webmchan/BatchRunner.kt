@@ -861,6 +861,7 @@ object BatchRunner {
         clearNotes()
         persist()
         persistHistory()
+        app.webmchan.battle.BattleStore.clear(appCtx)
         writer.execute { ConversionLogStore.save(appCtx, emptyList()) }
         // Settings: the save location first (that lets go of the folder's lasting grant), then every
         // saved preference, the Settings switches and the Advanced numbers.
@@ -1401,6 +1402,37 @@ object BatchRunner {
         appContext?.let { ctx -> removed.map { it.uri }.distinct().forEach { releaseSource(ctx, it) } }
         pruneAnalysis()
         persist()
+    }
+
+    /**
+     * A failed conversion leaves a "dud" card in History, which Battle-Cards turns into the weakest card
+     * there is. One per source video: failing again replaces the earlier dud. It has no saved file.
+     */
+    private fun recordDud(ctx: Context, item: QueueItem, message: String) {
+        history.filter { it.status == ItemStatus.FAILED && it.uri == item.uri }.forEach { old ->
+            history.remove(old)
+            Thumbnails.delete(ctx, old.id)
+        }
+        val dudId = ids.incrementAndGet()
+        // The dud keeps the video's thumbnail (copied, so the queue card's own can go on its own schedule).
+        val hasThumb = try {
+            val from = Thumbnails.file(ctx, item.id)
+            if (item.hasThumb && from.length() > 0) { from.copyTo(Thumbnails.file(ctx, dudId), overwrite = true); true } else false
+        } catch (_: Exception) {
+            false
+        }
+        history.add(
+            QueueItem(
+                id = dudId,
+                uri = item.uri,
+                name = item.name,
+                status = ItemStatus.FAILED,
+                detail = message,
+                hasThumb = hasThumb,
+                settings = item.settings,
+            ),
+        )
+        persistHistory()
     }
 
     /** Takes one card out of History, for good. Never touches the saved file. */
@@ -2050,6 +2082,7 @@ object BatchRunner {
                             backToPen(now)
                             failCount++
                             if (AppSettings.get(AppToggle.NOTIFICATION_FAILURE)) ConvertService.postFailed(ctx, id, item.name, itemFailMsg.orEmpty())
+                            recordDud(ctx, item, itemFailMsg.orEmpty())
                         }
                         partsSkipped > 0 && partsSaved == 0 -> {
                             // Every part was skipped, so there is nothing to show in Finished. Keep the

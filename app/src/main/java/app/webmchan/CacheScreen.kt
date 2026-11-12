@@ -200,7 +200,7 @@ fun CacheScreen(onBack: () -> Unit) {
             Text(
                 "Puts WebMChan back to how it was when first installed. It does everything above, and also " +
                     "empties the Holding Pen, queue, Finished list, History and the Log page, deletes every " +
-                    "shared copy, and resets all your settings: the Settings page, the Advanced numbers, " +
+                    "shared copy, wipes your Battle-Cards party, records and saved run, and resets all your settings: the Settings page, the Advanced numbers, " +
                     "the save location and the choices on the main screen. The only thing kept is your saved " +
                     ".webm videos, which are in your own folders. " +
                     "Frees about ${CacheTools.formatSize(r.resetApp.bytes)}. This can't be undone.",
@@ -236,7 +236,8 @@ fun CacheScreen(onBack: () -> Unit) {
             CacheAction.RESET -> Triple(
                 "Reset app",
                 "This puts WebMChan back to how it was when first installed. It empties the Holding Pen, " +
-                    "queue, Finished list, History and the Log page, deletes every shared copy, the analysis, " +
+                    "queue, Finished list, History and the Log page (so every Battle-Card, your Battle-Cards party, " +
+                    "records and saved run too), deletes every shared copy, the analysis, " +
                     "thumbnails and cache, and resets all your settings (the Settings page, Advanced numbers, " +
                     "save location and main screen choices). Only your saved .webm videos are kept. " +
                     "It can't be undone.",

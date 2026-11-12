@@ -1228,7 +1228,10 @@ internal fun QueueRow(
                     }
                     P5Button(
                         if (inHistory) "Remove from history" else "Remove card",
-                        onClick = { if (AppSettings.get(AppToggle.CONFIRM_DESTRUCTIVE)) showRemove = true else removeCard() },
+                        onClick = {
+                            val battleWarning = inHistory && !BattleRemovalWarning.shown
+                            if (AppSettings.get(AppToggle.CONFIRM_DESTRUCTIVE) || battleWarning) showRemove = true else removeCard()
+                        },
                         kind = P5Kind.Secondary,
                         modifier = Modifier.weight(1f),
                     )
@@ -1354,7 +1357,9 @@ internal fun QueueRow(
         )
     }
 
-    if (showRemove) {
+    if (showRemove && inHistory) {
+        HistoryRemoveDialog(hasSavedFile = item.savedUri != null, onConfirm = { showRemove = false; removeCard() }, onDismiss = { showRemove = false })
+    } else if (showRemove) {
         AlertDialog(
             onDismissRequest = { showRemove = false },
             shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
