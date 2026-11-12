@@ -198,12 +198,14 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     if (showHistory) {
-                        P5Background { HistoryScreen(onBack = { showHistory = false }, onBattleCards = { showBattle = true }) }
+                        P5Background { HistoryScreen(onBack = { showHistory = false }, onBattleCards = { showBattle = true; AccentMode.battle = true }) }
                     }
                     // On top of History, which stays composed underneath; back returns to it.
                     if (showBattle) {
-                        P5Background { app.webmchan.battle.BattleHost(onBack = { showBattle = false }) }
+                        P5Background { app.webmchan.battle.BattleHost(onBack = { showBattle = false; AccentMode.battle = false }) }
                     }
+                    // Keeps the green in step with the screen even after the activity is recreated.
+                    SideEffect { AccentMode.battle = showBattle }
                     if (showSettings) {
                         P5Background { SettingsScreen(onBack = { showSettings = false }) }
                     }
