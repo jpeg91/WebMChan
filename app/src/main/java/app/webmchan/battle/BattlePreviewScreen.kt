@@ -57,7 +57,7 @@ fun BattlePreviewScreen(
         item { P5Title("Battle-Cards") }
         if (savedRun != null) {
             item { P5Button("Resume run", onClick = onResume) }
-            item { Text(savedRun, style = MaterialTheme.typography.bodySmall, color = P5.Amber) }
+            item { Text(savedRun, style = MaterialTheme.typography.bodySmall, color = P5.RedBright) }
         }
         item { P5Button("Start a run", onClick = onPlay, kind = if (savedRun != null) P5Kind.Secondary else P5Kind.Primary, enabled = cards.isNotEmpty()) }
         item {
@@ -87,7 +87,7 @@ fun BattlePreviewScreen(
 
 /** One colour per type, so a card's type reads at a glance. */
 internal fun typeColor(type: CardType): Color = when (type) {
-    CardType.MAINSTREAM -> P5.RedBright
+    CardType.MAINSTREAM -> P5.DangerBright
     CardType.MATROSKA -> P5.Amber
     CardType.LEGACY -> P5.Grey
     CardType.AUDIO -> Color(0xFF9C86E8)
@@ -168,7 +168,7 @@ private fun CardView(card: BattleCard) {
             Text(
                 "Not recorded for this older card, so shown as middle: " + card.missing.joinToString { it.label } + ".",
                 style = MaterialTheme.typography.bodySmall,
-                color = P5.Amber,
+                color = P5.RedBright,
             )
         }
     }

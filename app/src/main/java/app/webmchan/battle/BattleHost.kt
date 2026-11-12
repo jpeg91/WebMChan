@@ -180,12 +180,12 @@ private fun PartyScreen(
                 if (place >= 0) chosen.remove(card.id)
                 else if (chosen.size < BattleRun.PARTY_MAX) chosen.add(card.id)
             },
-            accent = if (place >= 0) P5.Amber else color,
+            accent = if (place >= 0) P5.Red else color,
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 CardThumb(card.id, width = 72.dp, height = 46.dp)
                 Text(card.name, style = MaterialTheme.typography.titleSmall, color = P5.White, modifier = Modifier.weight(1f))
-                if (place >= 0) P5Tag("#${place + 1}", color = P5.Amber, filled = true)
+                if (place >= 0) P5Tag("#${place + 1}", color = P5.Red, filled = true)
                 P5Tag(card.type.label, color = color)
             }
             Text(
@@ -205,7 +205,7 @@ private fun PartyScreen(
                 Text(
                     "Won ${record.fightsWon} · Lost ${record.fightsLost} · Runs completed ${record.runsCompleted}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = P5.Amber,
+                    color = P5.RedBright,
                 )
             }
             if (record != null && card.id !in rosterIds) {
@@ -238,9 +238,9 @@ private fun PartyScreen(
             )
         }
         if (saved.isNotEmpty()) {
-            item { Text("Your party cards", style = MaterialTheme.typography.titleSmall, color = P5.Amber) }
+            item { Text("Your party cards", style = MaterialTheme.typography.titleSmall, color = P5.RedBright) }
             items(saved, key = { "s${it.card.id}" }) { s -> cardRow(s.card, s.record) }
-            item { Text("From History", style = MaterialTheme.typography.titleSmall, color = P5.Amber) }
+            item { Text("From History", style = MaterialTheme.typography.titleSmall, color = P5.RedBright) }
         }
         items(fromHistory, key = { "h${it.id}" }) { card -> cardRow(card, null) }
         item { Spacer(Modifier.height(8.dp)) }
@@ -574,7 +574,7 @@ private fun MoveGrid(
                         // How it will do against whoever is in front of you now.
                         val mult = if (move.kind.isDamage && move.type != CardType.NONE) TypeChart.multiplier(move.type, foe.type) else 1.0
                         if (mult > 1.0) Text("Super effective ▲", style = MaterialTheme.typography.labelSmall, color = P5.Amber)
-                        else if (mult < 1.0) Text("Resisted ▼", style = MaterialTheme.typography.labelSmall, color = P5.RedBright)
+                        else if (mult < 1.0) Text("Resisted ▼", style = MaterialTheme.typography.labelSmall, color = P5.DangerBright)
                     }
                 }
             }
@@ -597,7 +597,7 @@ private fun MessageBox(text: String, hint: String, onTap: () -> Unit) {
 
 @Composable
 private fun ResultPanel(title: String, body: String) {
-    P5Card(accent = P5.Amber, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+    P5Card(accent = P5.Red, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
         Text(title, style = MaterialTheme.typography.titleLarge, color = P5.White)
         Text(body, style = MaterialTheme.typography.bodyMedium, color = P5.Grey)
     }
@@ -607,7 +607,7 @@ private fun ResultPanel(title: String, body: String) {
 @Composable
 private fun Choices(title: String, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title, style = MaterialTheme.typography.titleSmall, color = P5.Amber)
+        Text(title, style = MaterialTheme.typography.titleSmall, color = P5.RedBright)
         content()
     }
 }
@@ -620,9 +620,9 @@ private fun FighterPanel(f: FighterView, caption: String, thumbOnRight: Boolean 
     // The bar slides to its new length; with "Animations off" it jumps.
     val shownFrac by animateFloatAsState(frac, if (AppSettings.get(AppToggle.ANIMATIONS_OFF)) snap() else tween(450), label = "hp")
     val bar = when {
-        frac > 0.5f -> P5.Amber
-        frac > 0.2f -> P5.RedBright
-        else -> P5.Red
+        frac > 0.5f -> P5.Red
+        frac > 0.2f -> P5.DangerBright
+        else -> P5.Danger
     }
     P5Card(accent = color) {
         Text(caption, style = MaterialTheme.typography.labelSmall, color = P5.GreyDim)
@@ -651,10 +651,10 @@ private fun FighterPanel(f: FighterView, caption: String, thumbOnRight: Boolean 
         val shifted = StatId.values().filter { f.stages[it.ordinal] != 0 }
         if (f.status != null || shifted.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                f.status?.let { P5Tag(it.label, color = P5.RedBright, filled = true) }
+                f.status?.let { P5Tag(it.label, color = P5.DangerBright, filled = true) }
                 for (stat in shifted) {
                     val n = f.stages[stat.ordinal]
-                    P5Tag("${statShort(stat)} ${if (n > 0) "+" else ""}$n", color = if (n > 0) P5.Amber else P5.RedBright, filled = false)
+                    P5Tag("${statShort(stat)} ${if (n > 0) "+" else ""}$n", color = if (n > 0) P5.RedBright else P5.DangerBright, filled = false)
                 }
             }
         }
@@ -684,7 +684,7 @@ private fun PartyList(view: BattleView, allowed: Set<Int>, onPick: (Int) -> Unit
                         Text("Lv ${f.level}", style = MaterialTheme.typography.labelMedium, color = P5.Grey)
                     }
                     Box(Modifier.fillMaxWidth().height(6.dp).background(P5.Line)) {
-                        Box(Modifier.fillMaxWidth(frac).fillMaxHeight().background(if (frac > 0.5f) P5.Amber else if (frac > 0.2f) P5.RedBright else P5.Red))
+                        Box(Modifier.fillMaxWidth(frac).fillMaxHeight().background(if (frac > 0.5f) P5.Red else if (frac > 0.2f) P5.DangerBright else P5.Danger))
                     }
                     Text(
                         "${f.type.label} · HP ${f.hp} / ${f.maxHp}" + if (state.isNotEmpty()) " · $state" else "",
