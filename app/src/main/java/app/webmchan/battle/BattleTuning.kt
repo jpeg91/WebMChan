@@ -5,12 +5,12 @@ package app.webmchan.battle
  * Every number the battle rules use, in one place, so balance is changed by editing this file and
  * nothing else. The values were tuned by simulating thousands of fights (see BattleBalanceTest).
  *
- * There are no levels: a hidden constant [LEVEL] stands in for one, so the card's bands alone decide
- * how strong it is. A band (1..8) becomes a real stat through [BASE_BY_BAND] and the same formula the
+ * Cards have a level during a run (see [BattleLevels]); [LEVEL] is the level used when none is given
+ * (plain fights and the balance tests), so the card's bands alone decide how strong it is. A band (1..8) becomes a real stat through [BASE_BY_BAND] and the same formula the
  * classic handheld battlers used, with the extras (individual values and training) left out.
  */
 object BattleTuning {
-    /** The hidden level every card fights at. */
+    /** The level a card fights at when none is given. */
     const val LEVEL = 50
 
     /** The base value for each band; index 0 is band 1. */
@@ -19,10 +19,10 @@ object BattleTuning {
     private fun base(band: Int): Int = BASE_BY_BAND[band.coerceIn(1, BAND_COUNT) - 1]
 
     /** Maximum HP for an HP band. */
-    fun maxHp(band: Int): Int = base(band) * 4 * LEVEL / 100 + LEVEL + 10
+    fun maxHp(band: Int, level: Int = LEVEL): Int = base(band) * 4 * level / 100 + level + 10
 
     /** Attack, Special Attack, Defence, Special Defence or Speed for a band. */
-    fun stat(band: Int): Int = base(band) * 2 * LEVEL / 100 + 5
+    fun stat(band: Int, level: Int = LEVEL): Int = base(band) * 2 * level / 100 + 5
 
     // -- Damage ---------------------------------------------------------------------------------
 

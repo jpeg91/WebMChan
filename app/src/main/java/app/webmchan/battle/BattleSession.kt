@@ -19,6 +19,9 @@ enum class RunPhase {
     RUN_COMPLETE,
 }
 
+/** A party card that gained levels from a win. */
+data class LevelUp(val name: String, val from: Int, val to: Int)
+
 /** Where a saved run starts again: the fight, how many fights were won so far, and which attempt (after draws). */
 data class RunPoint(val fightIndex: Int, val wins: Int, val attempt: Int)
 
@@ -40,6 +43,8 @@ class BattleSession(
     startFight: Int = 0,
     startWins: Int = 0,
     startAttempt: Int = 0,
+    /** The party's levels when a saved run is picked up (see [resumeLevels]); everyone starts fresh if null or the wrong length. */
+    startLevels: List<Int>? = null,
 ) {
     init {
         require(party.isNotEmpty()) { "A run needs a party" }
@@ -74,6 +79,15 @@ class BattleSession(
         private set
 
     private var attempt = startAttempt
+
+    /** The party's levels now, in party order. They only change when a fight is won. */
+    var levels: List<Int> = startLevels?.takeIf { it.size == party.size } ?: List(party.size) { BattleLevels.START_LEVEL }
+        private set
+
+    /** Who levelled up in the fight just won (empty otherwise): name, level before, level after. */
+    var levelUps: List<LevelUp> = emptyList()
+        private set
+
     var battle: Battle = newBattle()
         private set
     private var ai: BattleAi = newAi()
@@ -97,14 +111,19 @@ class BattleSession(
         RunPhase.RUN_LOST, RunPhase.RUN_COMPLETE -> null
     }
 
+    /** The opponent's level in the current fight. */
+    val foeLevel: Int get() = BattleLevels.foeLevel(fightIndex, opponents.size, isBossFight)
+
+    /** The party's levels at the point a saved run starts again from (see [resumePoint]). */
+    fun resumeLevels(): List<Int> = levels
+
     /** True while the player has to pick a replacement before anything else can happen. */
     val mustSwitch: Boolean get() = phase == RunPhase.FIGHTING && battle.needsSwitch(Side.PLAYER)
 
     private fun fightSeed(): Long = BattleHash.mix(BattleHash.mix(runSeed, fightIndex.toLong()), attempt.toLong())
 
     private fun newBattle(): Battle {
-        val b = Battle(party, listOf(allFights[fightIndex]), fightSeed())
-        return b
+        return Battle(party, listOf(allFights[fightIndex]), fightSeed(), levels, listOf(foeLevel))
     }
 
     private fun newAi(): BattleAi = BattleAi(fightSeed())
@@ -141,6 +160,7 @@ class BattleSession(
             RunPhase.FIGHT_DRAWN -> attempt++
             else -> return false
         }
+        levelUps = emptyList()
         battle = newBattle()
         ai = newAi()
         phase = RunPhase.FIGHTING
@@ -158,6 +178,9 @@ class BattleSession(
         when (result) {
             Outcome.PLAYER_WON -> {
                 wins++
+                val before = levels
+                levels = BattleLevels.afterWin(before, battle.appeared(Side.PLAYER), foeLevel)
+                levelUps = before.indices.filter { levels[it] > before[it] }.map { LevelUp(party[it].name, before[it], levels[it]) }
                 phase = if (fightIndex >= allFights.lastIndex) RunPhase.RUN_COMPLETE else RunPhase.FIGHT_WON
             }
             Outcome.OPPONENT_WON -> phase = RunPhase.RUN_LOST

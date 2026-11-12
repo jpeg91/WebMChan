@@ -5,16 +5,14 @@ import java.util.Random
 
 /**
  * Made-up cards for testing, so the game can be tried without first converting a pile of videos.
- * They are added to the roster when [ENABLED] is true; set it to false (or delete this file and the
- * lines that use it in BattleHost) before a real release. They have negative ids so they can never clash
+ * They are added to the roster while the "Battle-Cards test fighters" switch in Settings is on (BattleHost
+ * reads it; delete this file and those lines before a real release). They have negative ids so they can never clash
  * with a real History card, and no thumbnail.
  */
 object BattleTestCards {
-    const val ENABLED = true
     private const val COUNT = 40
 
     fun cards(): List<BattleCard> {
-        if (!ENABLED) return emptyList()
         val rnd = Random(2024)
         val containers = listOf("MP4", "MP4", "MP4", "MP4", "Matroska/WebM", "Matroska/WebM", "AVI", "FLV", "GIF", "MOV")
         val rungs = listOf(240 to 426, 360 to 640, 480 to 854, 540 to 960, 720 to 1280, 1080 to 1920)

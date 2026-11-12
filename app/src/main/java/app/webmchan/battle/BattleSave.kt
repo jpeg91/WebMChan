@@ -14,6 +14,8 @@ data class SavedRun(
     val boss: BattleCard?,
     val seed: Long,
     val point: RunPoint,
+    /** The party's levels at that point, in party order (empty in older saves: everyone starts fresh). */
+    val levels: List<Int> = emptyList(),
 )
 
 /**
@@ -64,6 +66,7 @@ object BattleSaveCodec {
                     "fight" to r.point.fightIndex,
                     "wins" to r.point.wins,
                     "attempt" to r.point.attempt,
+                    "levels" to r.levels,
                 )
             },
         ),
@@ -82,7 +85,8 @@ object BattleSaveCodec {
             // A run that can't be rebuilt in full (a missing card) is dropped, not half-restored.
             if (opponents.isEmpty() || ids.isEmpty() || ids.any { id -> party.none { it.card.id == id } }) null
             else SavedRun(ids, opponents, (r["boss"] as? Map<*, *>)?.let { decodeCard(it) }, (r["seed"] as? Number)?.toLong() ?: 0L,
-                RunPoint(int(r["fight"]), int(r["wins"]), int(r["attempt"])))
+                RunPoint(int(r["fight"]), int(r["wins"]), int(r["attempt"])),
+                (r["levels"] as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toInt() })
         }
         BattleSave(party, run)
     } catch (_: Exception) {

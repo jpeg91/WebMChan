@@ -11,6 +11,7 @@ data class FighterView(
     val status: StatusEffect?,
     /** Buff and debuff stages, indexed by [StatId.ordinal]. */
     val stages: List<Int>,
+    val level: Int = BattleTuning.LEVEL,
 ) {
     val fainted: Boolean get() = hp <= 0
 }
@@ -73,7 +74,7 @@ data class BattleView(
         private val ZERO = List(StatId.values().size) { 0 }
 
         fun of(battle: Battle): BattleView {
-            fun view(f: Fighter) = FighterView(f.card.id, f.card.name, f.card.type, f.hp, f.maxHp, f.status, f.stages.toList())
+            fun view(f: Fighter) = FighterView(f.card.id, f.card.name, f.card.type, f.hp, f.maxHp, f.status, f.stages.toList(), f.level)
             return BattleView(
                 battle.party(Side.PLAYER).map(::view),
                 battle.party(Side.OPPONENT).map(::view),

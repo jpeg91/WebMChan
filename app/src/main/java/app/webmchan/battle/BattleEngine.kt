@@ -84,8 +84,8 @@ fun BattleEvent.text(): String = when (this) {
 }
 
 /** A card in a fight: its current HP, stat stages and status. Created by [Battle]; fresh every fight. */
-class Fighter(val card: BattleCard) {
-    val maxHp: Int = BattleTuning.maxHp(card.stats.hp)
+class Fighter(val card: BattleCard, val level: Int = BattleTuning.LEVEL) {
+    val maxHp: Int = BattleTuning.maxHp(card.stats.hp, level)
     var hp: Int = maxHp
         internal set
 
@@ -110,7 +110,7 @@ class Fighter(val card: BattleCard) {
 
     /** The stat as it counts right now: its base, moved by stages, and cut by a status. */
     fun effective(id: StatId): Double {
-        var v = BattleTuning.stat(band(id)) * BattleTuning.stageMultiplier(stages[id.ordinal])
+        var v = BattleTuning.stat(band(id), level) * BattleTuning.stageMultiplier(stages[id.ordinal])
         when (status) {
             StatusEffect.THERMAL_THROTTLE -> if (id == StatId.ATTACK || id == StatId.SP_ATTACK) v *= BattleTuning.THROTTLE_ATTACK
             StatusEffect.DROPPED_FRAMES -> if (id == StatId.SPEED) v *= BattleTuning.DROPPED_FRAMES_SPEED
@@ -132,7 +132,7 @@ object BattleMath {
         val special = move.kind == MoveKind.SPECIAL
         val a = user.effective(if (special) StatId.SP_ATTACK else StatId.ATTACK)
         val d = target.effective(if (special) StatId.SP_DEFENCE else StatId.DEFENCE)
-        val levelTerm = floor(2.0 * BattleTuning.LEVEL / 5.0) + 2.0
+        val levelTerm = floor(2.0 * user.level / 5.0) + 2.0
         val base = floor(floor(levelTerm * move.power * a / d) / 50.0) + 2.0
         val sameType = if (move.type != CardType.NONE && move.type == user.card.type) BattleTuning.SAME_TYPE_BONUS else 1.0
         val crit = if (critical) BattleTuning.CRIT_MULTIPLIER else 1.0
@@ -149,14 +149,21 @@ object BattleMath {
  * another left, [needsSwitch] is true and [forceSwitch] must be called before the next turn. The
  * fight is over when [outcome] is not null.
  */
-class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val seed: Long) {
+class Battle(
+    playerCards: List<BattleCard>,
+    opponentCards: List<BattleCard>,
+    val seed: Long,
+    /** Each card's level, in the same order as the cards; the default level for any not given. */
+    playerLevels: List<Int> = emptyList(),
+    opponentLevels: List<Int> = emptyList(),
+) {
     init {
         require(playerCards.isNotEmpty() && opponentCards.isNotEmpty()) { "Both sides need a card" }
     }
 
     private val rng = BattleRng(seed)
-    private val playerParty = playerCards.map { Fighter(it) }
-    private val opponentParty = opponentCards.map { Fighter(it) }
+    private val playerParty = playerCards.mapIndexed { i, c -> Fighter(c, playerLevels.getOrNull(i) ?: BattleTuning.LEVEL) }
+    private val opponentParty = opponentCards.mapIndexed { i, c -> Fighter(c, opponentLevels.getOrNull(i) ?: BattleTuning.LEVEL) }
     private var playerOut = 0
     private var opponentOut = 0
     private val playerSeen = linkedSetOf(0)

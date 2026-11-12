@@ -70,7 +70,9 @@ fun BattleHost(onBack: () -> Unit) {
     // Rebuilt whenever History changes (the list is observable state). Test cards are for trying the game without a History.
     val real by remember { derivedStateOf { BattleFromHistory.roster(BatchRunner.history.toList()) } }
     val testCards = remember { BattleTestCards.cards() }
-    val roster = remember(real) { real + testCards }
+    // The "Battle-Cards test fighters" switch on the Settings page.
+    val useTestCards = AppSettings.get(AppToggle.BATTLE_TEST_CARDS)
+    val roster = remember(real, useTestCards) { if (useTestCards) real + testCards else real }
     var save by remember { mutableStateOf(BattleStore.load(ctx)) }
     var picking by remember { mutableStateOf(false) }
     var session by remember { mutableStateOf<BattleSession?>(null) }
@@ -90,7 +92,7 @@ fun BattleHost(onBack: () -> Unit) {
                 if (sess.phase == RunPhase.RUN_COMPLETE) next = next.recordRunCompleted(partyIds)
                 update(next)
             } else {
-                update(save.withRun(SavedRun(partyIds, sess.opponents, sess.boss, sess.runSeed, point)))
+                update(save.withRun(SavedRun(partyIds, sess.opponents, sess.boss, sess.runSeed, point, sess.resumeLevels())))
             }
         }
         s.announce()
@@ -132,7 +134,7 @@ fun BattleHost(onBack: () -> Unit) {
                     if (run != null) {
                         val cards = run.partyIds.mapNotNull { save.partyCard(it)?.card }
                         if (cards.isNotEmpty()) {
-                            val s = BattleSession(cards, run.opponents, run.seed, run.boss, run.point.fightIndex, run.point.wins, run.point.attempt)
+                            val s = BattleSession(cards, run.opponents, run.seed, run.boss, run.point.fightIndex, run.point.wins, run.point.attempt, run.levels)
                             wire(s, run.partyIds)
                             session = s
                         }
@@ -433,10 +435,12 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit, onGiveUp: () -
                 busy -> MessageBox(message, hint = "tap to continue", onTap = { advance() })
                 session.phase == RunPhase.FIGHT_WON -> {
                     val next = session.nextOpponent
+                    val grew = session.levelUps.joinToString("\n") { "${it.name} grew to Lv ${it.to}" }
                     ResultPanel(
                         "You won!",
-                        if (next != null && next.id == BattleBoss.ID) "Something else is waiting for you... Your party is fully healed."
-                        else "Next up: ${next?.name} (power ${next?.stats?.power}). Your party is fully healed.",
+                        (if (grew.isNotEmpty()) grew + "\n\n" else "") +
+                            if (next != null && next.id == BattleBoss.ID) "Something else is waiting for you... Your party is fully healed."
+                            else "Next up: ${next?.name} (power ${next?.stats?.power}). Your party is fully healed.",
                     )
                 }
                 session.phase == RunPhase.FIGHT_DRAWN -> ResultPanel("A draw.", "Nobody won. The same opponent comes again.")
@@ -608,6 +612,7 @@ private fun FighterPanel(f: FighterView, caption: String, thumbOnRight: Boolean 
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
+                    Text("Lv ${f.level}", style = MaterialTheme.typography.labelMedium, color = P5.Grey)
                     P5Tag(f.type.label, color = color, filled = true)
                 }
                 Box(Modifier.fillMaxWidth().height(12.dp).background(P5.Line)) {
@@ -636,7 +641,7 @@ private fun PartyList(view: BattleView, allowed: Set<Int>, onPick: (Int) -> Unit
             else -> ""
         }
         P5Button(
-            "${f.name} · ${f.hp}/${f.maxHp}" + if (state.isNotEmpty()) " · $state" else "",
+            "${f.name} · Lv ${f.level} · ${f.hp}/${f.maxHp}" + if (state.isNotEmpty()) " · $state" else "",
             onClick = { onPick(index) },
             enabled = index in allowed,
             kind = P5Kind.Secondary,
