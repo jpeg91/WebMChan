@@ -2,6 +2,7 @@
 package app.webmchan.battle
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -25,8 +26,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,9 +37,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.webmchan.AppSettings
+import app.webmchan.AppToggle
 import app.webmchan.BatchRunner
 import kotlinx.coroutines.delay
 import app.webmchan.P5
@@ -266,11 +278,36 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit, onGiveUp: () -
 
     val busy = shown < queue.size
 
+    // The move animation playing right now (if any), and how far through it is (0..1).
+    var fx by remember { mutableStateOf<ActiveFx?>(null) }
+    val fxT = remember { mutableFloatStateOf(0f) }
+    // Where each fighter's panel is, in pixels inside the screen box, and the box itself.
+    var foeCentre by remember { mutableStateOf(Offset.Zero) }
+    var meCentre by remember { mutableStateOf(Offset.Zero) }
+    var boxOrigin by remember { mutableStateOf(Offset.Zero) }
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+
+    fun startFx(e: BattleEvent, after: BattleView) {
+        if (AppSettings.get(AppToggle.ANIMATIONS_OFF)) { fx = null; return }
+        fx = when (e) {
+            is BattleEvent.Used -> {
+                val def = BattleFx.def(e.moveId, BattleMoves.byId(e.moveId)?.kind ?: MoveKind.BASIC)
+                val other = if (e.side == Side.PLAYER) Side.OPPONENT else Side.PLAYER
+                ActiveFx(def, FxKind.MOVE, e.side, if (def.onSelf) e.side else other, FxPalette.forType(after.active(e.side).type))
+            }
+            is BattleEvent.Hit -> ActiveFx(BattleFx.hit, FxKind.HIT, e.side, e.side, FxPalette.forType(CardType.NONE))
+            is BattleEvent.Fainted -> ActiveFx(BattleFx.faint, FxKind.FAINT, e.side, e.side, FxPalette.forType(CardType.NONE))
+            else -> null
+        }
+        fxT.floatValue = 0f
+    }
+
     fun advance() {
         if (shown >= queue.size) return
         val e = queue[shown]
         view = view.apply(e)
         message = e.text()
+        startFx(e, view)
         shown++
     }
 
@@ -296,9 +333,24 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit, onGiveUp: () -
     // Each message stays up a moment, then the next one comes. A tap on the message box skips the wait.
     LaunchedEffect(queue, shown) {
         if (shown in 1 until queue.size) {
-            delay(MESSAGE_MILLIS)
+            val animated = if (AppSettings.get(AppToggle.ANIMATIONS_OFF)) null else queue[shown - 1] as? BattleEvent.Used
+            val wait = if (animated == null) MESSAGE_MILLIS else maxOf(MESSAGE_MILLIS, BattleFx.def(animated.moveId, BattleMoves.byId(animated.moveId)?.kind ?: MoveKind.BASIC).millis + 200L)
+            delay(wait)
             advance()
         }
+    }
+    // Drives the animation by hand from the display's frame clock, so Android's "animator duration scale"
+    // (developer options) cannot speed it up, slow it down or switch it off. Only the app's own setting does.
+    LaunchedEffect(fx) {
+        val active = fx ?: return@LaunchedEffect
+        val start = withFrameNanos { it }
+        while (true) {
+            val ms = (withFrameNanos { it } - start) / 1_000_000.0
+            val t = ms / active.def.millis
+            if (t >= 1.0) break
+            fxT.floatValue = t.toFloat()
+        }
+        fx = null
     }
 
     BackHandler {
@@ -313,13 +365,66 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit, onGiveUp: () -
     val me = view.active(Side.PLAYER)
     val moves = session.battle.active(Side.PLAYER).card.moves
 
+    /** The animation's grid for the current screen size, with the fighters' panel centres on it. */
+    fun fxContext(): FxCtx? {
+        if (boxSize.width <= 0) return null
+        val cell = boxSize.width.toFloat() / BattleFx.GRID_W
+        val gh = Math.ceil(boxSize.height / cell.toDouble()).toInt()
+        fun cellAt(o: Offset) = Pt(((o.x - boxOrigin.x) / cell).toDouble(), ((o.y - boxOrigin.y) / cell).toDouble())
+        val user = fx?.userSide ?: Side.PLAYER
+        val target = fx?.targetSide ?: Side.OPPONENT
+        return FxCtx(cellAt(if (user == Side.PLAYER) meCentre else foeCentre), cellAt(if (target == Side.PLAYER) meCentre else foeCentre), BattleFx.GRID_W, gh)
+    }
+
+    /** How far this side's panel is knocked about by the animation: sideways, up/down (in cells), and opacity. */
+    fun panelShift(side: Side): FxShift {
+        val a = fx
+        val resting = if (view.active(side).hp <= 0) 0.5 else 1.0
+        val ctx = fxContext()
+        if (a == null || ctx == null) return FxShift(userAlpha = resting, targetAlpha = resting)
+        val t = fxT.floatValue.toDouble()
+        val s = when (a.kind) {
+            FxKind.MOVE -> BattleFx.shift(a.def, ctx, t)
+            FxKind.HIT -> BattleFx.hitShift(t)
+            FxKind.FAINT -> BattleFx.faintShift(t)
+        }
+        var dx = 0.0
+        var dy = 0.0
+        var alpha = resting
+        if (a.kind == FxKind.MOVE) {
+            if (side == a.userSide) { dx += s.userDx; dy += s.userDy; alpha = alpha * s.userAlpha }
+            if (side == a.targetSide && a.targetSide != a.userSide) { dx += s.targetDx; dy += s.targetDy; alpha = alpha * s.targetAlpha }
+        } else if (side == a.targetSide) {
+            dx = s.targetDx; dy = s.targetDy; alpha = s.targetAlpha
+        }
+        return FxShift(userDx = dx, userDy = dy, userAlpha = alpha)
+    }
+
+    fun Modifier.fighterFx(side: Side, onCentre: (Offset) -> Unit): Modifier =
+        onGloballyPositioned { onCentre(it.positionInRoot() + Offset(it.size.width / 2f, it.size.height / 2f)) }
+            .graphicsLayer {
+                val s = panelShift(side)
+                val cell = if (boxSize.width > 0) boxSize.width.toFloat() / BattleFx.GRID_W else 0f
+                translationX = (s.userDx * cell).toFloat()
+                translationY = (s.userDy * cell).toFloat()
+                alpha = s.userAlpha.toFloat()
+            }
+
+    Box(
+        Modifier.fillMaxSize().onGloballyPositioned {
+            boxOrigin = it.positionInRoot()
+            boxSize = it.size
+        },
+    ) {
     Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // Top: the opponent.
-        FighterPanel(
-            foe,
-            if (session.isBossFight) "Opponent · ??? · won ${session.wins}" else "Opponent · fight ${session.fightIndex + 1} of ${session.fightCount} · won ${session.wins}",
-            thumbOnRight = true,
-        )
+        Box(Modifier.fighterFx(Side.OPPONENT) { foeCentre = it }) {
+            FighterPanel(
+                foe,
+                if (session.isBossFight) "Opponent · ??? · won ${session.wins}" else "Opponent · fight ${session.fightIndex + 1} of ${session.fightCount} · won ${session.wins}",
+                thumbOnRight = true,
+            )
+        }
 
         // Middle: the messages, or whatever the player has to choose from.
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -372,7 +477,7 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit, onGiveUp: () -
         }
 
         // Bottom: you, then the controls.
-        FighterPanel(me, "Yours")
+        Box(Modifier.fighterFx(Side.PLAYER) { meCentre = it }) { FighterPanel(me, "Yours") }
         val canMove = !busy && session.phase == RunPhase.FIGHTING && !session.mustSwitch && menu == Menu.MOVES
         when {
             session.phase == RunPhase.FIGHT_WON && !busy -> P5Button("Next fight", onClick = { session.next(); replay(BattleView.of(session.battle), session.lastEvents) }, modifier = Modifier.fillMaxWidth())
@@ -397,7 +502,24 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit, onGiveUp: () -
             )
         }
     }
+    // The hand-drawn effects, in whole squares on a 64-wide grid, over everything else.
+    val playing = fx
+    if (playing != null && boxSize.width > 0) {
+        Canvas(Modifier.fillMaxSize()) {
+            val ctx = fxContext() ?: return@Canvas
+            val cell = size.width / BattleFx.GRID_W
+            for (p in BattleFx.render(playing.def, ctx, fxT.floatValue.toDouble())) {
+                drawRect(Color(playing.palette.color(p.slot)), Offset(p.x * cell, p.y * cell), Size(p.w * cell, p.h * cell))
+            }
+        }
+    }
+    }
 }
+
+private enum class FxKind { MOVE, HIT, FAINT }
+
+/** An animation in progress: what it draws, who is using it, who it is aimed at, and its colours. */
+private class ActiveFx(val def: FxDef, val kind: FxKind, val userSide: Side, val targetSide: Side, val palette: FxPalette)
 
 /** The four moves in a 2x2 grid, then Switch and Leave underneath. */
 @Composable

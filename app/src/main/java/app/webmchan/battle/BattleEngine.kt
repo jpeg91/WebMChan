@@ -31,7 +31,7 @@ enum class Outcome { PLAYER_WON, OPPONENT_WON, DRAW }
  */
 sealed class BattleEvent {
     data class Sent(val side: Side, val name: String) : BattleEvent()
-    data class Used(val side: Side, val name: String, val move: String) : BattleEvent()
+    data class Used(val side: Side, val name: String, val move: String, val moveId: String = "") : BattleEvent()
     data class Missed(val side: Side, val name: String) : BattleEvent()
 
     /** [side] is who was hit. [effectiveness] is 2.0, 1.0 or 0.5. */
@@ -313,7 +313,7 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
             else -> {}
         }
 
-        log.add(BattleEvent.Used(side, user.card.name, move.name))
+        log.add(BattleEvent.Used(side, user.card.name, move.name, move.id))
         when (move.kind) {
             MoveKind.BASIC, MoveKind.SPECIAL -> strike(side, user, target, move)
             MoveKind.STATUS -> if (hits(side, user, move)) inflict(side.other, target, move.status)
