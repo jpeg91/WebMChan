@@ -191,4 +191,6 @@ data class BattleCard(
     val isAudio: Boolean,
     val parts: Int,
     val missing: Set<Missing>,
+    /** A card made from a failed conversion: the weakest possible, with one useless move. */
+    val isDud: Boolean = false,
 )

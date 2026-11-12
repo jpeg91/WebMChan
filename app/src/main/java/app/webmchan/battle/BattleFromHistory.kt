@@ -25,7 +25,9 @@ object BattleFromHistory {
             groups.getOrPut(key) { ArrayList() }.add(card)
         }
         val cards = groups.values.map { BattleDerive.derive(inputFor(it.sortedBy { c -> c.id })) }
-        return BattleDerive.numberRepeats(cards).sortedByDescending { it.id }
+        // A failed conversion is a dud card.
+        val duds = history.filter { it.status == ItemStatus.FAILED }.map { BattleDerive.dud(it.id, it.name) }
+        return BattleDerive.numberRepeats(cards + duds).sortedByDescending { it.id }
     }
 
     /** The input for one video: [members] are its History cards, in part order. */

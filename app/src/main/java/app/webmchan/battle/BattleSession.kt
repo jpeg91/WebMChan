@@ -19,6 +19,9 @@ enum class RunPhase {
     RUN_COMPLETE,
 }
 
+/** Where a saved run starts again: the fight, how many fights were won so far, and which attempt (after draws). */
+data class RunPoint(val fightIndex: Int, val wins: Int, val attempt: Int)
+
 /**
  * One run, start to finish, without any screen: the player's [party] against [opponents] one at a time
  * (build the list with [BattleRun.opponentOrder]). Each fight starts with everyone at full health.
@@ -27,19 +30,41 @@ enum class RunPhase {
  *
  * Everything is derived from [runSeed], so a run can be rebuilt exactly (Stage 4 saves it).
  */
-class BattleSession(val party: List<BattleCard>, val opponents: List<BattleCard>, val runSeed: Long) {
+class BattleSession(
+    val party: List<BattleCard>,
+    val opponents: List<BattleCard>,
+    val runSeed: Long,
+    /** The secret last opponent, fought only after every other card in a run of more than [BOSS_MIN_BATTLES] battles. */
+    val boss: BattleCard? = null,
+    /** Where to pick a saved run up: the fight to start, how many were won, and (after draws) which attempt. */
+    startFight: Int = 0,
+    startWins: Int = 0,
+    startAttempt: Int = 0,
+) {
     init {
         require(party.isNotEmpty()) { "A run needs a party" }
         require(opponents.isNotEmpty()) { "A run needs an opponent" }
     }
 
+    /** True when this run ends with the boss. */
+    val hasBossFight: Boolean = boss != null && opponents.size > BOSS_MIN_BATTLES
+
+    /** Every fight in the run, the boss's included. */
+    private val allFights: List<BattleCard> = if (hasBossFight) opponents + boss!! else opponents
+
     /** Which opponent is being fought now (0-based). */
-    var fightIndex: Int = 0
+    var fightIndex: Int = startFight.coerceIn(0, allFights.lastIndex)
         private set
 
     /** Fights won so far in this run. */
-    var wins: Int = 0
+    var wins: Int = startWins
         private set
+
+    /** Called when a fight ends, with how it went and the party cards that took part in it. For keeping records. */
+    var onFightEnded: ((Outcome, List<BattleCard>) -> Unit)? = null
+
+    /** Called whenever there is a new point a saved run could be picked up from (see [resumePoint]). */
+    var onSavePoint: ((BattleSession) -> Unit)? = null
 
     var phase: RunPhase = RunPhase.FIGHTING
         private set
@@ -48,13 +73,29 @@ class BattleSession(val party: List<BattleCard>, val opponents: List<BattleCard>
     var lastEvents: List<BattleEvent> = emptyList()
         private set
 
-    private var attempt = 0
+    private var attempt = startAttempt
     var battle: Battle = newBattle()
         private set
     private var ai: BattleAi = newAi()
 
-    val opponent: BattleCard get() = opponents[fightIndex]
+    val opponent: BattleCard get() = allFights[fightIndex]
+
+    /** True while the secret boss is being fought. */
+    val isBossFight: Boolean get() = hasBossFight && fightIndex == allFights.lastIndex
+
+    /** The number of fights to show the player. The boss isn't counted: it is a secret. */
     val fightCount: Int get() = opponents.size
+
+    /** The opponent after the current one, if any (the boss stays hidden until it is next, and is then shown as a mystery). */
+    val nextOpponent: BattleCard? get() = allFights.getOrNull(fightIndex + 1)
+
+    /** Where a saved run would start again from: null once the run is over. A fight that has ended counts as done. */
+    fun resumePoint(): RunPoint? = when (phase) {
+        RunPhase.FIGHTING -> RunPoint(fightIndex, wins, attempt)
+        RunPhase.FIGHT_WON -> RunPoint(fightIndex + 1, wins, 0)
+        RunPhase.FIGHT_DRAWN -> RunPoint(fightIndex, wins, attempt + 1)
+        RunPhase.RUN_LOST, RunPhase.RUN_COMPLETE -> null
+    }
 
     /** True while the player has to pick a replacement before anything else can happen. */
     val mustSwitch: Boolean get() = phase == RunPhase.FIGHTING && battle.needsSwitch(Side.PLAYER)
@@ -62,7 +103,7 @@ class BattleSession(val party: List<BattleCard>, val opponents: List<BattleCard>
     private fun fightSeed(): Long = BattleHash.mix(BattleHash.mix(runSeed, fightIndex.toLong()), attempt.toLong())
 
     private fun newBattle(): Battle {
-        val b = Battle(party, listOf(opponents[fightIndex]), fightSeed())
+        val b = Battle(party, listOf(allFights[fightIndex]), fightSeed())
         return b
     }
 
@@ -70,6 +111,11 @@ class BattleSession(val party: List<BattleCard>, val opponents: List<BattleCard>
 
     init {
         lastEvents = listOf(BattleEvent.Sent(Side.OPPONENT, opponent.name), BattleEvent.Sent(Side.PLAYER, battle.active(Side.PLAYER).card.name))
+    }
+
+    /** Tells the listener the run's starting point; call once after setting [onSavePoint]. */
+    fun announce() {
+        onSavePoint?.invoke(this)
     }
 
     /** The player does [action] this turn and the opponent answers. Returns false (and does nothing) if not allowed now. */
@@ -99,6 +145,7 @@ class BattleSession(val party: List<BattleCard>, val opponents: List<BattleCard>
         ai = newAi()
         phase = RunPhase.FIGHTING
         lastEvents = listOf(BattleEvent.Sent(Side.OPPONENT, opponent.name), BattleEvent.Sent(Side.PLAYER, battle.active(Side.PLAYER).card.name))
+        onSavePoint?.invoke(this)
         return true
     }
 
@@ -107,14 +154,21 @@ class BattleSession(val party: List<BattleCard>, val opponents: List<BattleCard>
         if (battle.outcome == null && battle.needsSwitch(Side.OPPONENT)) {
             lastEvents = lastEvents + battle.forceSwitch(Side.OPPONENT, ai.chooseReplacement(battle, Side.OPPONENT))
         }
-        when (battle.outcome) {
+        val result = battle.outcome ?: return
+        when (result) {
             Outcome.PLAYER_WON -> {
                 wins++
-                phase = if (fightIndex >= opponents.lastIndex) RunPhase.RUN_COMPLETE else RunPhase.FIGHT_WON
+                phase = if (fightIndex >= allFights.lastIndex) RunPhase.RUN_COMPLETE else RunPhase.FIGHT_WON
             }
             Outcome.OPPONENT_WON -> phase = RunPhase.RUN_LOST
             Outcome.DRAW -> phase = RunPhase.FIGHT_DRAWN
-            null -> {}
         }
+        onFightEnded?.invoke(result, battle.appeared(Side.PLAYER).sorted().map { party[it] })
+        onSavePoint?.invoke(this)
+    }
+
+    companion object {
+        /** A run needs more battles than this for the boss to appear. */
+        const val BOSS_MIN_BATTLES = 50
     }
 }

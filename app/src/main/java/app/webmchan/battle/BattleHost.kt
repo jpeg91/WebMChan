@@ -19,6 +19,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CutCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.webmchan.BatchRunner
@@ -45,45 +48,153 @@ import app.webmchan.P5Title
 
 /**
  * Battle-Cards as the player sees it: the roster, then picking a party, then a run. Plain screens with
- * text and bars; the hand-drawn animation comes later. A run isn't saved yet (that is the next stage), so
- * leaving it ends it.
+ * text and bars; the hand-drawn animation comes later. The party (with records) and the run in progress
+ * are saved ([BattleStore]), so leaving the mode or closing the app keeps them; a saved run starts again
+ * from the beginning of the fight it was in.
  */
 @Composable
 fun BattleHost(onBack: () -> Unit) {
+    val ctx = LocalContext.current
     // Rebuilt whenever History changes (the list is observable state). Test cards are for trying the game without a History.
     val real by remember { derivedStateOf { BattleFromHistory.roster(BatchRunner.history.toList()) } }
     val testCards = remember { BattleTestCards.cards() }
     val roster = remember(real) { real + testCards }
+    var save by remember { mutableStateOf(BattleStore.load(ctx)) }
     var picking by remember { mutableStateOf(false) }
     var session by remember { mutableStateOf<BattleSession?>(null) }
 
+    fun update(s: BattleSave) {
+        save = s
+        BattleStore.save(ctx, s)
+    }
+
+    /** Keeps the records and the saved run up to date as the run goes. */
+    fun wire(s: BattleSession, partyIds: List<Long>) {
+        s.onFightEnded = { outcome, who -> update(save.recordFight(outcome, who)) }
+        s.onSavePoint = { sess ->
+            val point = sess.resumePoint()
+            if (point == null) {
+                var next = save.withRun(null)
+                if (sess.phase == RunPhase.RUN_COMPLETE) next = next.recordRunCompleted(partyIds)
+                update(next)
+            } else {
+                update(save.withRun(SavedRun(partyIds, sess.opponents, sess.boss, sess.runSeed, point)))
+            }
+        }
+        s.announce()
+    }
+
     val running = session
     when {
-        running != null -> RunScreen(running, onExit = { session = null })
+        running != null -> RunScreen(
+            running,
+            onExit = { session = null },
+            onGiveUp = { update(save.withRun(null)); session = null },
+        )
         picking -> PartyScreen(
-            roster,
+            roster = roster,
+            saved = save.party,
+            hasSavedRun = save.run != null,
             onBack = { picking = false },
-            onStart = { party ->
-                val ids = party.map { it.id }.toSet()
-                val seed = BattleHash.mix(System.currentTimeMillis(), party.fold(0L) { acc, c -> BattleHash.mix(acc, c.id) })
-                session = BattleSession(party, BattleRun.opponentOrder(roster, ids), seed)
+            onStart = { chosen ->
+                val ids = chosen.map { it.id }
+                val joined = save.withParty(chosen)
+                // A card already in the party fights as its saved snapshot.
+                val cards = ids.mapNotNull { joined.partyCard(it)?.card }
+                val seed = BattleHash.mix(System.currentTimeMillis(), ids.fold(0L) { acc, id -> BattleHash.mix(acc, id) })
+                val s = BattleSession(cards, BattleRun.opponentsFor(roster, ids.toSet()), seed, boss = BattleBoss.card)
+                save = joined
+                wire(s, ids)
+                session = s
                 picking = false
             },
         )
-        else -> BattlePreviewScreen(roster, onBack = onBack, onPlay = { picking = true })
+        else -> {
+            val run = save.run
+            BattlePreviewScreen(
+                roster,
+                onBack = onBack,
+                onPlay = { picking = true },
+                savedRun = run?.let { "Fight ${(it.point.fightIndex + 1).coerceAtMost(it.opponents.size)} of ${it.opponents.size} · ${it.point.wins} won. The fight you were in starts again." },
+                onResume = {
+                    if (run != null) {
+                        val cards = run.partyIds.mapNotNull { save.partyCard(it)?.card }
+                        if (cards.isNotEmpty()) {
+                            val s = BattleSession(cards, run.opponents, run.seed, run.boss, run.point.fightIndex, run.point.wins, run.point.attempt)
+                            wire(s, run.partyIds)
+                            session = s
+                        }
+                    }
+                },
+            )
+        }
     }
 }
 
 // -- Picking a party ----------------------------------------------------------------------------
 
 @Composable
-private fun PartyScreen(roster: List<BattleCard>, onBack: () -> Unit, onStart: (List<BattleCard>) -> Unit) {
+private fun PartyScreen(
+    roster: List<BattleCard>,
+    saved: List<SavedPartyCard>,
+    hasSavedRun: Boolean,
+    onBack: () -> Unit,
+    onStart: (List<BattleCard>) -> Unit,
+) {
     BackHandler(onBack = onBack)
     val chosen = remember { mutableStateListOf<Long>() }
+    var confirmReplace by remember { mutableStateOf(false) }
+    val rosterIds = remember(roster) { roster.map { it.id }.toSet() }
+    val savedIds = saved.map { it.card.id }.toSet()
+    val fromHistory = roster.filter { it.id !in savedIds }
+    // Saved cards fight as their snapshots; the rest are taken from the roster.
+    val byId = (saved.map { it.card } + fromHistory).associateBy { it.id }
     // The party is in the order the cards were picked: the first one leads.
-    val party = chosen.mapNotNull { id -> roster.firstOrNull { it.id == id } }
-    // Keep at least one card out of the party to fight.
-    val canStart = party.isNotEmpty() && party.size < roster.size
+    val party = chosen.mapNotNull { byId[it] }
+    val canStart = party.isNotEmpty()
+
+    @Composable
+    fun cardRow(card: BattleCard, record: CardRecord?) {
+        val place = chosen.indexOf(card.id)
+        val color = typeColor(card.type)
+        P5Card(
+            modifier = Modifier.clickable {
+                if (place >= 0) chosen.remove(card.id)
+                else if (chosen.size < BattleRun.PARTY_MAX) chosen.add(card.id)
+            },
+            accent = if (place >= 0) P5.Amber else color,
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CardThumb(card.id, width = 72.dp, height = 46.dp)
+                Text(card.name, style = MaterialTheme.typography.titleSmall, color = P5.White, modifier = Modifier.weight(1f))
+                if (place >= 0) P5Tag("#${place + 1}", color = P5.Amber, filled = true)
+                P5Tag(card.type.label, color = color)
+            }
+            Text(
+                "Power ${card.stats.power} · HP ${card.stats.hp} · Atk ${card.stats.attack} · Sp.Atk ${card.stats.spAttack} · " +
+                    "Def ${card.stats.defence} · Sp.Def ${card.stats.spDefence} · Spd ${card.stats.speed}" + if (card.isDud) " · dud" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = P5.Grey,
+            )
+            Text(
+                card.moves.joinToString(" · ") { it.name },
+                style = MaterialTheme.typography.bodySmall,
+                color = P5.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (record != null && (record.fightsWon + record.fightsLost + record.runsCompleted) > 0) {
+                Text(
+                    "Won ${record.fightsWon} · Lost ${record.fightsLost} · Runs completed ${record.runsCompleted}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = P5.Amber,
+                )
+            }
+            if (record != null && card.id !in rosterIds) {
+                Text("No longer in History: kept in your party.", style = MaterialTheme.typography.bodySmall, color = P5.GreyDim)
+            }
+        }
+    }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -94,8 +205,9 @@ private fun PartyScreen(roster: List<BattleCard>, onBack: () -> Unit, onStart: (
         item { P5Title("Pick your party") }
         item {
             Text(
-                "Choose up to ${BattleRun.PARTY_MAX} cards. The first one you pick leads. Every card left in " +
-                    "your History becomes an opponent, weakest first.",
+                "Choose up to ${BattleRun.PARTY_MAX} cards. The first one you pick leads. Every History card left out " +
+                    "becomes an opponent, weakest first (a short History is topped up with ready-made cards). " +
+                    "Cards you take into a run are saved in your party, with their wins and losses.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -103,42 +215,31 @@ private fun PartyScreen(roster: List<BattleCard>, onBack: () -> Unit, onStart: (
         item {
             P5Button(
                 "Start (${party.size}/${BattleRun.PARTY_MAX})",
-                onClick = { onStart(party) },
+                onClick = { if (hasSavedRun) confirmReplace = true else onStart(party) },
                 enabled = canStart,
             )
         }
-        items(roster, key = { it.id }) { card ->
-            val place = chosen.indexOf(card.id)
-            val color = typeColor(card.type)
-            P5Card(
-                modifier = Modifier.clickable {
-                    if (place >= 0) chosen.remove(card.id)
-                    else if (chosen.size < BattleRun.PARTY_MAX) chosen.add(card.id)
-                },
-                accent = if (place >= 0) P5.Amber else color,
-            ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    CardThumb(card.id, width = 72.dp, height = 46.dp)
-                    Text(card.name, style = MaterialTheme.typography.titleSmall, color = P5.White, modifier = Modifier.weight(1f))
-                    if (place >= 0) P5Tag("#${place + 1}", color = P5.Amber, filled = true)
-                    P5Tag(card.type.label, color = color)
-                }
-                Text(
-                    "Power ${card.stats.power} · HP ${card.stats.hp} · Atk ${card.stats.attack} · Sp.Atk ${card.stats.spAttack} · " +
-                        "Def ${card.stats.defence} · Sp.Def ${card.stats.spDefence} · Spd ${card.stats.speed}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = P5.Grey,
-                )
-                Text(
-                    card.moves.joinToString(" · ") { it.name },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = P5.White,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+        if (saved.isNotEmpty()) {
+            item { Text("Your party cards", style = MaterialTheme.typography.titleSmall, color = P5.Amber) }
+            items(saved, key = { "s${it.card.id}" }) { s -> cardRow(s.card, s.record) }
+            item { Text("From History", style = MaterialTheme.typography.titleSmall, color = P5.Amber) }
         }
+        items(fromHistory, key = { "h${it.id}" }) { card -> cardRow(card, null) }
         item { Spacer(Modifier.height(8.dp)) }
+    }
+
+    if (confirmReplace) {
+        AlertDialog(
+            onDismissRequest = { confirmReplace = false },
+            shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
+            containerColor = P5.Ink,
+            titleContentColor = P5.White,
+            textContentColor = P5.White,
+            title = { Text("START A NEW RUN?", style = MaterialTheme.typography.titleMedium) },
+            text = { Text("You have a run saved. Starting a new one replaces it.") },
+            confirmButton = { P5Button("Start new run", onClick = { confirmReplace = false; onStart(party) }) },
+            dismissButton = { P5Button("Cancel", onClick = { confirmReplace = false }, kind = P5Kind.Ghost) },
+        )
     }
 }
 
@@ -150,7 +251,7 @@ private const val MESSAGE_MILLIS = 1200L
 private enum class Menu { MOVES, TARGET, SWITCH, LEAVE }
 
 @Composable
-private fun RunScreen(session: BattleSession, onExit: () -> Unit) {
+private fun RunScreen(session: BattleSession, onExit: () -> Unit, onGiveUp: () -> Unit) {
     // The engine finishes a whole turn at once. The screen keeps its own picture of the fight and replays
     // the turn's events one at a time, so bars, text and cards all move together, message by message.
     var view by remember { mutableStateOf(BattleView.of(session.battle)) }
@@ -214,24 +315,34 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit) {
 
     Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // Top: the opponent.
-        FighterPanel(foe, "Opponent · fight ${session.fightIndex + 1} of ${session.fightCount} · won ${session.wins}")
+        FighterPanel(
+            foe,
+            if (session.isBossFight) "Opponent · ??? · won ${session.wins}" else "Opponent · fight ${session.fightIndex + 1} of ${session.fightCount} · won ${session.wins}",
+            thumbOnRight = true,
+        )
 
         // Middle: the messages, or whatever the player has to choose from.
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val choosing = !busy && session.phase == RunPhase.FIGHTING
             when {
                 busy -> MessageBox(message, hint = "tap to continue", onTap = { advance() })
-                session.phase == RunPhase.FIGHT_WON -> ResultPanel(
-                    "You won!",
-                    "Next up: ${session.opponents[session.fightIndex + 1].name} " +
-                        "(power ${session.opponents[session.fightIndex + 1].stats.power}). Your party is fully healed.",
-                )
+                session.phase == RunPhase.FIGHT_WON -> {
+                    val next = session.nextOpponent
+                    ResultPanel(
+                        "You won!",
+                        if (next != null && next.id == BattleBoss.ID) "Something else is waiting for you... Your party is fully healed."
+                        else "Next up: ${next?.name} (power ${next?.stats?.power}). Your party is fully healed.",
+                    )
+                }
                 session.phase == RunPhase.FIGHT_DRAWN -> ResultPanel("A draw.", "Nobody won. The same opponent comes again.")
                 session.phase == RunPhase.RUN_LOST -> ResultPanel(
                     "Run over",
                     "${session.opponent.name} beat your whole party. You won ${session.wins} of ${session.fightCount} fights.",
                 )
-                session.phase == RunPhase.RUN_COMPLETE -> ResultPanel("Run complete!", "You beat all ${session.fightCount} opponents in your History.")
+                session.phase == RunPhase.RUN_COMPLETE -> ResultPanel(
+                    "Run complete!",
+                    if (session.hasBossFight) "You beat every opponent, and the ${BattleBoss.card.name} too." else "You beat all ${session.fightCount} opponents.",
+                )
                 choosing && session.mustSwitch -> Choices("Send out who?") {
                     PartyList(view, session.battle.legalSwitches(Side.PLAYER).toSet()) { index ->
                         act { session.replace(index) }
@@ -251,9 +362,10 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit) {
                         P5Button("← Back", onClick = { menu = Menu.MOVES }, kind = P5Kind.Ghost)
                     }
                 }
-                choosing && menu == Menu.LEAVE -> Choices("Give up this run? Your progress is lost (saving runs comes in a later update).") {
-                    P5Button("Give up", onClick = onExit)
+                choosing && menu == Menu.LEAVE -> Choices("Leave the run? It is saved, and the fight you are in starts again when you come back.") {
+                    P5Button("Save and leave", onClick = onExit)
                     P5Button("Keep fighting", onClick = { menu = Menu.MOVES }, kind = P5Kind.Secondary)
+                    P5Button("Give up for good", onClick = onGiveUp, kind = P5Kind.Ghost)
                 }
                 else -> MessageBox(message, hint = "", onTap = {})
             }
@@ -287,7 +399,7 @@ private fun RunScreen(session: BattleSession, onExit: () -> Unit) {
     }
 }
 
-/** The four moves in a 2x2 grid, then Switch and Give up underneath. */
+/** The four moves in a 2x2 grid, then Switch and Leave underneath. */
 @Composable
 private fun MoveGrid(
     moves: List<Move>,
@@ -319,7 +431,7 @@ private fun MoveGrid(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             P5Button("Switch card", onClick = onSwitch, modifier = Modifier.weight(1f), enabled = enabled && canSwitch, kind = P5Kind.Secondary, compact = true)
-            P5Button("Give up", onClick = onLeave, modifier = Modifier.weight(1f), enabled = enabled, kind = P5Kind.Ghost, compact = true)
+            P5Button("Leave", onClick = onLeave, modifier = Modifier.weight(1f), enabled = enabled, kind = P5Kind.Ghost, compact = true)
         }
     }
 }
@@ -352,7 +464,7 @@ private fun Choices(title: String, content: @Composable () -> Unit) {
 
 /** A card in the fight: picture, name, type, HP bar and numbers, status and any raised or lowered stats. */
 @Composable
-private fun FighterPanel(f: FighterView, caption: String) {
+private fun FighterPanel(f: FighterView, caption: String, thumbOnRight: Boolean = false) {
     val color = typeColor(f.type)
     val frac = if (f.maxHp <= 0) 0f else (f.hp.toFloat() / f.maxHp).coerceIn(0f, 1f)
     val bar = when {
@@ -363,7 +475,7 @@ private fun FighterPanel(f: FighterView, caption: String) {
     P5Card(accent = color) {
         Text(caption, style = MaterialTheme.typography.labelSmall, color = P5.GreyDim)
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            CardThumb(f.cardId, width = 64.dp, height = 40.dp)
+            if (!thumbOnRight) CardThumb(f.cardId, width = 64.dp, height = 40.dp)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
@@ -381,6 +493,7 @@ private fun FighterPanel(f: FighterView, caption: String) {
                 }
                 Text("HP ${f.hp} / ${f.maxHp}", style = MaterialTheme.typography.bodySmall, color = P5.White)
             }
+            if (thumbOnRight) CardThumb(f.cardId, width = 64.dp, height = 40.dp)
         }
         val shifted = StatId.values().filter { f.stages[it.ordinal] != 0 }
         val line = listOfNotNull(

@@ -107,11 +107,14 @@ object BattleMoves {
     /** Every move in the game. */
     val all: List<Move> = signature.values.flatten() + shared
 
-    private val byId: Map<String, Move> = all.associateBy { it.id }
+    /** The one move a dud card (from a failed conversion) has. It does nothing. Not in [all], so it is never dealt to other cards. */
+    val dudMove: Move = Move("segfault", "Segfault", MoveKind.BASIC, type = CardType.NONE, power = 0, accuracy = 100)
+
+    private val byId: Map<String, Move> = (all + dudMove).associateBy { it.id }
 
     init {
         // A duplicate id would make two different moves share a saved record, so fail loudly.
-        check(byId.size == all.size) { "Two moves share an id" }
+        check(byId.size == all.size + 1) { "Two moves share an id" }
     }
 
     fun byId(id: String): Move? = byId[id]

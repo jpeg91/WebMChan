@@ -159,6 +159,8 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
     private val opponentParty = opponentCards.map { Fighter(it) }
     private var playerOut = 0
     private var opponentOut = 0
+    private val playerSeen = linkedSetOf(0)
+    private val opponentSeen = linkedSetOf(0)
     private val log = ArrayList<BattleEvent>()
 
     /** Turns played so far. */
@@ -173,6 +175,9 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
     val events: List<BattleEvent> get() = log
 
     fun party(side: Side): List<Fighter> = if (side == Side.PLAYER) playerParty else opponentParty
+    /** The party positions of every card of [side] that has been out at some point in this fight. */
+    fun appeared(side: Side): Set<Int> = if (side == Side.PLAYER) playerSeen else opponentSeen
+
     fun activeIndex(side: Side): Int = if (side == Side.PLAYER) playerOut else opponentOut
     fun active(side: Side): Fighter = party(side)[activeIndex(side)]
 
@@ -253,7 +258,7 @@ class Battle(playerCards: List<BattleCard>, opponentCards: List<BattleCard>, val
     private fun switchTo(side: Side, index: Int) {
         // A card that leaves loses its buffs and debuffs; a status stays with it.
         active(side).stages.fill(0)
-        if (side == Side.PLAYER) playerOut = index else opponentOut = index
+        if (side == Side.PLAYER) { playerOut = index; playerSeen.add(index) } else { opponentOut = index; opponentSeen.add(index) }
         log.add(BattleEvent.Sent(side, active(side).card.name))
     }
 

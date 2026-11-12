@@ -16,5 +16,9 @@ object BattleRun {
             .filter { it.id !in partyIds }
             .sortedWith(compareBy<BattleCard> { it.stats.power }.thenBy { BattleHash.mix(it.id, ORDER_SALT) })
 
+    /** The opponents for a run: [opponentOrder], topped up with ready-made cards if History is small. */
+    fun opponentsFor(roster: List<BattleCard>, partyIds: Set<Long>): List<BattleCard> =
+        BattlePregen.topUp(opponentOrder(roster, partyIds))
+
     private const val ORDER_SALT = 0x0DD5L
 }

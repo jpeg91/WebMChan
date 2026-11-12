@@ -192,6 +192,21 @@ object BattleDerive {
         return cards.map { c -> renamed[c.id]?.let { c.copy(name = it) } ?: c }
     }
 
+    /** The card for a failed conversion: every stat at the bottom band, and a single move that does nothing. */
+    fun dud(id: Long, sourceName: String): BattleCard = BattleCard(
+        id = id,
+        memberIds = listOf(id),
+        name = displayName(sourceName).ifBlank { "Dud" },
+        sourceName = sourceName,
+        type = CardType.WILD,
+        stats = BattleStats(1, 1, 1, 1, 1, 1),
+        moves = listOf(BattleMoves.dudMove),
+        isAudio = false,
+        parts = 1,
+        missing = emptySet(),
+        isDud = true,
+    )
+
     private const val MAX_NAME = 36
     private val tagSuffix = Regex("-WebMChan_for_Android$")
     private val markerSuffix = Regex("-[AM][BFSQ]?$")

@@ -38,7 +38,14 @@ import app.webmchan.P5Title
  * at the top and a button to start a run (see [BattleHost]).
  */
 @Composable
-fun BattlePreviewScreen(cards: List<BattleCard>, onBack: () -> Unit, onPlay: () -> Unit) {
+fun BattlePreviewScreen(
+    cards: List<BattleCard>,
+    onBack: () -> Unit,
+    onPlay: () -> Unit,
+    /** A line saying where the saved run is up to, or null when there is none. */
+    savedRun: String?,
+    onResume: () -> Unit,
+) {
     BackHandler(onBack = onBack)
 
     LazyColumn(
@@ -48,7 +55,11 @@ fun BattlePreviewScreen(cards: List<BattleCard>, onBack: () -> Unit, onPlay: () 
     ) {
         item { P5Button("← Back", onClick = onBack, kind = P5Kind.Ghost) }
         item { P5Title("Battle-Cards") }
-        item { P5Button("Start a run", onClick = onPlay, enabled = cards.size >= 2) }
+        if (savedRun != null) {
+            item { P5Button("Resume run", onClick = onResume) }
+            item { Text(savedRun, style = MaterialTheme.typography.bodySmall, color = P5.Amber) }
+        }
+        item { P5Button("Start a run", onClick = onPlay, kind = if (savedRun != null) P5Kind.Secondary else P5Kind.Primary, enabled = cards.isNotEmpty()) }
         item {
             Text(
                 "Every conversion in History as a card. The stats come from the converted file, and a " +
@@ -136,7 +147,7 @@ private fun CardView(card: BattleCard) {
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            "Power ${card.stats.power}" + (if (card.isAudio) " · sound" else "") + (if (card.parts > 1) " · ${card.parts} parts" else ""),
+            "Power ${card.stats.power}" + (if (card.isAudio) " · sound" else "") + (if (card.isDud) " · dud (failed conversion)" else "") + (if (card.parts > 1) " · ${card.parts} parts" else ""),
             style = MaterialTheme.typography.bodySmall,
             color = P5.White,
         )
