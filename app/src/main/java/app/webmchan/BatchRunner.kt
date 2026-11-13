@@ -1451,13 +1451,17 @@ object BatchRunner {
 
     // ---- Running ----
 
-    /** Converts every readable video in the queue, in order, with [settings]. */
-    fun start(ctx: Context, settings: Settings, audio: Boolean = false) {
+    /**
+     * Converts every readable video in the queue, in order. Everything ready in the Holding Pen is sent
+     * to the queue first with [settings], unless [movePen] is false (a single card was sent with its own
+     * settings, see [sendToQueue], and the rest of the pen stays put).
+     */
+    fun start(ctx: Context, settings: Settings, audio: Boolean = false, movePen: Boolean = true) {
         if (busy) return
         val appCtx = ctx.applicationContext
         appContext = appCtx
         // Everything ready in the Holding Pen goes to the queue (after anything already left there).
-        movePenToQueue(settings, audio)
+        if (movePen) movePenToQueue(settings, audio)
         val todo = queue.filter { !it.inPen && it.info != null && it.isAudio == audio }.map { it.id }
         if (todo.isEmpty()) return
         runAudio = audio
@@ -1580,6 +1584,26 @@ object BatchRunner {
         runSettings = settings
         pickUpNewVideos()
         persist()
+    }
+
+    /**
+     * Sends just one Holding Pen card to the queue, fixed to [settings] (the ones on screen right now),
+     * so cards from the same batch can be sent with different settings. It joins the end of the queue
+     * (after what is already there). If a batch is already running it joins that batch; otherwise the
+     * caller starts converting with [start] (movePen = false, so the rest of the pen stays where it is).
+     * Returns false, doing nothing, for a card that isn't ready or when the other mode is converting.
+     */
+    fun sendToQueue(id: Long, settings: Settings): Boolean {
+        val at = queue.indexOfFirst { it.id == id }
+        if (at < 0 || cancelling) return false
+        val item = queue[at]
+        if (!item.inPen || item.info == null || item.probeFailed) return false
+        if (busy && runAudio != item.isAudio) return false
+        queue.removeAt(at)
+        queue.add(item.copy(inPen = false, settings = settings, status = ItemStatus.WAITING, detail = null))
+        if (busy) pickUpNewVideos()
+        persist()
+        return true
     }
 
     /**
