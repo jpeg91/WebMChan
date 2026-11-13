@@ -160,6 +160,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             "Videos and cards",
             AppToggle.AUTO_CLEAR_FINISHED, AppToggle.CONFIRM_DESTRUCTIVE, AppToggle.SHARE_TO_RUNNING_BATCH,
         )
+        group("Battle-Cards", AppToggle.BATTLE_TEST_CARDS)
         group("Encoding", AppToggle.FASTEST_MODE)
     }
 }
