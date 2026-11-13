@@ -10,6 +10,9 @@ package app.webmchan.battle
  * classic handheld battlers used, with the extras (individual values and training) left out.
  */
 object BattleTuning {
+    /** After each won fight, every party card still standing recovers this percent of its maximum HP (at least 1). Fainted cards stay fainted. */
+    const val HEAL_BETWEEN_FIGHTS_PCT = 10
+
     /** The level a card fights at when none is given. */
     const val LEVEL = 50
 

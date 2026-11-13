@@ -16,13 +16,20 @@ data class SavedRun(
     val point: RunPoint,
     /** The party's levels at that point, in party order (empty in older saves: everyone starts fresh). */
     val levels: List<Int> = emptyList(),
+    /** The party's HP at that point, in party order (empty in older saves: everyone at full health). */
+    val hp: List<Int> = emptyList(),
 )
 
 /**
  * Everything Battle-Cards keeps between visits: the party cards (with records) and the run in
  * progress, if any. Immutable: each change returns a new one for the caller to keep and save.
  */
-data class BattleSave(val party: List<SavedPartyCard> = emptyList(), val run: SavedRun? = null) {
+data class BattleSave(
+    val party: List<SavedPartyCard> = emptyList(),
+    val run: SavedRun? = null,
+    /** Totals and bests across every run. */
+    val records: RunRecords = RunRecords(),
+) {
 
     fun partyCard(id: Long): SavedPartyCard? = party.firstOrNull { it.card.id == id }
 
@@ -32,11 +39,12 @@ data class BattleSave(val party: List<SavedPartyCard> = emptyList(), val run: Sa
         return if (fresh.isEmpty()) this else copy(party = party + fresh)
     }
 
-    /** Counts a finished fight for each of the cards that took part. */
+    /** Counts a finished fight for each of the cards that took part, and in the totals. */
     fun recordFight(outcome: Outcome, participants: List<BattleCard>): BattleSave {
         if (outcome == Outcome.DRAW) return this
         val ids = participants.map { it.id }.toSet()
-        return copy(party = party.map {
+        val totals = if (outcome == Outcome.PLAYER_WON) records.copy(fightsWon = records.fightsWon + 1) else records.copy(fightsLost = records.fightsLost + 1)
+        return copy(records = totals, party = party.map {
             if (it.card.id !in ids) it
             else if (outcome == Outcome.PLAYER_WON) it.copy(record = it.record.copy(fightsWon = it.record.fightsWon + 1))
             else it.copy(record = it.record.copy(fightsLost = it.record.fightsLost + 1))
@@ -47,7 +55,42 @@ data class BattleSave(val party: List<SavedPartyCard> = emptyList(), val run: Sa
         copy(party = party.map { if (it.card.id in partyIds) it.copy(record = it.record.copy(runsCompleted = it.record.runsCompleted + 1)) else it })
 
     fun withRun(run: SavedRun?): BattleSave = copy(run = run)
+
+    fun recordRunStarted(): BattleSave = copy(records = records.copy(runsStarted = records.runsStarted + 1))
+
+    /** A run that ended (won through, lost, or given up) with [wins] fights won by [partyNames]. */
+    fun recordRunEnded(wins: Int, partyNames: List<String>, completed: Boolean, beatBoss: Boolean): BattleSave {
+        var r = records.copy(
+            runsEnded = records.runsEnded + 1,
+            runsCompleted = records.runsCompleted + if (completed) 1 else 0,
+            bossesBeaten = records.bossesBeaten + if (beatBoss) 1 else 0,
+        )
+        if (wins > r.bestRunWins) r = r.copy(bestRunWins = wins, bestRunParty = partyNames)
+        return copy(records = r)
+    }
+
+    /** Notes the highest level any party card has reached. */
+    fun recordLevels(names: List<String>, levels: List<Int>): BattleSave {
+        val best = levels.indices.maxByOrNull { levels[it] } ?: return this
+        return if (levels[best] > records.highestLevel) copy(records = records.copy(highestLevel = levels[best], highestLevelName = names[best])) else this
+    }
 }
+
+/** Battle-Cards totals and bests, across all runs. */
+data class RunRecords(
+    val runsStarted: Int = 0,
+    /** Runs that finished one way or another: won through, lost, or given up. */
+    val runsEnded: Int = 0,
+    val runsCompleted: Int = 0,
+    val bossesBeaten: Int = 0,
+    val fightsWon: Int = 0,
+    val fightsLost: Int = 0,
+    /** The most fights won in one run, and the party that did it. */
+    val bestRunWins: Int = 0,
+    val bestRunParty: List<String> = emptyList(),
+    val highestLevel: Int = 0,
+    val highestLevelName: String = "",
+)
 
 /** Turns a [BattleSave] into text and back. A damaged or unreadable save gives an empty one rather than an error. */
 object BattleSaveCodec {
@@ -57,6 +100,13 @@ object BattleSaveCodec {
         mapOf(
             "version" to VERSION,
             "party" to save.party.map { mapOf("card" to encodeCard(it.card), "won" to it.record.fightsWon, "lost" to it.record.fightsLost, "runs" to it.record.runsCompleted) },
+            "records" to save.records.let {
+                mapOf(
+                    "started" to it.runsStarted, "ended" to it.runsEnded, "completed" to it.runsCompleted, "bosses" to it.bossesBeaten,
+                    "won" to it.fightsWon, "lost" to it.fightsLost, "best" to it.bestRunWins, "bestParty" to it.bestRunParty,
+                    "level" to it.highestLevel, "levelName" to it.highestLevelName,
+                )
+            },
             "run" to save.run?.let { r ->
                 mapOf(
                     "party" to r.partyIds,
@@ -67,6 +117,7 @@ object BattleSaveCodec {
                     "wins" to r.point.wins,
                     "attempt" to r.point.attempt,
                     "levels" to r.levels,
+                    "hp" to r.hp,
                 )
             },
         ),
@@ -86,9 +137,16 @@ object BattleSaveCodec {
             if (opponents.isEmpty() || ids.isEmpty() || ids.any { id -> party.none { it.card.id == id } }) null
             else SavedRun(ids, opponents, (r["boss"] as? Map<*, *>)?.let { decodeCard(it) }, (r["seed"] as? Number)?.toLong() ?: 0L,
                 RunPoint(int(r["fight"]), int(r["wins"]), int(r["attempt"])),
-                (r["levels"] as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toInt() })
+                (r["levels"] as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toInt() },
+                (r["hp"] as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toInt() })
         }
-        BattleSave(party, run)
+        val records = (root["records"] as? Map<*, *>)?.let { m ->
+            RunRecords(
+                int(m["started"]), int(m["ended"]), int(m["completed"]), int(m["bosses"]), int(m["won"]), int(m["lost"]), int(m["best"]),
+                (m["bestParty"] as? List<*>).orEmpty().mapNotNull { it as? String }, int(m["level"]), m["levelName"] as? String ?: "",
+            )
+        } ?: RunRecords()
+        BattleSave(party, run, records)
     } catch (_: Exception) {
         BattleSave()
     }

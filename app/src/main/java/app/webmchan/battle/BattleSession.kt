@@ -30,7 +30,7 @@ data class RunPoint(val fightIndex: Int, val wins: Int, val attempt: Int)
 
 /**
  * One run, start to finish, without any screen: the player's [party] against [opponents] one at a time
- * (build the list with [BattleRun.opponentOrder]). Each fight starts with everyone at full health.
+ * (build the list with [BattleRun.opponentOrder]). Damage carries over from fight to fight (see [hp]).
  * The screen calls [play], [replace] and [next]; the session picks the opponent's moves with the AI,
  * keeps the events of the latest turn for the screen to show, and tracks how far the run has got.
  *
@@ -50,6 +50,8 @@ class BattleSession(
     startLevels: List<Int>? = null,
     /** True to let the player choose who leads each fight (with a party of one there is nothing to choose). */
     private val leadPicking: Boolean = false,
+    /** The party's HP when a saved run is picked up (see [resumeHp]); everyone starts at full health if null or the wrong length. */
+    startHp: List<Int>? = null,
 ) {
     init {
         require(party.isNotEmpty()) { "A run needs a party" }
@@ -96,6 +98,24 @@ class BattleSession(
     var levelUps: List<LevelUp> = emptyList()
         private set
 
+    /**
+     * The party's HP now, in party order. A fight starts with these and they only change when a fight is won
+     * (a draw starts again from the same values): the survivors keep their damage, recover a little
+     * ([BattleTuning.HEAL_BETWEEN_FIGHTS_PCT]), and fainted cards stay fainted unless a move revived them in the fight.
+     */
+    var hp: List<Int> = startHp?.takeIf { it.size == party.size }?.mapIndexed { i, h -> h.coerceIn(0, maxHpOf(i, levels[i])) }
+        ?: party.indices.map { maxHpOf(it, levels[it]) }
+        private set
+
+    /** How much each card recovered after the fight just won, by party position (empty otherwise). */
+    var recovered: List<Int> = emptyList()
+        private set
+
+    private fun maxHpOf(i: Int, level: Int): Int = BattleTuning.maxHp(party[i].stats.hp, level)
+
+    /** The party positions that can still fight. */
+    val standing: List<Int> get() = hp.indices.filter { hp[it] > 0 }
+
     var battle: Battle = newBattle()
         private set
     private var ai: BattleAi = newAi()
@@ -125,20 +145,23 @@ class BattleSession(
     /** The party's levels at the point a saved run starts again from (see [resumePoint]). */
     fun resumeLevels(): List<Int> = levels
 
+    /** The party's HP at the point a saved run starts again from. */
+    fun resumeHp(): List<Int> = hp
+
     /** True while the player has to pick a replacement before anything else can happen. */
     val mustSwitch: Boolean get() = phase == RunPhase.FIGHTING && battle.needsSwitch(Side.PLAYER)
 
     private fun fightSeed(): Long = BattleHash.mix(BattleHash.mix(runSeed, fightIndex.toLong()), attempt.toLong())
 
     private fun newBattle(): Battle {
-        return Battle(party, listOf(allFights[fightIndex]), fightSeed(), levels, listOf(foeLevel), lead)
+        return Battle(party, listOf(allFights[fightIndex]), fightSeed(), levels, listOf(foeLevel), lead, hp)
     }
 
     private fun newAi(): BattleAi = BattleAi(fightSeed())
 
     private fun openingEvents() = listOf(BattleEvent.Sent(Side.OPPONENT, opponent.name), BattleEvent.Sent(Side.PLAYER, battle.active(Side.PLAYER).card.name))
 
-    private val picksLead: Boolean get() = leadPicking && party.size > 1
+    private val picksLead: Boolean get() = leadPicking && standing.size > 1
 
     init {
         if (picksLead) phase = RunPhase.PICKING_LEAD else lastEvents = openingEvents()
@@ -146,7 +169,7 @@ class BattleSession(
 
     /** At the start of a fight the player sends out the card at [partyIndex]. Returns false if it isn't the time for that. */
     fun chooseLead(partyIndex: Int): Boolean {
-        if (phase != RunPhase.PICKING_LEAD || partyIndex !in party.indices) return false
+        if (phase != RunPhase.PICKING_LEAD || partyIndex !in standing) return false
         lead = partyIndex
         battle = newBattle()
         ai = newAi()
@@ -184,6 +207,7 @@ class BattleSession(
             else -> return false
         }
         levelUps = emptyList()
+        recovered = emptyList()
         lead = 0
         battle = newBattle()
         ai = newAi()
@@ -210,6 +234,24 @@ class BattleSession(
                 val before = levels
                 levels = BattleLevels.afterWin(before, battle.appeared(Side.PLAYER), foeLevel)
                 levelUps = before.indices.filter { levels[it] > before[it] }.map { LevelUp(party[it].name, before[it], levels[it]) }
+                // Damage carries over. A card that levelled up gains the extra HP, then the survivors recover a little.
+                val left = battle.party(Side.PLAYER).map { it.hp }
+                val next = ArrayList<Int>()
+                val gained = ArrayList<Int>()
+                for (i in party.indices) {
+                    var h = left[i]
+                    if (h > 0) {
+                        h += maxHpOf(i, levels[i]) - maxHpOf(i, before[i])
+                        val max = maxHpOf(i, levels[i])
+                        val heal = maxOf(1, (max * BattleTuning.HEAL_BETWEEN_FIGHTS_PCT + 99) / 100)
+                        val after = minOf(max, h + heal)
+                        gained.add(after - h)
+                        h = after
+                    } else gained.add(0)
+                    next.add(h)
+                }
+                hp = next
+                recovered = gained
                 phase = if (fightIndex >= allFights.lastIndex) RunPhase.RUN_COMPLETE else RunPhase.FIGHT_WON
             }
             Outcome.OPPONENT_WON -> phase = RunPhase.RUN_LOST

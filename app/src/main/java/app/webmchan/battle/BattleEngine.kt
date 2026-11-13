@@ -70,7 +70,7 @@ fun BattleEvent.text(): String = when (this) {
         change > 0 -> "$name's ${stat.label} rose" + if (change > 1) " sharply!" else "!"
         else -> "$name's ${stat.label} fell" + if (change < -1) " sharply!" else "!"
     }
-    is BattleEvent.Afflicted -> "$name is suffering ${status.label}!"
+    is BattleEvent.Afflicted -> "$name is suffering ${status.label}! (${status.blurb})"
     is BattleEvent.StatusEnded -> "$name's ${status.label} wore off."
     is BattleEvent.LostTurn -> "$name lost its turn to ${status.label}."
     is BattleEvent.StatusHurt -> "$name took $damage damage from Artifacting."
@@ -84,9 +84,9 @@ fun BattleEvent.text(): String = when (this) {
 }
 
 /** A card in a fight: its current HP, stat stages and status. Created by [Battle]; fresh every fight. */
-class Fighter(val card: BattleCard, val level: Int = BattleTuning.LEVEL) {
+class Fighter(val card: BattleCard, val level: Int = BattleTuning.LEVEL, startHp: Int? = null) {
     val maxHp: Int = BattleTuning.maxHp(card.stats.hp, level)
-    var hp: Int = maxHp
+    var hp: Int = startHp?.coerceIn(0, maxHp) ?: maxHp
         internal set
 
     /** Buff and debuff stages, indexed by [StatId.ordinal]; 0 = unchanged. */
@@ -158,15 +158,20 @@ class Battle(
     opponentLevels: List<Int> = emptyList(),
     /** Which of the player's cards starts out in front. */
     playerLead: Int = 0,
+    /** Each of the player's cards' HP at the start, in party order; full health for any not given. A card at 0 starts fainted. */
+    playerHp: List<Int> = emptyList(),
 ) {
     init {
         require(playerCards.isNotEmpty() && opponentCards.isNotEmpty()) { "Both sides need a card" }
     }
 
     private val rng = BattleRng(seed)
-    private val playerParty = playerCards.mapIndexed { i, c -> Fighter(c, playerLevels.getOrNull(i) ?: BattleTuning.LEVEL) }
+    private val playerParty = playerCards.mapIndexed { i, c -> Fighter(c, playerLevels.getOrNull(i) ?: BattleTuning.LEVEL, playerHp.getOrNull(i)) }
     private val opponentParty = opponentCards.mapIndexed { i, c -> Fighter(c, opponentLevels.getOrNull(i) ?: BattleTuning.LEVEL) }
-    private var playerOut = playerLead.coerceIn(0, playerCards.lastIndex)
+    // The lead is the chosen card, or the first one still standing if that one has fainted.
+    private var playerOut = playerLead.coerceIn(0, playerCards.lastIndex).let { l ->
+        if (playerParty[l].hp > 0) l else playerParty.indexOfFirst { it.hp > 0 }.takeIf { it >= 0 } ?: l
+    }
     private var opponentOut = 0
     private val playerSeen = linkedSetOf(playerOut)
     private val opponentSeen = linkedSetOf(0)

@@ -45,6 +45,8 @@ fun BattlePreviewScreen(
     /** A line saying where the saved run is up to, or null when there is none. */
     savedRun: String?,
     onResume: () -> Unit,
+    onRecords: () -> Unit,
+    onHelp: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
 
@@ -60,6 +62,12 @@ fun BattlePreviewScreen(
             item { Text(savedRun, style = MaterialTheme.typography.bodySmall, color = P5.RedBright) }
         }
         item { P5Button("Start a run", onClick = onPlay, kind = if (savedRun != null) P5Kind.Secondary else P5Kind.Primary, enabled = cards.isNotEmpty()) }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                P5Button("Records", onClick = onRecords, modifier = Modifier.weight(1f), kind = P5Kind.Secondary, compact = true)
+                P5Button("Type chart & rules", onClick = onHelp, modifier = Modifier.weight(1f), kind = P5Kind.Secondary, compact = true)
+            }
+        }
         item {
             Text(
                 "Every conversion in History as a card. The stats come from the converted file, and a " +

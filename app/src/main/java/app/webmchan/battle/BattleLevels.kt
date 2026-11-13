@@ -11,23 +11,23 @@ package app.webmchan.battle
 object BattleLevels {
     const val START_LEVEL = 30
     const val FIRST_FOE_LEVEL = 30
-    const val LAST_FOE_LEVEL = 58
+    const val LAST_FOE_LEVEL = 42
     /** The boss is this many levels above the last ordinary opponent. */
     const val BOSS_BONUS = 0
     const val MAX_LEVEL = 100
 
     /** A card that took part in a win gains this many levels... */
-    const val BASE_GAIN = 1
+    const val BASE_GAIN = 2
 
     /** ...plus one more for every this many levels it is behind the opponent. */
     const val CATCH_UP_EVERY = 4
 
     /** The opponent's level climbs this many levels every [STEP_EVERY] fights, until it reaches [LAST_FOE_LEVEL]. */
     const val STEP_UP = 1
-    const val STEP_EVERY = 3
+    const val STEP_EVERY = 6
 
     /** A card this many levels above the opponent gains nothing from beating it. */
-    const val OVERLEVEL_LIMIT = 5
+    const val OVERLEVEL_LIMIT = 15
 
     private fun ordinary(index: Int): Int = minOf(LAST_FOE_LEVEL, FIRST_FOE_LEVEL + index.coerceAtLeast(0) * STEP_UP / STEP_EVERY)
 
