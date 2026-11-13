@@ -48,6 +48,8 @@ fun MenuScreen(
     onAbout: () -> Unit,
     /** Switches to the other mode: Audio Mode from the video screen, Video Mode from Audio Mode. */
     onSwitchMode: () -> Unit = {},
+    /** Opens Battle-Cards (the same screen as History's Battle-Cards button). */
+    onBattleCards: () -> Unit = {},
 ) {
     // The system back gesture/button closes this page instead of leaving the app.
     BackHandler(onBack = onBack)
@@ -68,6 +70,8 @@ fun MenuScreen(
             P5Button("Audio Mode", onClick = onSwitchMode, modifier = Modifier.fillMaxWidth(), accent = P5.redFor(true) to P5.redDeepFor(true))
         }
         P5Button("History", onClick = onHistory, modifier = Modifier.fillMaxWidth())
+        // Battle-Cards always wears its green, whichever mode the app is in.
+        P5Button("Battle-Cards", onClick = onBattleCards, modifier = Modifier.fillMaxWidth(), accent = BattleGreen.Red to BattleGreen.RedDeep)
         P5Button("Settings", onClick = onSettings, modifier = Modifier.fillMaxWidth())
         P5Button("Logs", onClick = onLog, modifier = Modifier.fillMaxWidth())
         P5Button("About", onClick = onAbout, kind = P5Kind.Secondary, modifier = Modifier.fillMaxWidth())

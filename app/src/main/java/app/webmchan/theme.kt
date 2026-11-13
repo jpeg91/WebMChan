@@ -307,8 +307,8 @@ fun P5Button(
     val textColor = when {
         !enabled -> P5.GreyDim
         kind == P5Kind.Ghost -> P5.RedBright
-        // White is hard to read on the light green fill.
-        kind == P5Kind.Primary && accent == null && AccentMode.battle -> P5.Black
+        // White is hard to read on the light green fill (including the Menu's Battle-Cards button).
+        kind == P5Kind.Primary && ((accent == null && AccentMode.battle) || accent?.first == BattleGreen.Red) -> P5.Black
         else -> P5.White
     }
     val borderColor = if (enabled) P5.White else P5.Line

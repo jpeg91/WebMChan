@@ -187,6 +187,7 @@ class MainActivity : ComponentActivity() {
                             MenuScreen(
                                 onBack = { showMenu = false },
                                 onHistory = { showHistory = true },
+                                onBattleCards = { showBattle = true; AccentMode.battle = true },
                                 onSettings = { showSettings = true },
                                 onLog = { showLog = true },
                                 onAbout = { showAbout = true },
@@ -200,7 +201,7 @@ class MainActivity : ComponentActivity() {
                     if (showHistory) {
                         P5Background { HistoryScreen(onBack = { showHistory = false }, onBattleCards = { showBattle = true; AccentMode.battle = true }) }
                     }
-                    // On top of History, which stays composed underneath; back returns to it.
+                    // On top of History or the Menu (whichever opened it), which stays composed underneath; back returns to it.
                     if (showBattle) {
                         P5Background { app.webmchan.battle.BattleHost(onBack = { showBattle = false; AccentMode.battle = false }) }
                     }
