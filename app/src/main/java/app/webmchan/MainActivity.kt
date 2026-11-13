@@ -482,6 +482,10 @@ internal fun QueueRow(
     /** Queue cards offer "Return to holding pen". */
     showReturn: Boolean = false,
     onReturn: () -> Unit = {},
+    /** Holding Pen cards offer a slim "Convert" button that sends just this card to the queue and starts converting. */
+    showSend: Boolean = false,
+    sendEnabled: Boolean = true,
+    onSend: () -> Unit = {},
     /** Opens the editor for this card. Only Holding Pen cards offer it (see [QueueItem.inPen]). */
     onEdit: () -> Unit = {},
     /** Opens the thumbnail picker for this card. Also only for Holding Pen cards, from the same menu as Edit. */
@@ -1030,7 +1034,7 @@ internal fun QueueRow(
         val canReturn = showReturn && item.status != ItemStatus.CONVERTING && item.partsDone == 0 &&
             (!busy || item.status == ItemStatus.WAITING)
         val canExpand = (i != null && !item.probeFailed) || shownSettings != null
-        if (canExpand || showReturn) {
+        if (canExpand || showReturn || showSend) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 if (canExpand) {
                     Text(
@@ -1045,6 +1049,10 @@ internal fun QueueRow(
                 Spacer(Modifier.weight(1f))
                 if (showReturn) {
                     P5Button("Return to holding pen", onClick = onReturn, enabled = canReturn, kind = P5Kind.Ghost)
+                }
+                // Bottom right of a Holding Pen card: sends only this card to the queue with the settings on screen.
+                if (showSend) {
+                    P5Button("Convert", onClick = onSend, enabled = sendEnabled, compact = true)
                 }
             }
         }
@@ -1603,7 +1611,16 @@ private fun SectionNote(text: String, headline: String? = null) {
  * with; one in the Holding Pen follows [liveSettings]. "Up" on a card moves it up the screen.
  */
 @Composable
-private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settings, audio: Boolean = false) {
+private fun QueueCards(
+    section: CardSection,
+    busy: Boolean,
+    liveSettings: Settings,
+    audio: Boolean = false,
+    /** Holding Pen only: whether the per-card Convert button can be used right now (settings valid, nothing blocking). */
+    sendEnabled: Boolean = false,
+    /** Holding Pen only: a card's own Convert button was pressed. */
+    onSendCard: (Long) -> Unit = {},
+) {
     val queue = BatchRunner.queue
     // Conversion runs from the bottom of the list up, so the next video is the first waiting one
     // in list order (the one lowest on screen).
@@ -1657,6 +1674,9 @@ private fun QueueCards(section: CardSection, busy: Boolean, liveSettings: Settin
                 onExtraParts = { BatchRunner.setExtraParts(item.id, it) },
                 showReturn = section == CardSection.QUEUE,
                 onReturn = { BatchRunner.returnToPen(item.id) },
+                showSend = section == CardSection.PEN,
+                sendEnabled = sendEnabled && item.info != null && !item.probeFailed,
+                onSend = { onSendCard(item.id) },
                 onEdit = { if (item.isAudio) BatchRunner.openAudioTrim(item.id) else BatchRunner.openEditor(item.id) },
                 onThumbnail = { BatchRunner.openThumbPicker(item.id) },
                 isNext = item.id == nextId,
@@ -2243,13 +2263,17 @@ fun App(
     // battery use (see the dialog below). Everything that used to start the run now goes through this.
     var showBatteryNag by remember { mutableStateOf(false) }
     var batterySettings by remember { mutableStateOf<Settings?>(null) }
+    // True while a run is being started from one card's own Convert button: that card is already in the
+    // queue, and the rest of the Holding Pen must stay where it is (see BatchRunner.sendToQueue).
+    var runKeepsPen by remember { mutableStateOf(false) }
     val startRun: (Settings) -> Unit = { s ->
         if (batteryNagDue(ctx, prefs)) {
             batteryNagShownThisLaunch = true
             batterySettings = s
             showBatteryNag = true
         } else {
-            BatchRunner.start(ctx, s, audio)
+            BatchRunner.start(ctx, s, audio, movePen = !runKeepsPen)
+            runKeepsPen = false
         }
     }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
@@ -2286,8 +2310,9 @@ fun App(
     if (showBatteryNag) {
         val proceed = {
             showBatteryNag = false
-            batterySettings?.let { BatchRunner.start(ctx, it, audio) }
+            batterySettings?.let { BatchRunner.start(ctx, it, audio, movePen = !runKeepsPen) }
             batterySettings = null
+            runKeepsPen = false
         }
         BatteryNagDialog(onProceed = proceed)
     }
@@ -2409,10 +2434,21 @@ fun App(
         }
     }
 
+    // A card's own Convert button: sends just that card to the queue with the settings on screen and starts
+    // converting (or, while a batch runs, adds it to that batch). The rest of the Holding Pen stays put.
+    val sendCardNow: (Long) -> Unit = { id ->
+        if (BatchRunner.sendToQueue(id, cardSettings) && !BatchRunner.busy) {
+            runKeepsPen = true
+            beginConvert()
+        }
+    }
+
     // Audio Mode: pressing Convert with cards that have no image asks first (Add image / Continue anyway),
     // so there is a chance to set it right. Each card is asked about once; continuing makes it with a black picture.
     val askedNoImage = remember { mutableStateListOf<Long>() }
     var showNoImage by remember { mutableStateOf(false) }
+    // When the question comes from one card's own Convert button: that card's id (the question is only about it).
+    var noImageSendId by remember { mutableStateOf(-1L) }
     var noImagePickFor by remember { mutableStateOf(-1L) }
     val noImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         if (noImagePickFor >= 0L && uris.isNotEmpty()) BatchRunner.setAudioImages(ctx, noImagePickFor, uris, false)
@@ -2423,11 +2459,12 @@ fun App(
             it.audio?.images.isNullOrEmpty() && it.id !in askedNoImage
     }
     if (audio && showNoImage) {
-        val first = withoutImage.firstOrNull()
+        val asked = if (noImageSendId >= 0L) withoutImage.filter { it.id == noImageSendId } else withoutImage
+        val first = asked.firstOrNull()
         if (first == null) {
             showNoImage = false
         } else {
-            val more = withoutImage.size - 1
+            val more = asked.size - 1
             AlertDialog(
                 onDismissRequest = { showNoImage = false },
                 shape = CutCornerShape(topStart = 20.dp, bottomEnd = 20.dp),
@@ -2452,12 +2489,18 @@ fun App(
                 dismissButton = {
                     P5Button("Continue anyway", onClick = {
                         showNoImage = false
-                        askedNoImage.addAll(withoutImage.map { it.id })
-                        beginConvert()
+                        askedNoImage.addAll(asked.map { it.id })
+                        if (noImageSendId >= 0L) sendCardNow(noImageSendId) else beginConvert()
+                        noImageSendId = -1L
                     }, kind = P5Kind.Ghost)
                 },
             )
         }
+    }
+
+    // A card's Convert button. Audio Mode: a card with no image gets the same No image question first.
+    val sendCard: (Long) -> Unit = { id ->
+        if (audio && withoutImage.any { it.id == id }) { noImageSendId = id; showNoImage = true } else sendCardNow(id)
     }
 
     // The Menu button floats over the scrolling page (see the end of this function), so it stays in the
@@ -2511,7 +2554,11 @@ fun App(
         }
         if (penAny) {
             SectionNote("Newest at the top. The settings below apply to these $noun when you send them to the queue.")
-            QueueCards(section = CardSection.PEN, busy = busy, liveSettings = cardSettings, audio = audio)
+            QueueCards(
+                section = CardSection.PEN, busy = busy, liveSettings = cardSettings, audio = audio,
+                sendEnabled = !otherBusy && !cancelling && limitOk && fpsOk && resOk,
+                onSendCard = sendCard,
+            )
         } else {
             SectionNote(if (audio) "Choose or share audio files to add them here." else "Choose or share videos to add them here.", headline = "Nothing waiting")
         }
@@ -2849,7 +2896,7 @@ fun App(
             if (pending > 1) "Convert $pending $noun" else "Convert",
             onClick = {
                 // Audio Mode: cards that have no image (the pen's, not yet asked about) get the warning first.
-                if (audio && withoutImage.any { c -> c.inPen }) showNoImage = true else beginConvert()
+                if (audio && withoutImage.any { c -> c.inPen }) { noImageSendId = -1L; showNoImage = true } else beginConvert()
             },
             enabled = canGo,
             modifier = Modifier.fillMaxWidth(),
