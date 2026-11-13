@@ -98,7 +98,7 @@ class BattleSaveTest {
         // Save point now: start of fight 1. A restored session must play fight 1 exactly as the original does.
         val point = original.resumePoint()!!
         assertEquals(RunPoint(1, 1, 0), point)
-        val restored = BattleSession(party, foes, 42L, startFight = point.fightIndex, startWins = point.wins, startAttempt = point.attempt, startLevels = original.resumeLevels())
+        val restored = BattleSession(party, foes, 42L, startFight = point.fightIndex, startWins = point.wins, startAttempt = point.attempt, startLevels = original.resumeLevels(), startHp = original.resumeHp())
         assertEquals(original.opponent.id, restored.opponent.id)
         assertEquals(original.wins, restored.wins)
         fightOut(original); fightOut(restored)

@@ -20,12 +20,12 @@ class BattleLevelsTest {
 
     @Test fun onlyCardsThatTookPartLevelUp() {
         val after = BattleLevels.afterWin(listOf(30, 30, 30), setOf(0, 2), 30)
-        assertEquals(listOf(31, 30, 31), after)
+        assertEquals(listOf(30 + BattleLevels.gain(30, 30), 30, 30 + BattleLevels.gain(30, 30)), after)
     }
 
     @Test fun cardsBehindCatchUpAndCardsFarAheadStop() {
         assertTrue(BattleLevels.gain(30, 50) > BattleLevels.gain(30, 31))
-        assertEquals(0, BattleLevels.gain(60, 50))
+        assertEquals(0, BattleLevels.gain(70, 50))
         assertTrue(BattleLevels.gain(50, 50) >= 1)
         assertEquals(BattleLevels.MAX_LEVEL, BattleLevels.afterWin(listOf(BattleLevels.MAX_LEVEL), setOf(0), 200).single())
     }
@@ -118,5 +118,47 @@ class BattleLevelsTest {
     @Test fun aPartyOfOneAndTheDefaultNeverAsk() {
         assertEquals(RunPhase.FIGHTING, BattleSession(listOf(card(1, 4)), listOf(card(10, 4)), 1L, leadPicking = true).phase)
         assertEquals(RunPhase.FIGHTING, BattleSession(listOf(card(1, 4), card(2, 4)), listOf(card(10, 4)), 1L).phase)
+    }
+
+    // -- Damage carries over ----------------------------------------------------------------------
+
+    @Test fun damageCarriesOverAndSurvivorsRecoverTenPercent() {
+        val s = BattleSession(listOf(card(1, 5), card(2, 5)), listOf(card(10, 5), card(11, 5)), 7L)
+        val ai = BattleAi(2)
+        while (s.phase == RunPhase.FIGHTING) {
+            if (s.mustSwitch) s.replace(ai.chooseReplacement(s.battle, Side.PLAYER)) else s.play(ai.chooseAction(s.battle, Side.PLAYER))
+        }
+        if (s.phase != RunPhase.FIGHT_WON) return // a lost fight ends the run; nothing to check
+        val ended = s.battle.party(Side.PLAYER).map { it.hp }
+        for (i in 0..1) {
+            val max = BattleTuning.maxHp(5, s.levels[i])
+            if (ended[i] > 0) {
+                val grown = max - BattleTuning.maxHp(5, BattleLevels.START_LEVEL)
+                val expected = minOf(max, ended[i] + grown + maxOf(1, (max * 10 + 99) / 100))
+                assertEquals("card $i", expected, s.hp[i])
+            } else {
+                assertEquals(0, s.hp[i]) // fainted cards stay down
+            }
+        }
+    }
+
+    @Test fun aFaintedCardCannotBePickedToLeadAndAFightStartsWithTheSurvivors() {
+        val party = listOf(card(1, 5), card(2, 5), card(3, 5))
+        val s = BattleSession(party, listOf(card(10, 1)), 3L, startHp = listOf(0, 40, 60), leadPicking = true)
+        assertEquals(listOf(1, 2), s.standing)
+        assertEquals(RunPhase.PICKING_LEAD, s.phase)
+        assertTrue(!s.chooseLead(0))
+        assertTrue(s.chooseLead(1))
+        assertEquals(listOf(0, 40, 60), s.battle.party(Side.PLAYER).map { it.hp })
+        // With only one card left there is nothing to choose, and it is sent out.
+        val last = BattleSession(party, listOf(card(10, 1)), 3L, startHp = listOf(0, 0, 25), leadPicking = true)
+        assertEquals(RunPhase.FIGHTING, last.phase)
+        assertEquals("Card 3", last.battle.active(Side.PLAYER).card.name)
+    }
+
+    @Test fun hpIsSavedWithTheRun() {
+        val run = SavedRun(listOf(1L, 2L), listOf(card(10, 3)), null, 4L, RunPoint(1, 1, 0), listOf(31, 30), listOf(0, 77))
+        val back = BattleSaveCodec.decode(BattleSaveCodec.encode(BattleSave(listOf(card(1, 4), card(2, 4)).map { SavedPartyCard(it) }, run))).run!!
+        assertEquals(listOf(0, 77), back.hp)
     }
 }
