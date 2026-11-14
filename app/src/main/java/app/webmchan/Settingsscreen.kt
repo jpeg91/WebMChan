@@ -91,9 +91,14 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
             "and smaller frames. Off keeps it hidden. Turning this off while Fastest is chosen switches back to Quality.",
     ),
     BATTLE_TEST_CARDS(
-        "battleTestCards", true, "Battle-Cards test fighters",
+        "battleTestCards", false, "Battle-Cards test fighters",
         "Adds 40 made-up fighters to the Battle-Cards roster so the mode can be tried without a History. " +
             "A party that already includes some keeps them until you change it.",
+    ),
+    BATTLE_BOSS_TEST(
+        "battleBossTest", false, "Battle-Cards boss test",
+        "For testing: a new run is one opponent long and starts at the secret boss fight, so the boss can be " +
+            "tried without winning 50 fights first. A run already saved is not changed.",
     ),
     SHARE_TO_RUNNING_BATCH(
         "shareToRunningBatch", false, "Add shared videos to a running batch",
@@ -160,7 +165,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             "Videos and cards",
             AppToggle.AUTO_CLEAR_FINISHED, AppToggle.CONFIRM_DESTRUCTIVE, AppToggle.SHARE_TO_RUNNING_BATCH,
         )
-        group("Battle-Cards", AppToggle.BATTLE_TEST_CARDS)
+        group("Battle-Cards", AppToggle.BATTLE_TEST_CARDS, AppToggle.BATTLE_BOSS_TEST)
         group("Encoding", AppToggle.FASTEST_MODE)
     }
 }

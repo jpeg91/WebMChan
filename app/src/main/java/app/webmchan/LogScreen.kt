@@ -70,10 +70,10 @@ fun MenuScreen(
             P5Button("Audio Mode", onClick = onSwitchMode, modifier = Modifier.fillMaxWidth(), accent = P5.redFor(true) to P5.redDeepFor(true))
         }
         P5Button("History", onClick = onHistory, modifier = Modifier.fillMaxWidth())
-        // Battle-Cards always wears its green, whichever mode the app is in.
-        P5Button("Battle-Cards", onClick = onBattleCards, modifier = Modifier.fillMaxWidth(), accent = BattleGreen.Red to BattleGreen.RedDeep)
         P5Button("Settings", onClick = onSettings, modifier = Modifier.fillMaxWidth())
         P5Button("Logs", onClick = onLog, modifier = Modifier.fillMaxWidth())
+        // Battle-Cards always wears its green, whichever mode the app is in.
+        P5Button("Battle-Cards", onClick = onBattleCards, modifier = Modifier.fillMaxWidth(), accent = BattleGreen.Red to BattleGreen.RedDeep)
         P5Button("About", onClick = onAbout, kind = P5Kind.Secondary, modifier = Modifier.fillMaxWidth())
     }
 }
