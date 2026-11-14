@@ -272,6 +272,7 @@ fun AdvancedScreen(onBack: () -> Unit, onCache: () -> Unit = {}) {
             kind = P5Kind.Secondary,
             modifier = Modifier.fillMaxWidth(),
         )
+        BattleCardsSwitches()
         Text(
             "For testing. These numbers steer how videos are fitted into a size limit; the defaults " +
                 "are the recommended values. Changes apply from the next conversion, and anything " +

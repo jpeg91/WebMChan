@@ -199,7 +199,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     if (showHistory) {
-                        P5Background { HistoryScreen(onBack = { showHistory = false }, onBattleCards = { showBattle = true; AccentMode.battle = true }) }
+                        P5Background { HistoryScreen(onBack = { showHistory = false }) }
                     }
                     // On top of History or the Menu (whichever opened it), which stays composed underneath; back returns to it.
                     if (showBattle) {

@@ -165,7 +165,6 @@ fun SettingsScreen(onBack: () -> Unit) {
             "Videos and cards",
             AppToggle.AUTO_CLEAR_FINISHED, AppToggle.CONFIRM_DESTRUCTIVE, AppToggle.SHARE_TO_RUNNING_BATCH,
         )
-        group("Battle-Cards", AppToggle.BATTLE_TEST_CARDS, AppToggle.BATTLE_BOSS_TEST)
         group("Encoding", AppToggle.FASTEST_MODE)
     }
 }
@@ -256,6 +255,12 @@ private fun SaveLocationGroup() {
             }
         }
     }
+}
+
+/** The Battle-Cards switches (test fighters, boss test), shown on the Advanced settings page. */
+@Composable
+internal fun BattleCardsSwitches() {
+    group("Battle-Cards", AppToggle.BATTLE_TEST_CARDS, AppToggle.BATTLE_BOSS_TEST)
 }
 
 @Composable

@@ -14,7 +14,7 @@ object BattleBoss {
     val card: BattleCard = BattleCard(
         id = ID,
         memberIds = listOf(ID),
-        name = "Lossless Master",
+        name = "WebMChan",
         sourceName = "master.raw",
         type = CardType.NONE,
         stats = BattleStats(hp = 8, attack = 8, spAttack = 8, defence = 8, spDefence = 8, speed = 8),

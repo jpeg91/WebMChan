@@ -75,7 +75,7 @@ fun BattleHost(onBack: () -> Unit) {
     // Rebuilt whenever History changes (the list is observable state). Test cards are for trying the game without a History.
     val real by remember { derivedStateOf { BattleFromHistory.roster(BatchRunner.history.toList()) } }
     val testCards = remember { BattleTestCards.cards() }
-    // The "Battle-Cards test fighters" switch on the Settings page.
+    // The "Battle-Cards test fighters" switch on the Advanced settings page.
     val useTestCards = AppSettings.get(AppToggle.BATTLE_TEST_CARDS)
     val roster = remember(real, useTestCards) { if (useTestCards) real + testCards else real }
     var save by remember { mutableStateOf(BattleStore.load(ctx)) }
@@ -132,7 +132,7 @@ fun BattleHost(onBack: () -> Unit) {
                 // A card already in the party fights as its saved snapshot.
                 val cards = ids.mapNotNull { joined.partyCard(it)?.card }
                 val seed = BattleHash.mix(System.currentTimeMillis(), ids.fold(0L) { acc, id -> BattleHash.mix(acc, id) })
-                // The Settings "boss test" switch: a one-opponent run that starts at the boss (the second fight).
+                // The Advanced settings "boss test" switch: a one-opponent run that starts at the boss (the second fight).
                 val bossTest = AppSettings.get(AppToggle.BATTLE_BOSS_TEST)
                 val opponents = BattleRun.opponentsFor(roster, ids.toSet()).let { if (bossTest) it.take(1) else it }
                 val s = BattleSession(cards, opponents, seed, boss = BattleBoss.card, startFight = if (bossTest) 1 else 0, leadPicking = true, forceBoss = bossTest)
@@ -297,6 +297,8 @@ private fun RunScreen(session: BattleSession, recordOf: (Long) -> CardRecord?, o
     var pendingSlot by remember { mutableIntStateOf(-1) }
     // Whose inspect page is open, if any.
     var inspect by remember { mutableStateOf<Side?>(null) }
+    // The ending message after the secret boss has been beaten, shown once the last messages are done.
+    var endingSeen by remember { mutableStateOf(false) }
     // Bumped whenever the session itself changes (phase, who must swap), so the screen redraws.
     var tick by remember { mutableIntStateOf(0) }
     @Suppress("UNUSED_VARIABLE") val redraw = tick
@@ -575,6 +577,10 @@ private fun RunScreen(session: BattleSession, recordOf: (Long) -> CardRecord?, o
         val card = session.battle.active(side).card
         val other = view.active(if (side == Side.PLAYER) Side.OPPONENT else Side.PLAYER)
         InspectPage(card, f, other.type, if (side == Side.PLAYER) recordOf(card.id) else null, onClose = { inspect = null })
+    }
+    // Only after beating the secret boss: the thank-you message, over everything, then on to "Run complete".
+    if (session.phase == RunPhase.RUN_COMPLETE && session.hasBossFight && !busy && !endingSeen) {
+        BossEnding(onContinue = { endingSeen = true })
     }
     }
 }
