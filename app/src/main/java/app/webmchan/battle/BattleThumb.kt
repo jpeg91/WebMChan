@@ -1,6 +1,8 @@
 // #battle
 package app.webmchan.battle
 
+import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -25,15 +27,34 @@ import app.webmchan.Thumbnails
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/** The app's launcher icon as a picture, drawn once and kept (null if it can't be drawn). */
+private var appIconPicture: ImageBitmap? = null
+
+private fun appIcon(ctx: Context): ImageBitmap? {
+    appIconPicture?.let { return it }
+    return try {
+        val drawable = ctx.packageManager.getApplicationIcon(ctx.packageName)
+        val size = 192
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        drawable.setBounds(0, 0, size, size)
+        drawable.draw(android.graphics.Canvas(bmp))
+        bmp.asImageBitmap().also { appIconPicture = it }
+    } catch (_: Exception) {
+        null
+    }
+}
+
 /**
  * A card's picture: the same small thumbnail History shows for the video (the file is named after the
- * History card's id, which is the Battle-Card's id). Blank if the video has none.
+ * History card's id, which is the Battle-Card's id). Blank if the video has none. Test and ready-made cards
+ * (and the boss) have no video, and negative ids, so they show the app icon.
  */
 @Composable
 fun CardThumb(cardId: Long, width: Dp = 64.dp, height: Dp = 40.dp, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(null, cardId) {
         value = withContext(Dispatchers.IO) {
+            if (cardId < 0) return@withContext appIcon(ctx)
             val f = Thumbnails.file(ctx, cardId)
             if (f.length() > 0) BitmapFactory.decodeFile(f.absolutePath)?.asImageBitmap() else null
         }

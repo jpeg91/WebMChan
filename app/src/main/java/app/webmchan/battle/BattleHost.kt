@@ -65,7 +65,7 @@ import app.webmchan.P5Title
 
 /**
  * Battle-Cards as the player sees it: the roster, then picking a party, then a run. Plain screens with
- * text and bars; the hand-drawn animation comes later. The party (with records) and the run in progress
+ * text and bars, with the hand-drawn move animations. The party (with records) and the run in progress
  * are saved ([BattleStore]), so leaving the mode or closing the app keeps them; a saved run starts again
  * from the beginning of the fight it was in.
  */
@@ -102,7 +102,7 @@ fun BattleHost(onBack: () -> Unit) {
                 if (complete) next = next.recordRunCompleted(partyIds)
                 update(next)
             } else {
-                update(base.withRun(SavedRun(partyIds, sess.opponents, sess.boss, sess.runSeed, point, sess.resumeLevels(), sess.resumeHp())))
+                update(base.withRun(SavedRun(partyIds, sess.opponents, sess.boss, sess.runSeed, point, sess.resumeLevels(), sess.resumeHp(), sess.forceBoss)))
             }
         }
         s.announce()
@@ -132,7 +132,10 @@ fun BattleHost(onBack: () -> Unit) {
                 // A card already in the party fights as its saved snapshot.
                 val cards = ids.mapNotNull { joined.partyCard(it)?.card }
                 val seed = BattleHash.mix(System.currentTimeMillis(), ids.fold(0L) { acc, id -> BattleHash.mix(acc, id) })
-                val s = BattleSession(cards, BattleRun.opponentsFor(roster, ids.toSet()), seed, boss = BattleBoss.card, leadPicking = true)
+                // The Settings "boss test" switch: a one-opponent run that starts at the boss (the second fight).
+                val bossTest = AppSettings.get(AppToggle.BATTLE_BOSS_TEST)
+                val opponents = BattleRun.opponentsFor(roster, ids.toSet()).let { if (bossTest) it.take(1) else it }
+                val s = BattleSession(cards, opponents, seed, boss = BattleBoss.card, startFight = if (bossTest) 1 else 0, leadPicking = true, forceBoss = bossTest)
                 save = joined.recordRunStarted()
                 wire(s, ids)
                 session = s
@@ -152,7 +155,7 @@ fun BattleHost(onBack: () -> Unit) {
                     if (run != null) {
                         val cards = run.partyIds.mapNotNull { save.partyCard(it)?.card }
                         if (cards.isNotEmpty()) {
-                            val s = BattleSession(cards, run.opponents, run.seed, run.boss, run.point.fightIndex, run.point.wins, run.point.attempt, run.levels, leadPicking = true, startHp = run.hp)
+                            val s = BattleSession(cards, run.opponents, run.seed, run.boss, run.point.fightIndex, run.point.wins, run.point.attempt, run.levels, leadPicking = true, startHp = run.hp, forceBoss = run.forceBoss)
                             wire(s, run.partyIds)
                             session = s
                         }

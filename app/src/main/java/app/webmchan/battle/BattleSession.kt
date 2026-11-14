@@ -37,10 +37,10 @@ data class RunPoint(val fightIndex: Int, val wins: Int, val attempt: Int)
  * Everything is derived from [runSeed], so a run can be rebuilt exactly (Stage 4 saves it).
  */
 class BattleSession(
-    val party: List<BattleCard>,
+    party: List<BattleCard>,
     val opponents: List<BattleCard>,
     val runSeed: Long,
-    /** The secret last opponent, fought only after every other card in a run of more than [BOSS_MIN_BATTLES] battles. */
+    /** The secret last opponent, fought only after every other card in a run of more than [BOSS_MIN_BATTLES] battles (or any run with [forceBoss]). */
     val boss: BattleCard? = null,
     /** Where to pick a saved run up: the fight to start, how many were won, and (after draws) which attempt. */
     startFight: Int = 0,
@@ -52,14 +52,22 @@ class BattleSession(
     private val leadPicking: Boolean = false,
     /** The party's HP when a saved run is picked up (see [resumeHp]); everyone starts at full health if null or the wrong length. */
     startHp: List<Int>? = null,
+    /** For testing: the boss is fought whatever the length of the run (the Settings "boss test" switch). */
+    val forceBoss: Boolean = false,
 ) {
+    /**
+     * The party. A fight's messages and bars find a card by its name, so no two cards may share one: the
+     * first keeps its name and later repeats get "(2)", "(3)" ... (see [BattleDerive.uniqueNames]).
+     */
+    val party: List<BattleCard> = BattleDerive.uniqueNames(party)
+
     init {
         require(party.isNotEmpty()) { "A run needs a party" }
         require(opponents.isNotEmpty()) { "A run needs an opponent" }
     }
 
     /** True when this run ends with the boss. */
-    val hasBossFight: Boolean = boss != null && opponents.size > BOSS_MIN_BATTLES
+    val hasBossFight: Boolean = boss != null && (forceBoss || opponents.size > BOSS_MIN_BATTLES)
 
     /** Every fight in the run, the boss's included. */
     private val allFights: List<BattleCard> = if (hasBossFight) opponents + boss!! else opponents

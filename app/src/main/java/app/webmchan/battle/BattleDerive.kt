@@ -180,6 +180,23 @@ object BattleDerive {
     private val suffixMid = listOf("ox", "ard", "wing", "beast", "drone")
     private val suffixHigh = listOf("saur", "titan", "lord", "wyrm", "king")
 
+    /**
+     * Gives every card in [cards] a different name, in the order given: the first keeps its name and later
+     * repeats get "(2)", "(3)" ... (skipping any name already taken). A fight finds its cards by name, so a
+     * party must not have two of the same. Order and everything else about the cards is unchanged.
+     */
+    fun uniqueNames(cards: List<BattleCard>): List<BattleCard> {
+        val used = HashSet<String>()
+        return cards.map { c ->
+            if (used.add(c.name)) c
+            else {
+                var n = 2
+                while (!used.add("${c.name} ($n)")) n++
+                c.copy(name = "${c.name} ($n)")
+            }
+        }
+    }
+
     /** Two conversions of the same file share a name; the older keeps it and later ones get "(2)", "(3)" ... */
     fun numberRepeats(cards: List<BattleCard>): List<BattleCard> {
         val seen = HashMap<String, Int>()

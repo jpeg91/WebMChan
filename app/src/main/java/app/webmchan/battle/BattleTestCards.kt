@@ -7,7 +7,7 @@ import java.util.Random
  * Made-up cards for testing, so the game can be tried without first converting a pile of videos.
  * They are added to the roster while the "Battle-Cards test fighters" switch in Settings is on (BattleHost
  * reads it; delete this file and those lines before a real release). They have negative ids so they can never clash
- * with a real History card, and no thumbnail.
+ * with a real History card, and no thumbnail of their own (they show the app icon, see CardThumb).
  */
 object BattleTestCards {
     private const val COUNT = 40

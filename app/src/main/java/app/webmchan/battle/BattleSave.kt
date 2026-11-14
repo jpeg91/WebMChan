@@ -18,6 +18,8 @@ data class SavedRun(
     val levels: List<Int> = emptyList(),
     /** The party's HP at that point, in party order (empty in older saves: everyone at full health). */
     val hp: List<Int> = emptyList(),
+    /** A boss-test run (see [BattleSession.forceBoss]); false in older saves. */
+    val forceBoss: Boolean = false,
 )
 
 /**
@@ -118,6 +120,7 @@ object BattleSaveCodec {
                     "attempt" to r.point.attempt,
                     "levels" to r.levels,
                     "hp" to r.hp,
+                    "forceBoss" to r.forceBoss,
                 )
             },
         ),
@@ -138,7 +141,8 @@ object BattleSaveCodec {
             else SavedRun(ids, opponents, (r["boss"] as? Map<*, *>)?.let { decodeCard(it) }, (r["seed"] as? Number)?.toLong() ?: 0L,
                 RunPoint(int(r["fight"]), int(r["wins"]), int(r["attempt"])),
                 (r["levels"] as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toInt() },
-                (r["hp"] as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toInt() })
+                (r["hp"] as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toInt() },
+                r["forceBoss"] == true)
         }
         val records = (root["records"] as? Map<*, *>)?.let { m ->
             RunRecords(
