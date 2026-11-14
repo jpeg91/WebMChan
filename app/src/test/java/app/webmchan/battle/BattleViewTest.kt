@@ -38,6 +38,31 @@ class BattleViewTest {
         assertTrue(turnsChecked > 1000)
     }
 
+    @Test fun partyCardsThatShareANameAreStillTrackedSeparatelyOnceMadeUnique() {
+        var turnsChecked = 0
+        for (seed in 1L..60L) {
+            // Three party cards all called "Same", as can happen when saved snapshots keep older names.
+            val raw = (1L..3L).map { randomCard(it, seed).copy(name = "Same") }
+            val party = BattleDerive.uniqueNames(raw)
+            assertEquals(listOf("Same", "Same (2)", "Same (3)"), party.map { it.name })
+            val b = Battle(party, (11L..13L).map { randomCard(it, seed) }, seed)
+            val ai = BattleAi(seed)
+            var view = BattleView.of(b)
+            var guard = 0
+            while (b.outcome == null && guard++ < 300) {
+                val events = when {
+                    b.needsSwitch(Side.PLAYER) -> b.forceSwitch(Side.PLAYER, ai.chooseReplacement(b, Side.PLAYER))
+                    b.needsSwitch(Side.OPPONENT) -> b.forceSwitch(Side.OPPONENT, ai.chooseReplacement(b, Side.OPPONENT))
+                    else -> b.turn(ai.chooseAction(b, Side.PLAYER), ai.chooseAction(b, Side.OPPONENT))
+                }
+                for (e in events) view = view.apply(e)
+                assertEquals("seed $seed after ${b.turns} turns", BattleView.of(b), view)
+                turnsChecked++
+            }
+        }
+        assertTrue(turnsChecked > 100)
+    }
+
     @Test fun aHitMovesTheBarOnlyWhenItsEventIsApplied() {
         val a = randomCard(1, 3)
         val t = randomCard(2, 3)

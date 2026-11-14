@@ -160,6 +160,23 @@ class BattleSaveTest {
         assertTrue(s.phase == RunPhase.RUN_COMPLETE || s.phase == RunPhase.RUN_LOST)
     }
 
+    @Test fun aBossTestRunMeetsTheBossWhateverItsLengthAndSurvivesSaving() {
+        val test = BattleSession(strongParty(), foes(1), 1L, boss = BattleBoss.card, startFight = 1, forceBoss = true)
+        assertTrue(test.hasBossFight)
+        assertTrue(test.isBossFight)
+        assertFalse(BattleSession(strongParty(), foes(1), 1L, boss = BattleBoss.card).hasBossFight)
+        val run = SavedRun(listOf(1), foes(1), BattleBoss.card, 1L, RunPoint(1, 0, 0), forceBoss = true)
+        val back = BattleSaveCodec.decode(BattleSaveCodec.encode(BattleSave(listOf(SavedPartyCard(card(1))), run)))
+        assertTrue(back.run!!.forceBoss)
+    }
+
+    @Test fun partyCardsWithTheSameNameAreToldApart() {
+        val a = card(1)
+        val s = BattleSession(listOf(a, card(2).copy(name = a.name), card(3).copy(name = a.name)), foes(2), 1L)
+        assertEquals(listOf(a.name, "${a.name} (2)", "${a.name} (3)"), s.party.map { it.name })
+        assertEquals(listOf(1L, 2L, 3L), s.party.map { it.id })
+    }
+
     @Test fun theBossCardIsStrongTypelessAndFair() {
         val b = BattleBoss.card
         assertEquals(CardType.NONE, b.type)
