@@ -1745,8 +1745,8 @@ object BatchRunner {
         runList.addAll(joining)
         runTotal = runList.size
         // The progress text is only rewritten when the encoder reports back, which can take a while
-        // in pass 1, so bring its "Video n of N" up to date now.
-        status = Regex("^(Video|Track) (\\d+) of \\d+").replace(status) { "${it.groupValues[1]} ${it.groupValues[2]} of $runTotal" }
+        // in pass 1, so bring its "Video n/N" up to date now.
+        status = Regex("^(Video|Track) (\\d+)/\\d+").replace(status) { "${it.groupValues[1]} ${it.groupValues[2]}/$runTotal" }
         if (joining.isNotEmpty()) persist()
     }
 
@@ -1797,7 +1797,7 @@ object BatchRunner {
                 val current = processed
                 // A function, not a fixed string: the total can grow while this video converts
                 // (a video added mid-run), and the label should follow it.
-                fun pos() = "${if (item.isAudio) "Track" else "Video"} $current of $runTotal"
+                fun pos() = "${if (item.isAudio) "Track" else "Video"} $current/$runTotal"
                 // From here to the end of this video, everything logged is kept for the Log page.
                 logBuffer.beginCapture()
                 clearNotes()

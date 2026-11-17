@@ -44,6 +44,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /**
  * The speech bubble above the log: the app telling the person, in plain words, what is going on. It
@@ -62,6 +63,10 @@ fun LogBubble(notes: List<UserNote>, header: String? = null, live: String? = nul
     val fill = if (attention) P5.Amber.copy(alpha = 0.16f) else P5.Panel
     val message = live ?: last?.text
     val earlier = if (live != null) notes.size else notes.size - 1
+    // The two messages before the current one, oldest first (the live text, if any, stands in for the latest note).
+    val previous = (if (live != null) notes else notes.dropLast(1)).takeLast(2).map { it.text }
+    // With 4 or more messages in all, a row of dots above says there are still older ones.
+    val showDots = notes.size + (if (live != null) 1 else 0) >= 4
     Column(Modifier.fillMaxWidth()) {
         Box(
             Modifier
@@ -73,16 +78,36 @@ fun LogBubble(notes: List<UserNote>, header: String? = null, live: String? = nul
                 .padding(horizontal = 12.dp, vertical = 10.dp),
         ) {
             Column {
-                // Where the run is up to ("Video 2 of 5: attempt 1/7..."): smaller and greyed, above the message.
+                // Where the run is up to ("Video 2/5: attempt 1/7..."): smaller and greyed, above the message.
                 if (hasHeader) {
                     Text(header!!, style = MaterialTheme.typography.bodySmall, color = P5.Grey)
+                }
+                // Older messages, greyed and getting smaller the older they are (oldest at the top).
+                if (showDots) {
+                    Text(
+                        ".....",
+                        fontSize = 9.sp,
+                        lineHeight = 9.sp,
+                        color = P5.GreyDim,
+                        modifier = Modifier.padding(top = if (hasHeader) 4.dp else 0.dp),
+                    )
+                }
+                previous.forEachIndexed { n, text ->
+                    val older = previous.size - 1 - n // 0 = the one just before the current message
+                    Text(
+                        text,
+                        fontSize = if (older == 0) 12.sp else 10.5.sp,
+                        lineHeight = if (older == 0) 15.sp else 13.sp,
+                        color = if (older == 0) P5.Grey else P5.GreyDim,
+                        modifier = Modifier.padding(top = if (n == 0 && !showDots && hasHeader) 4.dp else 2.dp),
+                    )
                 }
                 if (message != null) {
                     Text(
                         message,
                         style = MaterialTheme.typography.bodyMedium,
                         color = P5.White,
-                        modifier = Modifier.padding(top = if (hasHeader) 4.dp else 0.dp),
+                        modifier = Modifier.padding(top = if (hasHeader || previous.isNotEmpty() || showDots) 4.dp else 0.dp),
                     )
                 }
                 if (earlier > 0) {

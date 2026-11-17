@@ -963,7 +963,7 @@ internal fun QueueRow(
             // buttons to add splits or take them away again, down to the minimum the board needs.
             val partSecText = String.format(Locale.US, "%.1f", est.partSec)
             val estimateText = buildString {
-                append("Expected conversion output: ")
+                append("Approximate output: ")
                 if (gifSpec != null) append("sound at ${est.audioKbps}kbps, GIF video at ${est.videoKbps}kbps, picture ${est.height}p at ${GifFit.frameRate(gifSpec.images)} fps")
                 else if (isAudio) append("sound at ${est.audioKbps}kbps, picture ${est.height}p")
                 else append("${est.height}p at ${est.videoKbps}kbps")

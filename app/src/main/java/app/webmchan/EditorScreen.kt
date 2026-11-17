@@ -465,7 +465,7 @@ private fun EditorContent(item: QueueItem, src: SourceInfo, onClose: () -> Unit)
         if (live != null && estimate != null) {
             Text(
                 buildString {
-                    append("Expected conversion output: ")
+                    append("Approximate output: ")
                     append(if (estimate.parts == 1) "1 file" else "${estimate.parts} files")
                     if (estimate.parts > 1) append(" of ${String.format(Locale.US, "%.1f", estimate.partSec)}s each")
                     append(" - ${estimate.height}p at ${estimate.videoKbps}kbps")
