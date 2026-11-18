@@ -157,6 +157,7 @@ class MainActivity : ComponentActivity() {
                 var showAdvanced by remember { mutableStateOf(false) }
                 var showCache by remember { mutableStateOf(false) }
                 var showReadme by remember { mutableStateOf(false) }
+                var showRawFfmpeg by remember { mutableStateOf(false) }
                 // Keeps the screen on while a run is going (and the app is open), if the Settings page says so.
                 val keepOn = AppSettings.get(AppToggle.KEEP_SCREEN_ON) && BatchRunner.busy && !BatchRunner.paused
                 androidx.compose.runtime.DisposableEffect(keepOn) {
@@ -191,6 +192,7 @@ class MainActivity : ComponentActivity() {
                                 onSettings = { showSettings = true },
                                 onLog = { showLog = true },
                                 onAbout = { showAbout = true },
+                                onRawFfmpeg = { showRawFfmpeg = true },
                                 onSwitchMode = {
                                     AccentMode.audio = !AccentMode.audio
                                     showMenu = false
@@ -230,6 +232,9 @@ class MainActivity : ComponentActivity() {
                     }
                     if (showCache) {
                         P5Background { CacheScreen(onBack = { showCache = false }) }
+                    }
+                    if (showRawFfmpeg) {
+                        P5Background { RawFfmpegScreen(onBack = { showRawFfmpeg = false }) }
                     }
                     // The video editor, opened from a Holding Pen card. A page of its own, on top.
                     val editingId = BatchRunner.editingId

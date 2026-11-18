@@ -1457,7 +1457,10 @@ object BatchRunner {
      * settings, see [sendToQueue], and the rest of the pen stays put).
      */
     fun start(ctx: Context, settings: Settings, audio: Boolean = false, movePen: Boolean = true) {
-        if (busy) return
+        // Raw FFmpeg (see RawFfmpegRunner) shares the same ffmpeg engine; running both at once
+        // would scramble each other's logs. Its own page already keeps its Run button disabled
+        // while a batch is busy; this is the matching guard for the other direction.
+        if (busy || RawFfmpegRunner.running) return
         val appCtx = ctx.applicationContext
         appContext = appCtx
         // Everything ready in the Holding Pen goes to the queue (after anything already left there).

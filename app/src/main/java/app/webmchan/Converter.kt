@@ -847,7 +847,8 @@ object Converter {
     fun clearWorkFiles(ctx: Context) {
         ctx.cacheDir.listFiles()?.filter {
             it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name == BEST_FILE_NAME ||
-                it.name == "audioprobe.webm" || it.name == "audio-best.webm" || it.name.startsWith("ffpass")
+                it.name == "audioprobe.webm" || it.name == "audio-best.webm" || it.name.startsWith("ffpass") ||
+                it.name.startsWith("webmchan-raw-") // Raw FFmpeg's own output file, left behind if the app was killed mid-run.
         }?.forEach { it.delete() }
     }
 
@@ -1931,11 +1932,11 @@ object Converter {
     }
 
     /** Copies the result into Downloads/WebMChan and returns its content Uri. */
-    fun saveToDownloads(ctx: Context, file: File, name: String): Uri? {
+    fun saveToDownloads(ctx: Context, file: File, name: String, mime: String = "video/webm"): Uri? {
         val resolver = ctx.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, "video/webm")
+            put(MediaStore.Downloads.MIME_TYPE, mime)
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/WebMChan")
             put(MediaStore.Downloads.IS_PENDING, 1)
         }

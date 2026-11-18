@@ -107,7 +107,7 @@ object OutputStorage {
      * Saves into <chosen folder>/WebMChan/. If no folder is chosen, or it can't be written to,
      * silently falls back to [fallback] (the existing saveToDownloads) and says so in the message.
      */
-    fun save(ctx: Context, file: File, name: String, fallback: () -> Uri?): SaveResult {
+    fun save(ctx: Context, file: File, name: String, mime: String = "video/webm", fallback: () -> Uri?): SaveResult {
         val dirUri = savedDirUri(ctx)
         if (dirUri == null) {
             val uri = fallback()
@@ -118,7 +118,7 @@ object OutputStorage {
             )
         }
 
-        val saved = saveToChosenFolder(ctx, dirUri, file, name)
+        val saved = saveToChosenFolder(ctx, dirUri, file, name, mime)
         if (saved != null) {
             return SaveResult(saved.first, "Saved to ${displayName(ctx)}/${saved.second}")
         }
@@ -132,7 +132,7 @@ object OutputStorage {
     }
 
     /** Returns the new file's Uri and its final name, or null if anything went wrong. */
-    private fun saveToChosenFolder(ctx: Context, dirUri: Uri, file: File, name: String): Pair<Uri, String>? {
+    private fun saveToChosenFolder(ctx: Context, dirUri: Uri, file: File, name: String, mime: String): Pair<Uri, String>? {
         return try {
             // The grant can be revoked in Settings, or the SD card can be removed.
             val held = ctx.contentResolver.persistedUriPermissions
@@ -158,7 +158,7 @@ object OutputStorage {
                 n++
             }
 
-            val doc = target.createFile("video/webm", finalName) ?: return null
+            val doc = target.createFile(mime, finalName) ?: return null
             try {
                 ctx.contentResolver.openOutputStream(doc.uri)?.use { os ->
                     file.inputStream().use { it.copyTo(os) }
