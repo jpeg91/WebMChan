@@ -76,7 +76,8 @@ fun MenuScreen(
         P5Button("Logs", onClick = onLog, modifier = Modifier.fillMaxWidth())
         // Battle-Cards always wears its green, whichever mode the app is in.
         P5Button("Battle-Cards", onClick = onBattleCards, modifier = Modifier.fillMaxWidth(), accent = BattleGreen.Red to BattleGreen.RedDeep)
-        P5Button("Raw FFmpeg", onClick = onRawFfmpeg, kind = P5Kind.Secondary, modifier = Modifier.fillMaxWidth())
+        // Raw FFmpeg always wears its warning-sign yellow, whichever mode the app is in.
+        P5Button("Raw FFmpeg", onClick = onRawFfmpeg, modifier = Modifier.fillMaxWidth(), accent = SafetyYellow.Red to SafetyYellow.RedDeep)
         P5Button("About", onClick = onAbout, kind = P5Kind.Secondary, modifier = Modifier.fillMaxWidth())
     }
 }

@@ -93,6 +93,9 @@ object AccentMode {
 
     /** Battle-Cards: the same look in green (see [BattleGreen]). Takes priority over [audio]. */
     var battle by mutableStateOf(false)
+
+    /** Raw FFmpeg: the same look in safety yellow (see [SafetyYellow]). Takes priority over both. */
+    var raw by mutableStateOf(false)
 }
 
 /** Battle-Cards' accent: #71C558, with a lighter and a darker green to go with it. */
@@ -109,11 +112,19 @@ object Prince {
     val RedDeep = Color(0xFF3A2E6B)
 }
 
+/** Raw FFmpeg's accent: the yellow and black of a warning sign, for a page with no safety rails of its own. */
+object SafetyYellow {
+    val Red = Color(0xFFFFC400)
+    val RedBright = Color(0xFFFFE066)
+    val RedDeep = Color(0xFF5C4600)
+}
+
 /**
  * The palette. Red is for fills and big accents; [RedBright] is the red that is safe for small text.
- * In Audio Mode ([AccentMode.audio]) the three reds read as the purples of [Prince]. [redFor] and its
- * two relatives give a colour for a given mode, for places that can't read the screen's mode (a
- * notification for a run that isn't the screen on show).
+ * In Audio Mode ([AccentMode.audio]) the three reds read as the purples of [Prince]; in Raw FFmpeg
+ * ([AccentMode.raw]) they read as the yellows of [SafetyYellow]. [redFor] and its two relatives give
+ * a colour for a given mode, for places that can't read the screen's mode (a notification for a run
+ * that isn't the screen on show).
  */
 object P5 {
     val Black = Color(0xFF080808)
@@ -123,9 +134,9 @@ object P5 {
     private val RedVideo = Color(0xFFE60012)
     private val RedBrightVideo = Color(0xFFFF4553)
     private val RedDeepVideo = Color(0xFF7A000B)
-    val Red: Color get() = if (AccentMode.battle) BattleGreen.Red else if (AccentMode.audio) Prince.Red else RedVideo
-    val RedBright: Color get() = if (AccentMode.battle) BattleGreen.RedBright else if (AccentMode.audio) Prince.RedBright else RedBrightVideo
-    val RedDeep: Color get() = if (AccentMode.battle) BattleGreen.RedDeep else if (AccentMode.audio) Prince.RedDeep else RedDeepVideo
+    val Red: Color get() = if (AccentMode.raw) SafetyYellow.Red else if (AccentMode.battle) BattleGreen.Red else if (AccentMode.audio) Prince.Red else RedVideo
+    val RedBright: Color get() = if (AccentMode.raw) SafetyYellow.RedBright else if (AccentMode.battle) BattleGreen.RedBright else if (AccentMode.audio) Prince.RedBright else RedBrightVideo
+    val RedDeep: Color get() = if (AccentMode.raw) SafetyYellow.RedDeep else if (AccentMode.battle) BattleGreen.RedDeep else if (AccentMode.audio) Prince.RedDeep else RedDeepVideo
     /** A real red for warnings (low HP, damage, debuffs) that stays red in every mode. */
     val Danger = RedVideo
     val DangerBright = RedBrightVideo
@@ -188,8 +199,8 @@ private val P5Typography = Typography(
 
 @Composable
 fun P5Theme(content: @Composable () -> Unit) {
-    // Rebuilt when the accent changes (Audio Mode is purple).
-    val scheme = remember(AccentMode.audio, AccentMode.battle) { p5ColorScheme() }
+    // Rebuilt when the accent changes (Audio Mode is purple, Battle-Cards green, Raw FFmpeg yellow).
+    val scheme = remember(AccentMode.audio, AccentMode.battle, AccentMode.raw) { p5ColorScheme() }
     MaterialTheme(colorScheme = scheme, typography = P5Typography, content = content)
 }
 
@@ -307,8 +318,11 @@ fun P5Button(
     val textColor = when {
         !enabled -> P5.GreyDim
         kind == P5Kind.Ghost -> P5.RedBright
-        // White is hard to read on the light green fill (including the Menu's Battle-Cards button).
-        kind == P5Kind.Primary && ((accent == null && AccentMode.battle) || accent?.first == BattleGreen.Red) -> P5.Black
+        // White is hard to read on the light green or yellow fills (including the Menu's own buttons for them).
+        kind == P5Kind.Primary && (
+            (accent == null && (AccentMode.battle || AccentMode.raw)) ||
+                accent?.first == BattleGreen.Red || accent?.first == SafetyYellow.Red
+            ) -> P5.Black
         else -> P5.White
     }
     val borderColor = if (enabled) P5.White else P5.Line
@@ -402,7 +416,7 @@ fun P5Tag(text: String, color: Color, modifier: Modifier = Modifier, filled: Boo
     ) {
         Text(
             text.uppercase(),
-            color = if (filled) (if ((color == P5.Red && !AccentMode.battle) || color == P5.Black) P5.White else P5.Black) else color,
+            color = if (filled) (if ((color == P5.Red && !AccentMode.battle && !AccentMode.raw) || color == P5.Black) P5.White else P5.Black) else color,
             style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp),
             maxLines = 1,
             softWrap = false,

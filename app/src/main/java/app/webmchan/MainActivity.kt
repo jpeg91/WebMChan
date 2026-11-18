@@ -192,7 +192,7 @@ class MainActivity : ComponentActivity() {
                                 onSettings = { showSettings = true },
                                 onLog = { showLog = true },
                                 onAbout = { showAbout = true },
-                                onRawFfmpeg = { showRawFfmpeg = true },
+                                onRawFfmpeg = { showRawFfmpeg = true; AccentMode.raw = true },
                                 onSwitchMode = {
                                     AccentMode.audio = !AccentMode.audio
                                     showMenu = false
@@ -234,8 +234,10 @@ class MainActivity : ComponentActivity() {
                         P5Background { CacheScreen(onBack = { showCache = false }) }
                     }
                     if (showRawFfmpeg) {
-                        P5Background { RawFfmpegScreen(onBack = { showRawFfmpeg = false }) }
+                        P5Background { RawFfmpegScreen(onBack = { showRawFfmpeg = false; AccentMode.raw = false }) }
                     }
+                    // Keeps the yellow in step with the screen even after the activity is recreated.
+                    SideEffect { AccentMode.raw = showRawFfmpeg }
                     // The video editor, opened from a Holding Pen card. A page of its own, on top.
                     val editingId = BatchRunner.editingId
                     if (editingId >= 0L) {
