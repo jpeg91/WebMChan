@@ -13,7 +13,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -151,7 +150,7 @@ object RawFfmpegRunner {
         suspendCancellableCoroutine { cont ->
             val session = FFmpegKit.executeWithArgumentsAsync(
                 tokens.toTypedArray(),
-                { completed -> if (cont.isActive) cont.resume(completed) },
+                { completed -> if (cont.isActive) cont.resumeWith(Result.success(completed)) },
                 { log -> onLog(log.message) },
                 { },
             )
