@@ -22,11 +22,22 @@ class LivePreviewTest {
         assertEquals("1/12.50", LivePreview.rate(12.5))
     }
 
-    /** Out-of-range intervals are pulled back into 0.3 to 30 s, so a bad value can't make ffmpeg misbehave. */
+    /** Out-of-range video-time gaps are pulled back (one frame to 30 s), so a bad value can't make ffmpeg misbehave. */
     @Test fun rateStaysInRange() {
-        assertEquals("1/0.30", LivePreview.rate(0.0))
-        assertEquals("1/0.30", LivePreview.rate(-5.0))
+        assertEquals("1/0.03", LivePreview.rate(0.0))
+        assertEquals("1/0.03", LivePreview.rate(-5.0))
         assertEquals("1/30.00", LivePreview.rate(500.0))
+    }
+
+    /** The setting is real time, ffmpeg counts video time: 3 s at the 0.08x seen on a phone is 0.245 s of video. */
+    @Test fun mediaIntervalTurnsRealTimeIntoVideoTime() {
+        assertEquals(0.2451, LivePreview.mediaInterval(3.0, 0.0817), 0.0001)
+        // A fast encode (4x): the gap in video time is longer.
+        assertEquals(12.0, LivePreview.mediaInterval(3.0, 4.0), 1e-9)
+        // Never shorter than about a frame, never longer than 30 s, and a silly speed is pulled into range.
+        assertEquals(LivePreview.MIN_MEDIA_SEC, LivePreview.mediaInterval(0.3, 0.01), 0.0)
+        assertEquals(30.0, LivePreview.mediaInterval(30.0, 500.0), 0.0)
+        assertEquals(0.03, LivePreview.mediaInterval(3.0, 0.0), 0.0)
     }
 
     @Test fun shrinkFitsABoxAndEndsReadyForJpeg() {
