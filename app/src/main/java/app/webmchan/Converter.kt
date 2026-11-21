@@ -983,6 +983,7 @@ object Converter {
             var pendingVerdict: String? = null
             var pendingAttention = false
             var estimatedPass2Sec = 0.0
+            var pass1WallSec = 0.0
             var revisionDone = false
             var pass2StartMs = 0L
 
@@ -1369,6 +1370,7 @@ object Converter {
                         return@withContext ConvertResult.Fail("Encoding failed (pass 1).\n${tail(p1.allLogsAsString)}")
                     }
                     pass1.markValid(pass1Key)
+                    pass1WallSec = (android.os.SystemClock.elapsedRealtime() - pass1Started) / 1000.0
                     onLog("   pass 1 took ${elapsedText(android.os.SystemClock.elapsedRealtime() - pass1Started)}")
                 }
 
@@ -1385,6 +1387,16 @@ object Converter {
                 val pass2Cmd = common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)
                 // The live preview (see LivePreview): pass 2 only. The same command with one more, tiny output
                 // that the card shows. null = no preview (switched off, Animations off, or this build can't).
+                // ffmpeg's fps filter counts video time, the setting is real time: turn one into the other with how
+                // fast pass 2 is expected to run (the app's own estimate, else about 0.4x of pass 1's speed, else a
+                // slow phone's 0.1x). Pictures are made a little more often than shown, so a wrong guess is harmless.
+                val mediaTotal = slices.sumOf { it.durationSec }
+                val speedGuess = when {
+                    estimatedPass2Sec > 0.0 && mediaTotal > 0.0 -> mediaTotal / estimatedPass2Sec
+                    pass1WallSec > 0.0 && mediaTotal > 0.0 -> 0.4 * mediaTotal / pass1WallSec
+                    else -> 0.1
+                }
+                val previewMediaSec = LivePreview.mediaInterval(t.previewIntervalSec, speedGuess)
                 val previewCmd: List<String>? =
                     if (AppSettings.get(AppToggle.LIVE_PREVIEW) && !AppSettings.get(AppToggle.ANIMATIONS_OFF) &&
                         LivePreview.usable() && livePreviewSupported(ctx, onLog)
@@ -1393,11 +1405,11 @@ object Converter {
                         if (!useGraph) {
                             // Read straight: the main output's filters (-vf) belong to it, so the preview gets its own,
                             // with the frames thinned first so the crop, size and colour work run on the few that are kept.
-                            pass2Cmd + LivePreview.plainOutput(previewFile, slices[0].durationSec, pictureFilters(false), t.previewIntervalSec)
+                            pass2Cmd + LivePreview.plainOutput(previewFile, slices[0].durationSec, pictureFilters(false), previewMediaSec)
                         } else {
                             // A filter graph: the finished picture is split in two inside it.
                             val at = common.indexOf("-filter_complex")
-                            val graph = if (at >= 0) LivePreview.splitGraph(common[at + 1], t.previewIntervalSec) else null
+                            val graph = if (at >= 0) LivePreview.splitGraph(common[at + 1], previewMediaSec) else null
                             if (graph == null) null else {
                                 val withSplit = common.toMutableList().also { it[at + 1] = graph }
                                 val total = slices.sumOf { it.durationSec } + (if (thumbSec != null) thumbFrameSec else 0.0)
@@ -1406,7 +1418,7 @@ object Converter {
                             }
                         }
                     } else null
-                if (previewCmd != null) onLog("   live preview: a ${LivePreview.MAX_EDGE} px picture every %.2f s for the card".format(java.util.Locale.US, t.previewIntervalSec))
+                if (previewCmd != null) onLog("   live preview: a ${LivePreview.MAX_EDGE} px picture for the card about every %.2f s (made every %.2f s of video, expecting %.2fx speed)".format(java.util.Locale.US, t.previewIntervalSec, previewMediaSec, speedGuess))
                 val p2 = executeWithPreview(ctx, t.previewIntervalSec, pass2Cmd, previewCmd, onLog)
                 if (ReturnCode.isCancel(p2.returnCode)) return@withContext ConvertResult.Cancelled
                 if (!ReturnCode.isSuccess(p2.returnCode)) {

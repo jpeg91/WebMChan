@@ -393,9 +393,9 @@ private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
 
 /**
  * The newest live preview picture (see [LivePreview]), or null until the first one exists. Only runs while the
- * card shows it. It looks at the file about twice per preview interval and only reads and decodes it when it has
- * changed (the picture is a few KB, written under a temp name and renamed, so it is never half-written). While
- * the app is off screen it does nothing but check now and then, so nothing is spent on a screen nobody sees.
+ * card shows it. It looks at the file about twice per preview interval and shows each new picture as soon as it is written
+ * (it only reads and decodes the file when it has changed; the picture is a few KB, written under a temp name and
+ * renamed, so it is never half-written). While the app is off screen it does nothing but check now and then, so nothing is spent on a screen nobody sees.
  */
 @Composable
 private fun rememberLiveFrame(): ImageBitmap? {
@@ -416,6 +416,7 @@ private fun rememberLiveFrame(): ImageBitmap? {
                     seen = got.first
                     value = got.second
                 }
+                // Pictures come about once per interval: look twice as often as that so each is shown promptly.
                 delay((LivePreview.intervalSec * 500.0).toLong().coerceIn(150L, 1000L))
             } else {
                 delay(1000L)

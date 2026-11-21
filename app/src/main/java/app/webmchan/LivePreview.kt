@@ -30,6 +30,8 @@ object LivePreview {
     const val FILE_NAME = "live-preview.jpg"
 
     /** The range the interval can be set to in Advanced settings, in seconds. */
+    /** The shortest video-time gap between two pictures (about one frame). */
+    const val MIN_MEDIA_SEC = 0.03
     const val MIN_INTERVAL_SEC = 0.3
     const val MAX_INTERVAL_SEC = 30.0
     const val DEFAULT_INTERVAL_SEC = 3.0
@@ -80,9 +82,18 @@ object LivePreview {
 
     // ---- The ffmpeg side (plain strings, checked by LivePreviewTest) ----
 
+    /**
+     * The interval to give ffmpeg's fps filter. ffmpeg counts in VIDEO time, but the setting is in real time, and
+     * a phone encodes slower than the video plays (0.08x was seen: 3 s of video = 37 s of waiting). So the real
+     * interval is turned into video time with the expected encode [speed] (video seconds per real second). The card shows every
+     * picture as soon as it is written, so a wrong guess only makes the pictures a little more or less frequent.
+     */
+    fun mediaInterval(wallSec: Double, speed: Double): Double =
+        (wallSec.coerceIn(MIN_INTERVAL_SEC, MAX_INTERVAL_SEC) * speed.coerceIn(0.01, 20.0)).coerceIn(MIN_MEDIA_SEC, MAX_INTERVAL_SEC)
+
     /** "1/3.00": ffmpeg's fps filter reads it as one frame every 3 seconds. */
     fun rate(intervalSec: Double): String =
-        "1/" + String.format(Locale.US, "%.2f", intervalSec.coerceIn(MIN_INTERVAL_SEC, MAX_INTERVAL_SEC))
+        "1/" + String.format(Locale.US, "%.2f", intervalSec.coerceIn(MIN_MEDIA_SEC, MAX_INTERVAL_SEC))
 
     /**
      * Makes a frame fit inside [MAX_EDGE] x [MAX_EDGE] (aspect kept, even sides) and ready for JPEG.

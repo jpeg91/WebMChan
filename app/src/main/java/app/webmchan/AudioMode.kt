@@ -600,12 +600,15 @@ object AudioConverter {
      * (switched off, Animations off, this build can't, or the graph has nothing to split). The card shows the
      * title card, the "WebMChan" mark and every picture or GIF in turn, as they are encoded.
      */
+    /** Expected encode speed of Audio Mode (video seconds per real second): stills are quick, GIFs are slow, so a middle guess; see [LivePreview.mediaInterval]. */
+    private const val AUDIO_SPEED_GUESS = 0.3
+
     private fun withPreview(ctx: Context, intervalSec: Double, args: List<String>, durationSec: Double, onLog: (String) -> Unit): List<String>? {
         if (!AppSettings.get(AppToggle.LIVE_PREVIEW) || AppSettings.get(AppToggle.ANIMATIONS_OFF)) return null
         if (!LivePreview.usable() || !Converter.livePreviewSupported(ctx, onLog)) return null
         val at = args.indexOf("-filter_complex")
         if (at < 0) return null
-        val graph = LivePreview.splitGraph(args[at + 1], intervalSec) ?: return null
+        val graph = LivePreview.splitGraph(args[at + 1], LivePreview.mediaInterval(intervalSec, AUDIO_SPEED_GUESS)) ?: return null
         val changed = args.toMutableList().also { it[at + 1] = graph }
         return changed + LivePreview.graphOutput(LivePreview.file(ctx), durationSec)
     }
