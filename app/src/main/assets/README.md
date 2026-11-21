@@ -96,7 +96,7 @@ See what's happening while it converts: above the log, a speech bubble tells you
 
 ### Settings
 
-**Menu > Settings** is a page of switches: animations off, notification options (progress, status bar icon, lock screen, finished, every failure), keep the screen on while converting, clear Finished cards on a new run, confirm before destructive actions, add shared videos straight to a running batch, and Offer Fastest mode. The save location and the Audio Mode placeholder picture are there too.
+**Menu > Settings** is a page of switches: animations off, notification options (progress, status bar icon, lock screen, finished, every failure), keep the screen on while converting, a live preview on the converting card (a small picture of the frame being encoded, refreshed every 3 seconds by default; change that in Advanced settings), clear Finished cards on a new run, confirm before destructive actions, add shared videos straight to a running batch, and Offer Fastest mode. The save location and the Audio Mode placeholder picture are there too.
 
 ### Cache
 
