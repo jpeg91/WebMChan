@@ -120,6 +120,12 @@ data class Tuning(
      * affects the hidden reference frame, never a frame that is shown. 0 turns the blending off.
      */
     val bestArnrStrength: Int = 5,
+    /**
+     * The live preview on the converting card (Settings > While converting): how often, in seconds, the
+     * picture of the frame being encoded is refreshed. Each one is a tiny extra picture made alongside the
+     * video, so very short intervals cost a little more on a slow phone. Allowed 0.3 to 30.
+     */
+    val previewIntervalSec: Double = LivePreview.DEFAULT_INTERVAL_SEC,
 ) {
     /** The same values, forced into their allowed ranges. */
     fun sanitized(): Tuning {
@@ -159,6 +165,7 @@ data class Tuning(
             bestCpuUsed = bestCpuUsed.coerceIn(0, 3),
             bestArnrMaxFrames = bestArnrMaxFrames.coerceIn(0, 15),
             bestArnrStrength = bestArnrStrength.coerceIn(0, 6),
+            previewIntervalSec = previewIntervalSec.coerceIn(LivePreview.MIN_INTERVAL_SEC, LivePreview.MAX_INTERVAL_SEC),
         )
     }
 
@@ -191,6 +198,7 @@ data class Tuning(
             if (bestCpuUsed != d.bestCpuUsed) add("Best quality effort = cpu-used $bestCpuUsed")
             if (bestArnrMaxFrames != d.bestArnrMaxFrames) add("Best quality alt-ref blend frames = $bestArnrMaxFrames")
             if (bestArnrStrength != d.bestArnrStrength) add("Best quality alt-ref blend strength = $bestArnrStrength")
+            if (previewIntervalSec != d.previewIntervalSec) add("live preview interval = $previewIntervalSec s")
         }
     }
 }
@@ -234,6 +242,7 @@ object TuningStore {
             bestCpuUsed = int("bestCpuUsed", d.bestCpuUsed),
             bestArnrMaxFrames = int("bestArnrMaxFrames", d.bestArnrMaxFrames),
             bestArnrStrength = int("bestArnrStrength", d.bestArnrStrength),
+            previewIntervalSec = dbl("previewIntervalSec", d.previewIntervalSec),
         ).sanitized()
     }
 
@@ -266,6 +275,7 @@ object TuningStore {
             .putString("bestCpuUsed", s.bestCpuUsed.toString())
             .putString("bestArnrMaxFrames", s.bestArnrMaxFrames.toString())
             .putString("bestArnrStrength", s.bestArnrStrength.toString())
+            .putString("previewIntervalSec", s.previewIntervalSec.toString())
             .apply()
         current = s
         return s

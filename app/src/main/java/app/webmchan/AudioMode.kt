@@ -595,6 +595,22 @@ object AudioConverter {
     private fun tail(s: String?): String = s?.takeLast(400)?.trim().orEmpty()
 
     /**
+     * The live preview version of an encode command (see [LivePreview]): the same command with the finished
+     * picture split inside its filter graph and one more, tiny output for the card. null = no preview
+     * (switched off, Animations off, this build can't, or the graph has nothing to split). The card shows the
+     * title card, the "WebMChan" mark and every picture or GIF in turn, as they are encoded.
+     */
+    private fun withPreview(ctx: Context, intervalSec: Double, args: List<String>, durationSec: Double, onLog: (String) -> Unit): List<String>? {
+        if (!AppSettings.get(AppToggle.LIVE_PREVIEW) || AppSettings.get(AppToggle.ANIMATIONS_OFF)) return null
+        if (!LivePreview.usable() || !Converter.livePreviewSupported(ctx, onLog)) return null
+        val at = args.indexOf("-filter_complex")
+        if (at < 0) return null
+        val graph = LivePreview.splitGraph(args[at + 1], intervalSec) ?: return null
+        val changed = args.toMutableList().also { it[at + 1] = graph }
+        return changed + LivePreview.graphOutput(LivePreview.file(ctx), durationSec)
+    }
+
+    /**
      * Makes one webm of the part of [input] (the staged audio file) from [startSec], [clipDurationSec]
      * long, with the card's picture(s) across it. The audio gets as much of the size limit as the
      * picture leaves, up to [AudioFit.MAX_KBPS]: the first encode aims for what the sums allow, and an
@@ -760,7 +776,7 @@ object AudioConverter {
                 if (artist.isNotBlank()) args.addAll(listOf("-metadata", "artist=$artist"))
                 args.addAll(listOf("-t", fmt(duration), "-f", "webm", out.absolutePath))
 
-                val session = FFmpegKit.executeWithArguments(args.toTypedArray())
+                val session = Converter.executeWithPreview(ctx, t.previewIntervalSec, args, withPreview(ctx, t.previewIntervalSec, args, duration, onLog), onLog)
                 if (ReturnCode.isCancel(session.returnCode)) return@withContext ConvertResult.Cancelled
                 if (!ReturnCode.isSuccess(session.returnCode)) {
                     if (bestSize > 0L) break // an earlier try fit; keep it
@@ -983,7 +999,7 @@ object AudioConverter {
 
             // GIF cards take a while: say once per run that the phone can be put down (see NoteText.LOCK_SCREEN).
             if (attempt == 1) onNote(NoteText.LOCK_SCREEN, false)
-            val session = FFmpegKit.executeWithArguments(args.toTypedArray())
+            val session = Converter.executeWithPreview(ctx, t.previewIntervalSec, args, withPreview(ctx, t.previewIntervalSec, args, duration, onLog), onLog)
             if (ReturnCode.isCancel(session.returnCode)) return ConvertResult.Cancelled
             if (!ReturnCode.isSuccess(session.returnCode)) {
                 if (bestSize > 0L) break // an earlier try fit; keep it
@@ -1050,5 +1066,6 @@ object AudioConverter {
         File(ctx.cacheDir, BEST_FILE).delete()
         File(ctx.cacheDir, CARD_FILE).delete()
         File(ctx.cacheDir, LOGO_FILE).delete()
+        LivePreview.delete(ctx)
     }
 }

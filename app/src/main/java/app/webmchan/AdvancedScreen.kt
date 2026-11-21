@@ -137,6 +137,13 @@ private val FIELDS = listOf(
             "reference frame, never a frame that is shown. 0 turns the blending off.", true,
     ),
     FieldSpec(
+        "previewIntervalSec", "Live preview: seconds between pictures",
+        "Default 3. Allowed 0.3 to 30. How often the picture on the converting card is refreshed with the " +
+            "frame being encoded (the switch is under Settings > While converting). Each picture is a tiny " +
+            "extra image made alongside the video, so 3 or more costs next to nothing; very short " +
+            "intervals add a little work on a slow phone. Applies from the next conversion.", false,
+    ),
+    FieldSpec(
         "bracketWebAnimation", "Quality bracket: web animation from (bits per pixel)",
         "Default 0.026 (about 80 kbps at 240p and 30 fps). Below this a queued video's card says " +
             "\"still image\". The bracket starts have to rise in order; one that doesn't is " +
@@ -192,6 +199,7 @@ private fun Tuning.asText(): Map<String, String> = mapOf(
     "bestCpuUsed" to bestCpuUsed.toString(),
     "bestArnrMaxFrames" to bestArnrMaxFrames.toString(),
     "bestArnrStrength" to bestArnrStrength.toString(),
+    "previewIntervalSec" to previewIntervalSec.toString(),
     "bracketWebAnimation" to bracketWebAnimation.toString(),
     "bracketProAnimation" to bracketProAnimation.toString(),
     "bracketOldWebVideo" to bracketOldWebVideo.toString(),
@@ -235,6 +243,7 @@ private fun Map<String, String>.toTuning(base: Tuning, onUnreadable: () -> Unit)
         bestCpuUsed = int("bestCpuUsed", base.bestCpuUsed),
         bestArnrMaxFrames = int("bestArnrMaxFrames", base.bestArnrMaxFrames),
         bestArnrStrength = int("bestArnrStrength", base.bestArnrStrength),
+        previewIntervalSec = dbl("previewIntervalSec", base.previewIntervalSec),
         bracketWebAnimation = dbl("bracketWebAnimation", base.bracketWebAnimation),
         bracketProAnimation = dbl("bracketProAnimation", base.bracketProAnimation),
         bracketOldWebVideo = dbl("bracketOldWebVideo", base.bracketOldWebVideo),

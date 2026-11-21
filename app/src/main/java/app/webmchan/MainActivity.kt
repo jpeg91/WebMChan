@@ -354,6 +354,13 @@ private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
             }
         } else null
     }
+    // Live preview: while this card is the one being converted, its picture is the frame being encoded right
+    // now (see LivePreview). Until the first frame exists, or with the setting off, the usual thumbnail shows.
+    // Kept in this small composable (its own state), so a new frame redraws only this box, not the whole card.
+    val liveOn = item.status == ItemStatus.CONVERTING && LivePreview.running &&
+        AppSettings.get(AppToggle.LIVE_PREVIEW) && !AppSettings.get(AppToggle.ANIMATIONS_OFF)
+    val liveFrame = if (liveOn) rememberLiveFrame() else null
+    val shown = liveFrame ?: bitmap
     Box(
         Modifier
             .size(width = 112.dp, height = 72.dp)
@@ -363,7 +370,7 @@ private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        bitmap?.let {
+        shown?.let {
             // Fit, not Crop: shows the whole frame, so a portrait clip isn't cut off.
             Image(it, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
         }
@@ -382,6 +389,40 @@ private fun Thumb(item: QueueItem, onClick: (() -> Unit)?) {
             )
         }
     }
+}
+
+/**
+ * The newest live preview picture (see [LivePreview]), or null until the first one exists. Only runs while the
+ * card shows it. It looks at the file about twice per preview interval and only reads and decodes it when it has
+ * changed (the picture is a few KB, written under a temp name and renamed, so it is never half-written). While
+ * the app is off screen it does nothing but check now and then, so nothing is spent on a screen nobody sees.
+ */
+@Composable
+private fun rememberLiveFrame(): ImageBitmap? {
+    val ctx = LocalContext.current
+    val frame by produceState<ImageBitmap?>(null) {
+        val file = LivePreview.file(ctx)
+        var seen = 0L
+        while (isActive) {
+            if (BatchRunner.uiVisible) {
+                val got = withContext(Dispatchers.IO) {
+                    // The time and size together: a file system that keeps seconds only can't tell two pictures
+                    // made in the same second apart by its time alone.
+                    val stamp = file.lastModified() * 31L + file.length()
+                    if (stamp == seen || file.length() <= 0L) null
+                    else BitmapFactory.decodeFile(file.absolutePath)?.let { stamp to it.asImageBitmap() }
+                }
+                if (got != null) {
+                    seen = got.first
+                    value = got.second
+                }
+                delay((LivePreview.intervalSec * 500.0).toLong().coerceIn(150L, 1000L))
+            } else {
+                delay(1000L)
+            }
+        }
+    }
+    return frame
 }
 
 /** A frame rate for display: "30" for a whole number, otherwise two decimals ("29.97"). */

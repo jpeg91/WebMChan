@@ -848,7 +848,8 @@ object Converter {
         ctx.cacheDir.listFiles()?.filter {
             it.name.startsWith("webmchan-input-") || it.name == "out.webm" || it.name == BEST_FILE_NAME ||
                 it.name == "audioprobe.webm" || it.name == "audio-best.webm" || it.name.startsWith("ffpass") ||
-                it.name.startsWith("webmchan-raw-") // Raw FFmpeg's own output file, left behind if the app was killed mid-run.
+                it.name.startsWith("webmchan-raw-") || // Raw FFmpeg's own output file, left behind if the app was killed mid-run.
+                it.name.startsWith("live-preview") // The live preview picture (and its temp name), see LivePreview.
         }?.forEach { it.delete() }
     }
 
@@ -1381,9 +1382,32 @@ object Converter {
                 pass2StartMs = android.os.SystemClock.elapsedRealtime()
                 // A long wait is starting (pass 2 is the long part): worth saying the phone can be put down.
                 if (attempt == 1 && estimatedPass2Sec > 0.0 && (best || estimatedPass2Sec > 120.0)) onNote(NoteText.LOCK_SCREEN, false)
-                val p2 = FFmpegKit.executeWithArguments(
-                    (common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)).toTypedArray()
-                )
+                val pass2Cmd = common + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath)
+                // The live preview (see LivePreview): pass 2 only. The same command with one more, tiny output
+                // that the card shows. null = no preview (switched off, Animations off, or this build can't).
+                val previewCmd: List<String>? =
+                    if (AppSettings.get(AppToggle.LIVE_PREVIEW) && !AppSettings.get(AppToggle.ANIMATIONS_OFF) &&
+                        LivePreview.usable() && livePreviewSupported(ctx, onLog)
+                    ) {
+                        val previewFile = LivePreview.file(ctx)
+                        if (!useGraph) {
+                            // Read straight: the main output's filters (-vf) belong to it, so the preview gets its own,
+                            // with the frames thinned first so the crop, size and colour work run on the few that are kept.
+                            pass2Cmd + LivePreview.plainOutput(previewFile, slices[0].durationSec, pictureFilters(false), t.previewIntervalSec)
+                        } else {
+                            // A filter graph: the finished picture is split in two inside it.
+                            val at = common.indexOf("-filter_complex")
+                            val graph = if (at >= 0) LivePreview.splitGraph(common[at + 1], t.previewIntervalSec) else null
+                            if (graph == null) null else {
+                                val withSplit = common.toMutableList().also { it[at + 1] = graph }
+                                val total = slices.sumOf { it.durationSec } + (if (thumbSec != null) thumbFrameSec else 0.0)
+                                withSplit + listOf("-pass", "2") + audioArgs + listOf("-f", "webm", out.absolutePath) +
+                                    LivePreview.graphOutput(previewFile, total)
+                            }
+                        }
+                    } else null
+                if (previewCmd != null) onLog("   live preview: a ${LivePreview.MAX_EDGE} px picture every %.2f s for the card".format(java.util.Locale.US, t.previewIntervalSec))
+                val p2 = executeWithPreview(ctx, t.previewIntervalSec, pass2Cmd, previewCmd, onLog)
                 if (ReturnCode.isCancel(p2.returnCode)) return@withContext ConvertResult.Cancelled
                 if (!ReturnCode.isSuccess(p2.returnCode)) {
                     if (best && bestSize > 0L) {
@@ -1409,8 +1433,7 @@ object Converter {
                         else audioKbps.toDouble()
                     val askedKbps = vKbps + askedAudioKbps
                     val gotKbps = size * 8.0 / duration / 1000.0
-                    val qEnd = Regex("""\bq=(-?\d+(?:\.\d+)?)""").findAll(p2.allLogsAsString.orEmpty())
-                        .lastOrNull()?.groupValues?.get(1)
+                    val qEnd = LivePreview.mainEncoderQ(p2.allLogsAsString)
                     onLog(
                         "   asked for $vKbps kbps video + " +
                             "%.1f kbps audio (%.0f kbps in all); the file came out at %.0f kbps in all, %.0f%% of what was asked and %.0f%% of the size limit".format(
@@ -1481,8 +1504,7 @@ object Converter {
                     if (fits) {
                         val gotKbps = size * 8.0 / duration / 1000.0
                         val askedKbps = vKbps + plannedAudioKbps
-                        val qEnd = Regex("""\bq=(-?\d+(?:\.\d+)?)""").findAll(p2.allLogsAsString.orEmpty())
-                            .lastOrNull()?.groupValues?.get(1)?.toDoubleOrNull()
+                        val qEnd = LivePreview.mainEncoderQ(p2.allLogsAsString)?.toDoubleOrNull()
                         val atFloor = gotKbps < askedKbps * 0.85 && (qEnd ?: 99.0) <= 4.5
                         // Stalled: this attempt asked for clearly more bitrate than the one before it (3% or
                         // more) but the video grew by less than a quarter of that. The encoder is already
@@ -1730,6 +1752,77 @@ object Converter {
             }
         } else {
             onLog(msg)
+        }
+    }
+
+    // ---- Live preview (see LivePreview) ----
+
+    /** Whether this FFmpeg build can write the preview picture; found out once, by a tiny test, like [canToneMap]. */
+    @Volatile
+    private var previewBuildKnown: Boolean? = null
+
+    /**
+     * true when this build has what the preview's second output needs (the JPEG encoder and the single-file
+     * picture writer). Tested once with exactly the options the preview uses, because an output the build
+     * can't make would fail the whole encode. The log is muted for the test. A test that was cancelled
+     * (Skip or Cancel pressed at that moment) says nothing and is not remembered.
+     */
+    internal fun livePreviewSupported(ctx: Context, onLog: (String) -> Unit): Boolean {
+        previewBuildKnown?.let { return it }
+        val probe = File(ctx.cacheDir, "live-preview-probe.jpg")
+        FFmpegKitConfig.enableLogCallback { }
+        var cancelled = false
+        val ok = try {
+            val s = FFmpegKit.executeWithArguments(
+                arrayOf(
+                    "-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.2",
+                    "-vf", LivePreview.shrinkFilters(), "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "8",
+                    "-f", "image2", "-update", "1", "-atomic_writing", "1", probe.absolutePath,
+                )
+            )
+            cancelled = ReturnCode.isCancel(s.returnCode)
+            ReturnCode.isSuccess(s.returnCode) && probe.length() > 0L
+        } catch (_: Throwable) {
+            false
+        } finally {
+            FFmpegKitConfig.enableLogCallback(logSink(onLog))
+            probe.delete()
+            File(ctx.cacheDir, "live-preview-probe.jpg.tmp").delete()
+        }
+        if (cancelled) return false
+        previewBuildKnown = ok
+        if (!ok) onLog("   live preview: this FFmpeg build can't write the preview picture, so it is left off")
+        return ok
+    }
+
+    /**
+     * Runs an encoding command. With [withPreview] (the same command plus the preview's second output, or null
+     * for none) the card shows the preview for as long as it runs; the picture is deleted when it ends however it
+     * ends. If that version fails and the log points at the preview output, it is turned off until the app restarts and
+     * the plain [plain] command is run instead, so the preview can never cost a conversion.
+     */
+    internal fun executeWithPreview(
+        ctx: Context,
+        intervalSec: Double,
+        plain: List<String>,
+        withPreview: List<String>?,
+        onLog: (String) -> Unit,
+    ): com.arthenica.ffmpegkit.FFmpegSession {
+        if (withPreview == null) return FFmpegKit.executeWithArguments(plain.toTypedArray())
+        LivePreview.begin(ctx, intervalSec)
+        try {
+            val s = FFmpegKit.executeWithArguments(withPreview.toTypedArray())
+            val failed = !ReturnCode.isSuccess(s.returnCode) && !ReturnCode.isCancel(s.returnCode)
+            val logs = s.allLogsAsString.orEmpty()
+            if (failed && (LivePreview.FILE_NAME in logs || "mjpeg" in logs || "image2" in logs || "atomic_writing" in logs)) {
+                LivePreview.disable()
+                LivePreview.end(ctx)
+                onLog("   live preview: the encode failed on the preview output, so it is turned off and this pass runs again without it")
+                return FFmpegKit.executeWithArguments(plain.toTypedArray())
+            }
+            return s
+        } finally {
+            LivePreview.end(ctx)
         }
     }
 

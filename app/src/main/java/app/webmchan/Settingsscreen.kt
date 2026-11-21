@@ -67,6 +67,13 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
         "Stops the screen turning off while a run is going and the app is open. Converting with the " +
             "screen off or the app closed works as before.",
     ),
+    LIVE_PREVIEW(
+        "livePreview", true, "Live preview on the converting card",
+        "While a video is encoding, the picture on its card shows the frame being encoded right now, " +
+            "refreshed every few seconds (the interval is under About > Advanced settings). It is made as a " +
+            "tiny extra picture alongside the video, so it costs next to nothing. Not used while Animations " +
+            "off is on, and nothing is refreshed while the app is off screen.",
+    ),
     AUTO_CLEAR_FINISHED(
         "autoClearFinished", false, "Clear Finished cards when a new run starts",
         "The Finished list starts empty each run. The cards stay in History.",
@@ -158,7 +165,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             AppToggle.NOTIFICATION_PROGRESS, AppToggle.STATUS_BAR_ICON, AppToggle.NOTIFICATION_LOCK_SCREEN,
             AppToggle.NOTIFICATION_FINISHED, AppToggle.NOTIFICATION_FAILURE,
         )
-        group("While converting", AppToggle.KEEP_SCREEN_ON)
+        group("While converting", AppToggle.KEEP_SCREEN_ON, AppToggle.LIVE_PREVIEW)
         PlaceholderGroup()
         group("Audio Mode", AppToggle.AUDIO_LOGO, AppToggle.GIF_WHITE_BACKGROUND)
         group(
