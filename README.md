@@ -352,13 +352,10 @@ The rules are a snapshot from October 2026 and are built into the app (the `TARG
 *Not necessarily in order.*
 - Improved title
 - Clean up text and warnings
-- Video preview during conversion
-- UI improvements (Wizard style work flow?)
-- 'About' page updates and improvements
+- Wizard style work flow for the truly clueless
+- About page updates and improvements
 - Tool tips
 - Mascot
 - Update handling (signed key)
 - Naming convention improvements
-- Custom ffmpeg arguments mode
-- Video conversion card top trumps/turn based battles
 - Possible ports of the engine; webapp, Linux etc?
