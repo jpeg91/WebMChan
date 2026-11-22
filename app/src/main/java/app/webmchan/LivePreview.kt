@@ -34,7 +34,7 @@ object LivePreview {
     const val MIN_MEDIA_SEC = 0.03
     const val MIN_INTERVAL_SEC = 0.3
     const val MAX_INTERVAL_SEC = 30.0
-    const val DEFAULT_INTERVAL_SEC = 3.0
+    const val DEFAULT_INTERVAL_SEC = 1.5
 
     /** The JPEG quality ffmpeg is told to use (2 is best, 31 worst). At this size 8 gives a few KB. */
     private const val JPEG_QUALITY = 8

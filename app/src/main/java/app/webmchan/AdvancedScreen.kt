@@ -138,10 +138,12 @@ private val FIELDS = listOf(
     ),
     FieldSpec(
         "previewIntervalSec", "Live preview: seconds between pictures",
-        "Default 3. Allowed 0.3 to 30. How often the picture on the converting card is refreshed with the " +
-            "frame being encoded (the switch is under Settings > While converting). Each picture is a tiny " +
-            "extra image made alongside the video, so 3 or more costs next to nothing; very short " +
-            "intervals add a little work on a slow phone. Applies from the next conversion.", false,
+        "Default 1.5. Allowed 0.3 to 30. About how many seconds (real time) pass between new pictures on the " +
+            "converting card (the switch is under Settings > While converting). It is a best guess: the encoder " +
+            "can only be asked for a picture every so many seconds of video, so the app estimates how fast the " +
+            "encode will run and asks accordingly; the real gap can be longer or shorter. Each picture is a tiny " +
+            "extra image made alongside the video, so it costs next to nothing in conversion time, even at 0.3. " +
+            "Applies from the next conversion.", false,
     ),
     FieldSpec(
         "bracketWebAnimation", "Quality bracket: web animation from (bits per pixel)",

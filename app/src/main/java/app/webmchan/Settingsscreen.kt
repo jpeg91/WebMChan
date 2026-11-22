@@ -70,9 +70,12 @@ enum class AppToggle(val key: String, val default: Boolean, val title: String, v
     LIVE_PREVIEW(
         "livePreview", true, "Live preview on the converting card",
         "While a video is encoding, the picture on its card shows the frame being encoded right now, " +
-            "refreshed every few seconds (the interval is under About > Advanced settings). It is made as a " +
-            "tiny extra picture alongside the video, so it costs next to nothing. Not used while Animations " +
-            "off is on, and nothing is refreshed while the app is off screen.",
+            "a new one about every 1.5 seconds (change that under About > Advanced settings). The timing is a " +
+            "best guess: the encoder can't be told to \"send a picture every 1.5 seconds\", it can only be asked " +
+            "for one every so many seconds of video, so the app works out how often to ask from how fast the " +
+            "encode is expected to run, and the real gap can be longer or shorter. The pictures are tiny and " +
+            "made alongside the video, so this costs next to nothing in conversion time. Not used while " +
+            "Animations off is on, and nothing is refreshed while the app is off screen.",
     ),
     AUTO_CLEAR_FINISHED(
         "autoClearFinished", false, "Clear Finished cards when a new run starts",
