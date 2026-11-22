@@ -1388,12 +1388,14 @@ object Converter {
                 // The live preview (see LivePreview): pass 2 only. The same command with one more, tiny output
                 // that the card shows. null = no preview (switched off, Animations off, or this build can't).
                 // ffmpeg's fps filter counts video time, the setting is real time: turn one into the other with how
-                // fast pass 2 is expected to run (the app's own estimate, else about 0.4x of pass 1's speed, else a
-                // slow phone's 0.1x). Pictures are made a little more often than shown, so a wrong guess is harmless.
+                // fast pass 2 is expected to run. Pass 1 just ran on this same phone and clip, so its speed (times
+                // about 0.4, pass 2 being the slower, real encode) is a far better guide than the generic per-frame
+                // estimate above, which is measured on one phone and was seen out by more than 2x on another. The
+                // estimate is only a fallback, for a reused (skipped) pass 1; after that, a slow phone's 0.1x.
                 val mediaTotal = slices.sumOf { it.durationSec }
                 val speedGuess = when {
-                    estimatedPass2Sec > 0.0 && mediaTotal > 0.0 -> mediaTotal / estimatedPass2Sec
                     pass1WallSec > 0.0 && mediaTotal > 0.0 -> 0.4 * mediaTotal / pass1WallSec
+                    estimatedPass2Sec > 0.0 && mediaTotal > 0.0 -> mediaTotal / estimatedPass2Sec
                     else -> 0.1
                 }
                 val previewMediaSec = LivePreview.mediaInterval(t.previewIntervalSec, speedGuess)
