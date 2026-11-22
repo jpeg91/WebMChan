@@ -127,8 +127,8 @@ class LivePreviewTest {
 
     // ---- The interval setting ----
 
-    @Test fun intervalDefaultsToThreeSeconds() {
-        assertEquals(3.0, Tuning().previewIntervalSec, 0.0)
+    @Test fun intervalDefaultsToOnePointFiveSeconds() {
+        assertEquals(1.5, Tuning().previewIntervalSec, 0.0)
         assertTrue(Tuning().changesFromDefault().none { it.contains("preview") })
     }
 
